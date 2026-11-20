@@ -247,7 +247,7 @@ export function rejectConnection(used: Connection) {
  * drops everything fetched over a connection when it changes. Then the hosted app adopts pairing
  * links opened in this tab, and has a nearby session check its channel when the page is shown
  * again (iOS may have killed it meanwhile). `dev`: the page is on the dev server
- * (`import.meta.env.DEV`). `open`: opens nearby sessions (tests pass another).
+ * (`__GITUI_DEV_SERVER__`, set by vite.config.ts). `open`: opens nearby sessions (tests pass another).
  */
 export function initConnection(
   queryClient: QueryClient,

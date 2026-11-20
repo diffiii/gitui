@@ -14,7 +14,7 @@ export interface StartOptions extends AppOptions {
  * The app `start` serves: the API, and at `/` a note on where the UI is, for someone who opens
  * the server's address in a browser.
  */
-export function serverApp(opts: AppOptions) {
+export function serverApp(opts: AppOptions & { listener: LoopbackListener }) {
   const app = createApp(opts);
   app.get("/", (c) => c.text(`This is the gitui API. The app is at ${HOSTED_ORIGIN}\n`));
   return app;

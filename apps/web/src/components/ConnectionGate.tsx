@@ -356,7 +356,7 @@ function UnreachableScreen({
           >
             pick this computer from the list
           </button>
-          .
+          , with iCloud Private Relay off for this network.
         </li>
       </ul>
       <div className="mt-4 flex items-center justify-between gap-2 px-1 text-xs text-muted-foreground">

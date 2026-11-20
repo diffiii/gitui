@@ -17,6 +17,7 @@ Options:
                           on ${HOSTED_ORIGIN} and connect over WebRTC with the
                           code gitui prints. Desktop Safari, which blocks the hosted app from
                           reaching localhost, can pick this computer from the same list
+                          (with iCloud Private Relay off, which hides the network)
   --name <name>           the name phones see with --nearby (default: this machine's hostname)
   --allow-origin <origin> also let the web app at <origin> call the API (repeatable)
   --no-open               don't open the browser
@@ -83,8 +84,12 @@ export function parseArgs(argv: string[]): Options | "help" {
       }
     } else if (a === "--allow-origin") {
       const origin = parseOrigin(argv[++i]);
-      if (!origin) throw new ArgsError(`${a} needs an origin, e.g. http://localhost:5173`);
+      if (!origin) throw new ArgsError(`${a} needs an origin, e.g. http://localhost:4173`);
       options.origins.push(origin);
+    } else if (a === "--lan" || a === "--local") {
+      throw new ArgsError(
+        `${a} was removed in 0.5.0: open the app at ${HOSTED_ORIGIN}, or use --nearby for a phone`,
+      );
     } else if (a.startsWith("-")) throw new ArgsError(`Unknown option ${a}\n\n${HELP}`);
     else options.target = a;
   }

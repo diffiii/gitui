@@ -50,6 +50,14 @@ test("an unknown option is refused with the help", () => {
   expect(refusal(["--bogus"])).toStartWith("Unknown option --bogus\n\ngitui");
 });
 
+test("the removed --lan and --local say what to use instead", () => {
+  for (const flag of ["--lan", "--local"]) {
+    expect(refusal([flag])).toBe(
+      `${flag} was removed in 0.5.0: open the app at https://gitui.diffiii.dev, or use --nearby for a phone`,
+    );
+  }
+});
+
 test("--allow-origin is repeatable", () => {
   const origins = ["http://localhost:5173", "https://x.example"];
   expect(parseArgs(["--allow-origin", origins[0], "--allow-origin", origins[1]])).toEqual({
