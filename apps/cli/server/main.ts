@@ -2,6 +2,7 @@ import { once } from "node:events";
 import path from "node:path";
 import { createAdaptorServer } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
+import { uiSecurityHeaders } from "@gitui/shared";
 import { listenAddress } from "./access.ts";
 import { type AppOptions, createApp } from "./app.ts";
 
@@ -12,16 +13,8 @@ export interface StartOptions extends AppOptions {
   ui?: string;
 }
 
-/**
- * Headers of the UI's responses, as `apps/web/public/_headers` sets them for the hosted app,
- * except that this UI only calls its own origin.
- */
-export const UI_HEADERS: Record<string, string> = {
-  "Content-Security-Policy":
-    "script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
-  "Referrer-Policy": "no-referrer",
-  "X-Content-Type-Options": "nosniff",
-};
+/** Headers of the UI's responses: the hosted app's, except that this UI only calls its origin. */
+const UI_HEADERS = uiSecurityHeaders("'self'");
 
 /**
  * Serves the built UI in `root`: files as they are (serveStatic refuses `..` segments), and

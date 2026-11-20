@@ -1,5 +1,5 @@
 import path from "node:path";
-import { LOCAL_UI_META } from "@gitui/shared";
+import { hostedHeadersFile, LOCAL_UI_META } from "@gitui/shared";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig, lazyPlugins, type Plugin } from "vite-plus";
@@ -16,6 +16,15 @@ const localUiMarker: Plugin = {
   transformIndexHtml: () => [{ tag: "meta", attrs: { name: LOCAL_UI_META }, injectTo: "head" }],
 };
 
+/** Emits the hosted app's `_headers` (its security headers on Cloudflare) into the build. */
+const hostedHeaders: Plugin = {
+  name: "gitui-hosted-headers",
+  apply: "build",
+  generateBundle() {
+    this.emitFile({ type: "asset", fileName: "_headers", source: hostedHeadersFile() });
+  },
+};
+
 export default defineConfig({
   resolve: {
     alias: { "@": path.resolve(import.meta.dirname, "src") },
@@ -23,5 +32,5 @@ export default defineConfig({
   server: {
     proxy: { "/api": `http://127.0.0.1:${API_PORT}` },
   },
-  plugins: lazyPlugins(() => [react(), tailwindcss(), localUiMarker]),
+  plugins: lazyPlugins(() => [react(), tailwindcss(), localUiMarker, hostedHeaders]),
 });

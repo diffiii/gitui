@@ -1,4 +1,5 @@
 import { afterAll, expect, test } from "bun:test";
+import { uiSecurityHeaders } from "@gitui/shared";
 import { serveUi } from "./main.ts";
 import { removeTempDirs, testApp, tmpDir, write } from "./test-repo.ts";
 
@@ -40,4 +41,14 @@ test("a missing asset 404s instead of returning index.html", async () => {
   const res = await get(withUi, "/assets/missing.js");
   expect(res.status).toBe(404);
   expect(await res.text()).not.toContain('<div id="root">');
+});
+
+test("the UI is served with the security headers, connecting to its own origin only", async () => {
+  const headers = uiSecurityHeaders("'self'");
+  expect(headers["Content-Security-Policy"]).toContain("connect-src 'self';");
+  for (const url of ["/", "/index.html", "/some/route", "/assets/app.js"]) {
+    const res = await get(withUi, url);
+    expect(res.status).toBe(200);
+    for (const [name, value] of Object.entries(headers)) expect(res.headers.get(name)).toBe(value);
+  }
 });

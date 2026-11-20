@@ -23,9 +23,9 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
 - `apps/cli/` (`@diffiii/gitui`, published to npm): the `gitui` bin (`bin/gitui.ts`) and the
   Hono API in `server/`. `app.ts` holds the routes, `git.ts` wraps the git CLI and parses its
   output, `main.ts` starts the server (`@hono/node-server`), serving the UI directory it's given
-  with the headers of `apps/web/public/_headers` (`bin/gitui.ts` passes `dist/web` only with
-  `--local` and `--lan`; by default the hosted app is the UI),
-  `dev.ts` is the dev API entry, `lan.ts` picks the `--lan` address. `bun run build`
+  with `uiSecurityHeaders` (`bin/gitui.ts` passes `dist/web` only with `--local` and `--lan`;
+  by default the hosted app is the UI), `bin/args.ts` parses the command line, `dev.ts` is the
+  dev API entry, `lan.ts` picks the `--lan` address. `bun run build`
   (`scripts/build.ts`) bundles `bin/gitui.ts` for Node into `dist/gitui.js`, copies
   `apps/web/dist` to `dist/web` (`scripts/local-ui.ts` adds the `LOCAL_UI_META` tag to that copy
   only, never to `apps/web/dist`, which is the hosted app, and leaves `_headers` out) and the root `LICENSE` into the package; with `README.md` that is all the package ships, with no runtime dependencies.
@@ -38,11 +38,12 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   dev server, whose `vite.config.ts` plugin adds it) calls its own `/api`; without it, whatever
   the host, it is the hosted app: `src/lib/connection.ts` decides this and holds the pairing with
   the CLI and where requests go (its store reads `window` lazily; `initConnection` does the
-  startup wiring), and `ConnectionGate` gates the app until the CLI answers. `wrangler.jsonc` and `public/_headers` deploy `dist/` as Cloudflare
-  Workers static assets on the custom domain `gitui.diffiii.dev` (`HOSTED_ORIGIN`).
+  startup wiring), and `ConnectionGate` gates the app until the CLI answers. `wrangler.jsonc` deploys `dist/` as Cloudflare
+  Workers static assets, with the `_headers` file that a `vite.config.ts` plugin writes into the
+  build from `hostedHeadersFile`, on the custom domain `gitui.diffiii.dev` (`HOSTED_ORIGIN`).
 - `packages/shared/` (`@gitui/shared`): API types and the connection contract (default port,
-  client header, local UI marker, hosted origin, loopback hosts, pairing links) used by both sides, imported as
-  `@gitui/shared`.
+  client header, local UI marker, hosted origin, loopback hosts, pairing links) and the UI's
+  security headers (`headers.ts`), used by both sides, imported as `@gitui/shared`.
 - Root: `scripts/dev.ts` (runs both apps), `scripts/smoke.sh` (runs the built bundle with node
   in both modes and checks what it serves; CI and release run it), `vite.config.ts` (workspace
   fmt/lint/type check config, `defaultPackage` points `vp dev`/`vp build` at `apps/web`),
