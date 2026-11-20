@@ -20,19 +20,27 @@ const UNGATED = ["GET /api/config", "POST /api/open", "GET /pair"];
 const PARAMS: Record<string, string> = { hash: "HEAD", action: "fetch" };
 
 /**
- * Every API endpoint the app has, from its router: "METHOD /path". Wildcard registrations for
- * every method are left out: those are `use` middleware (the gate among them) and the 404
- * fallback. An `all()` route on a path is an endpoint, and is sent a POST.
+ * The app's middleware and its 404 fallback, which its router lists like routes: the access
+ * policy and the fallback on /api/*, and the repo gate on /api/repo/*. Middleware added on any
+ * other path shows up as an endpoint, and fails the gate test until it is listed here.
+ */
+const MIDDLEWARE = ["ALL /api/*", "ALL /api/repo/*"];
+
+/**
+ * Every API endpoint the app has, from its router: "METHOD /path". An `all()` route is sent a
+ * POST, and a wildcard in a path matches "x".
  */
 const endpoints = (app: ReturnType<typeof createApp>) =>
   app.routes
-    .filter((r) => !(r.method === "ALL" && r.path.endsWith("*")))
+    .filter((r) => !MIDDLEWARE.includes(`${r.method} ${r.path}`))
     .map((r) => {
       const method = r.method === "ALL" ? "POST" : r.method;
       return {
         name: `${r.method} ${r.path}`,
         method,
-        path: r.path.replace(/:(\w+)/g, (_, name: string) => PARAMS[name] ?? "x"),
+        path: r.path
+          .replace(/:(\w+)/g, (_, name: string) => PARAMS[name] ?? "x")
+          .replace(/\*$/, "x"),
       };
     });
 
@@ -137,9 +145,14 @@ for (const { listener, host, headers } of clients) {
       test("the route list leaves out middleware only, so all() routes are checked too", () => {
         const routes = app();
         routes.all("/api/repo/extra", (c) => c.text("x"));
+        routes.all("/api/repo/more/*", (c) => c.text("x"));
         const names = endpoints(routes).map((e) => e.name);
         expect(names).toContain("ALL /api/repo/extra");
-        expect(names.filter((name) => name.endsWith("*"))).toEqual([]);
+        expect(names).toContain("ALL /api/repo/more/*");
+        expect(endpoints(app()).filter((e) => e.name.endsWith("*"))).toEqual([]);
+        expect(endpoints(routes).find((e) => e.name === "ALL /api/repo/more/*")?.path).toBe(
+          "/api/repo/more/x",
+        );
       });
 
       test("another repository is refused, for reads and writes", async () => {
