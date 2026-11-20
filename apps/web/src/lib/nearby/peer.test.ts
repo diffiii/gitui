@@ -1,6 +1,6 @@
 import type { HostInfo, SignalData } from "@gitui/shared";
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { connectToHost, RefusedError } from "./peer.ts";
+import { connectToHost, RefusedError, refusalMessage } from "./peer.ts";
 import type { Rendezvous, SignalHandlers } from "./rendezvous.ts";
 
 const host: HostInfo = { id: "peer-1", name: "MacBook", key: "k".repeat(16) };
@@ -127,3 +127,13 @@ for (const reason of ["busy", "rate-limited"] as const) {
     expect(r.listening()).toBe(false);
   });
 }
+
+test("a refusal reason this page doesn't know gets a generic message", () => {
+  expect(refusalMessage("MacBook", "busy")).toContain("busy");
+  expect(refusalMessage("MacBook", "pairing-locked")).toBe(
+    "MacBook turned the connection down. Try again later.",
+  );
+  expect(refusalMessage("MacBook", "toString")).toBe(
+    "MacBook turned the connection down. Try again later.",
+  );
+});

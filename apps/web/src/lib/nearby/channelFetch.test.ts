@@ -130,6 +130,18 @@ test("abort rejects only its own request", async () => {
   expect((await b).status).toBe(200);
 });
 
+test("a request hears when its response head arrives", async () => {
+  const client = createChannelClient(fakeTransport());
+  let heads = 0;
+  const res = client.fetch("/a", {}, { onHead: () => heads++ });
+  client.receive(text({ t: "res", id: 1, status: 200, headers: [] }));
+  expect(heads).toBe(1);
+  client.receive(frame(1, "ok"));
+  client.receive(text({ t: "end", id: 1 }));
+  expect(await (await res).text()).toBe("ok");
+  expect(heads).toBe(1);
+});
+
 test("unknown ids and garbage are reported and dropped", async () => {
   const errors: string[] = [];
   const client = createChannelClient(fakeTransport(), (e) => errors.push(e));
@@ -189,10 +201,9 @@ test("a caller's abort sends cancel, and later answers are dropped quietly", asy
   ]);
   client.receive(frame(1, "late"));
   client.receive(text({ t: "end", id: 1 }));
-  expect(errors).toEqual([]);
-  // Once its `end` came, the id is unknown again.
+  // The host doesn't confirm a cancel: anything for an id it was given is dropped quietly.
   client.receive(text({ t: "end", id: 1 }));
-  expect(errors).toEqual(["end for unknown request 1"]);
+  expect(errors).toEqual([]);
 });
 
 test("a response past MAX_RESPONSE_BYTES fails alone and is cancelled", async () => {

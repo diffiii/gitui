@@ -62,6 +62,7 @@ function concat(parts: Uint8Array[]): Uint8Array<ArrayBuffer> {
 interface Pending {
   resolve(res: Response): void;
   reject(error: Error): void;
+  onHead?: () => void;
   head?: { status: number; headers: [string, string][] };
   body: Uint8Array[];
   /** Body bytes so far. */
@@ -77,9 +78,15 @@ export class ChannelRequestError extends Error {
   override name = "ChannelRequestError";
 }
 
+/** What a caller hears about its request before it settles. */
+export interface FetchProgress {
+  /** The response head arrived: the host is answering, and the body follows. */
+  onHead?: () => void;
+}
+
 export interface ChannelClient {
   /** `fetch` for paths on the host, e.g. `/api/config`. Resolves once the whole body arrived. */
-  fetch(path: string, init?: RequestInit): Promise<Response>;
+  fetch(path: string, init?: RequestInit, progress?: FetchProgress): Promise<Response>;
   /** Feed every message the channel receives (after auth) here. */
   receive(data: string | ArrayBuffer | Uint8Array): void;
   /** receive() for a message the caller already decoded. */
@@ -90,8 +97,10 @@ export interface ChannelClient {
 
 /**
  * HTTP client over a channel. Request ids increase from 1, so responses to concurrent requests
- * can interleave. `onProtocolError` hears about messages it drops: garbage, or answers to ids
- * it isn't waiting for (e.g. requests whose caller aborted).
+ * can interleave. Answers to an id it gave out but no longer waits for (its caller aborted, and
+ * the host sends the rest until it sees the `cancel`; the host doesn't confirm a cancel) are
+ * dropped quietly. `onProtocolError` hears about the messages it drops otherwise: garbage, or
+ * answers to ids it never gave out.
  */
 export function createChannelClient(
   transport: ChannelTransport,
@@ -100,8 +109,6 @@ export function createChannelClient(
   const pending = new Map<number, Pending>();
   /** Requests whose head went out, so the host knows them and must hear when they're cancelled. */
   const sent = new Set<number>();
-  /** Cancelled requests, whose rest the host may still send until it sees the `cancel`. */
-  const cancelled = new Set<number>();
   let nextId = 1;
   let closed: string | null = null;
 
@@ -117,7 +124,6 @@ export function createChannelClient(
     const known = sent.has(id);
     fail(id, reason);
     if (!known || closed !== null) return;
-    cancelled.add(id);
     try {
       transport.send(JSON.stringify({ t: "cancel", id } satisfies GuestMessage));
     } catch {
@@ -137,14 +143,16 @@ export function createChannelClient(
     }
   }
 
+  /** A message for `id`, which isn't pending: dropped, and reported unless it was given out. */
+  const unknown = (id: number, what: string) => {
+    if (id >= nextId) onProtocolError(`${what} for unknown request ${id}`);
+  };
+
   function handle(incoming: Incoming) {
     if (incoming.kind === "invalid") return onProtocolError(incoming.reason);
     if (incoming.kind === "chunk") {
       const request = pending.get(incoming.id);
-      if (!request) {
-        if (cancelled.has(incoming.id)) return;
-        return onProtocolError(`frame for unknown request ${incoming.id}`);
-      }
+      if (!request) return unknown(incoming.id, "frame");
       if (!request.head) {
         return fail(incoming.id, new ChannelRequestError("body frame before the response head"));
       }
@@ -165,18 +173,12 @@ export function createChannelClient(
       return onProtocolError(`unexpected ${message.t} message`);
     }
     const request = pending.get(message.id);
-    if (!request) {
-      if (!cancelled.has(message.id)) {
-        return onProtocolError(`${message.t} for unknown request ${message.id}`);
-      }
-      // Its last message: nothing more comes for it.
-      if (message.t !== "res") cancelled.delete(message.id);
-      return;
-    }
+    if (!request) return unknown(message.id, message.t);
     switch (message.t) {
       case "res":
         if (request.head) return fail(message.id, new ChannelRequestError("second response head"));
         request.head = { status: message.status, headers: message.headers };
+        request.onHead?.();
         return;
       case "abort":
         return fail(message.id, new ChannelRequestError(message.message));
@@ -199,7 +201,7 @@ export function createChannelClient(
   }
 
   return {
-    fetch(path, init) {
+    fetch(path, init, progress) {
       if (closed !== null) return Promise.reject(new ChannelClosedError(closed));
       if (!path.startsWith("/")) return Promise.reject(new TypeError(`not a path: ${path}`));
       // Request normalizes the method, headers and any kind of body, and rejects what fetch
@@ -213,7 +215,7 @@ export function createChannelClient(
       const url = new URL(request.url);
       const id = nextId++;
       return new Promise<Response>((resolve, reject) => {
-        pending.set(id, { resolve, reject, body: [], size: 0 });
+        pending.set(id, { resolve, reject, onHead: progress?.onHead, body: [], size: 0 });
         const { signal } = request;
         if (signal.aborted) return cancel(id, signal.reason);
         // Whatever the host sent before it saw the `cancel` is dropped as an unknown id.
