@@ -1,4 +1,3 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Columns2,
   Download,
@@ -12,7 +11,6 @@ import {
   Unplug,
   Upload,
 } from "lucide-react";
-import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -25,18 +23,18 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { setPairing, useConnection } from "@/lib/connection";
 import { PALETTE_IDS, PALETTES } from "@/lib/palettes";
 import { THEMES, useDiffStyle, usePalette, useTheme, type Theme } from "@/lib/prefs";
-import { useRepo } from "@/lib/repo";
+import { useDisconnect } from "@/lib/connection";
+import type { RemoteAction } from "@/lib/remote";
 import { cn } from "@/lib/utils";
 import { DisconnectButton } from "./ConnectionGate";
 
 /** The header's controls after the views: remotes, diff style, theme and disconnect. */
-export function HeaderActions({ className }: { className?: string }) {
+export function HeaderActions({ remote, className }: { remote: RemoteAction; className?: string }) {
   return (
     <div className={cn("flex items-center gap-1", className)}>
-      <RemoteButtons />
+      <RemoteButtons run={remote} />
       <div className="mx-1 h-5 w-px bg-border" />
       <DiffStyleToggle />
       <ThemeMenu />
@@ -51,25 +49,7 @@ const REMOTE_ACTIONS = [
   { action: "push" as const, icon: Upload, label: "Push" },
 ];
 
-function useRemoteAction() {
-  const { repo, api } = useRepo();
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: (action: "fetch" | "pull" | "push") => {
-      const p = api.remote(action);
-      toast.promise(p, {
-        loading: `${action[0].toUpperCase()}${action.slice(1)}ing…`,
-        success: `${action[0].toUpperCase()}${action.slice(1)} complete`,
-        error: (e: Error) => e.message,
-      });
-      return p;
-    },
-    onSettled: () => qc.invalidateQueries({ queryKey: [repo] }),
-  });
-}
-
-function RemoteButtons() {
-  const run = useRemoteAction();
+function RemoteButtons({ run }: { run: RemoteAction }) {
   return (
     <>
       {REMOTE_ACTIONS.map(({ action, icon: Icon, label }) => (
@@ -96,9 +76,8 @@ function RemoteButtons() {
 }
 
 /** HeaderActions as a menu, for narrow screens: remotes, theme, disconnect. */
-export function MoreMenu() {
-  const run = useRemoteAction();
-  const connection = useConnection();
+export function MoreMenu({ remote: run }: { remote: RemoteAction }) {
+  const pairing = useDisconnect();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -124,12 +103,12 @@ export function MoreMenu() {
         ))}
         <DropdownMenuSeparator />
         <ThemeMenuItems />
-        {connection.kind === "paired" && (
+        {pairing && (
           <>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={() => setPairing(null)}>
+            <DropdownMenuItem onSelect={pairing.disconnect}>
               <Unplug />
-              Disconnect from port {connection.pairing.port}
+              Disconnect from port {pairing.port}
             </DropdownMenuItem>
           </>
         )}

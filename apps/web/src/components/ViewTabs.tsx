@@ -1,6 +1,6 @@
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { cn } from "@/lib/utils";
-import { type View, VIEWS } from "@/lib/views";
+import { isView, type View, VIEWS } from "@/lib/views";
 import { useStatus } from "./ChangesView";
 
 /** The views as the header's tabs. */
@@ -14,7 +14,7 @@ export function ViewTabs({
   className?: string;
 }) {
   return (
-    <Tabs value={view} onValueChange={(v) => onView(v as View)} className={className}>
+    <Tabs value={view} onValueChange={(v) => isView(v) && onView(v)} className={className}>
       <TabsList>
         {VIEWS.map(({ view: v, label }) => (
           <TabsTrigger key={v} value={v} className="gap-1.5 px-3">

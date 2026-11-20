@@ -1,3 +1,4 @@
+import { useRemoteAction } from "@/lib/remote";
 import { useRepo } from "@/lib/repo";
 import type { View } from "@/lib/views";
 import { BranchSwitcher } from "./BranchSwitcher";
@@ -17,6 +18,7 @@ export function AppHeader({
 }) {
   const { repo } = useRepo();
   const { data: status } = useStatus();
+  const remote = useRemoteAction();
 
   // Narrow screens keep the pickers here, and move the views to ViewTabBar and the actions to
   // MoreMenu.
@@ -25,8 +27,8 @@ export function AppHeader({
       <RepoSwitcher repo={repo} onOpen={onOpenRepo} />
       {status && <BranchSwitcher status={status} />}
       <ViewTabs view={view} onView={onView} className="mx-auto max-md:hidden" />
-      <HeaderActions className="max-md:hidden" />
-      <MoreMenu />
+      <HeaderActions remote={remote} className="max-md:hidden" />
+      <MoreMenu remote={remote} />
     </header>
   );
 }
