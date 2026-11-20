@@ -105,10 +105,17 @@ function NearbyGate({ session, children }: { session: NearbySession; children: R
       return (
         <CenteredScreen icon={CircleAlert} title={name} description={state.reason}>
           <div className="flex flex-col gap-2">
-            <Button size="lg" onClick={session.retry}>
-              <RotateCw />
-              Try again
-            </Button>
+            {state.reload ? (
+              <Button size="lg" onClick={() => location.reload()}>
+                <RotateCw />
+                Reload
+              </Button>
+            ) : (
+              <Button size="lg" onClick={session.retry}>
+                <RotateCw />
+                Try again
+              </Button>
+            )}
             <ChooseAnotherButton />
           </div>
         </CenteredScreen>

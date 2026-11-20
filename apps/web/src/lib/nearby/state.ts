@@ -13,12 +13,17 @@ export interface NearbyHost {
  * A nearby session's state (session.ts). `connecting` and `code` block the app, `reconnecting`
  * doesn't: the app stays up while the session comes back. `connected` is `checking` while it
  * makes sure its channel still answers (requests wait meanwhile). `failed` waits for the user,
- * or, when it only ran out of time (`timedOut`), for the page to be shown again too. `gone`: the
+ * or, when it only ran out of time (`retryOnWake`), for the page to be shown again too; `reload`
+ * when only reloading the page can help. `gone`: the
  * rendezvous doesn't list the host's key (gitui quit, or restarted with a new one), so the user
  * picks a computer again. `off` once the session is stopped.
  */
 export type NearbyState =
-  | { kind: "connecting" }
+  | {
+      kind: "connecting";
+      /** Passed on to the code screen, if this attempt asks for the code. */
+      notice?: "expired";
+    }
   | {
       kind: "code";
       checking: boolean;
@@ -28,8 +33,8 @@ export type NearbyState =
       notice?: "expired";
     }
   | { kind: "connected"; checking: boolean }
-  | { kind: "reconnecting" }
-  | { kind: "failed"; reason: string; timedOut: boolean }
+  | { kind: "reconnecting"; notice?: "expired" }
+  | { kind: "failed"; reason: string; retryOnWake: boolean; reload?: true }
   | { kind: "gone" }
   | { kind: "off" };
 

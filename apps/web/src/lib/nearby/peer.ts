@@ -9,6 +9,7 @@ import {
   type GuestMessage,
   type HostInfo,
   type HostMessage,
+  type RefusalReason,
   type SignalData,
 } from "@gitui/shared";
 import {
@@ -39,23 +40,39 @@ export class HostUnverifiedError extends NearbyError {
 }
 
 /**
- * The host refused the offer (`refused`): too many guests proving themselves at once, or too
- * many offers lately. Trying again at once would only add to them.
+ * The host refused the offer (`refused`), for `reason`: too many guests proving themselves at
+ * once (`busy`, worth another try later), too many offers lately, and so on.
  */
 export class RefusedError extends NearbyError {
   override name = "RefusedError";
+  readonly reason: RefusalReason;
+  constructor(host: string, reason: RefusalReason) {
+    super(refusalMessage(host, reason));
+    this.reason = reason;
+  }
 }
 
-/** CPace and its curve arithmetic, loaded only once this page pairs or resumes. */
-const loadPake = () => import("@gitui/shared/nearby-pake");
+/**
+ * This page can't load its CPace code: it was deployed over since the page loaded, so its chunk
+ * is gone. Only a reload helps.
+ */
+export class PageOutdatedError extends NearbyError {
+  override name = "PageOutdatedError";
+  constructor() {
+    super("This page is out of date. Reload it.");
+  }
+}
 
-type RefusedReason = Extract<SignalData, { kind: "refused" }>["reason"];
+type Pake = typeof import("@gitui/shared/nearby-pake");
+
+/** CPace and its curve arithmetic, loaded only once this page connects to a host. */
+const loadPake = (): Promise<Pake> => import("@gitui/shared/nearby-pake");
 
 /**
  * Why a host refused an offer, for each reason it gives. A reason this page doesn't know (a newer
  * CLI's) decodes as `unknown`.
  */
-const REFUSALS: Record<RefusedReason, (host: string) => string> = {
+const REFUSALS: Record<RefusalReason, (host: string) => string> = {
   busy: (host) => `${host} is busy with other devices connecting. Try again in a moment.`,
   "rate-limited": (host) => `${host} got too many connection requests. Try again in a minute.`,
   "pairing-locked": (host) =>
@@ -66,7 +83,7 @@ const REFUSALS: Record<RefusedReason, (host: string) => string> = {
 };
 
 /** What to say when `host` refuses an offer for `reason`. */
-export const refusalMessage = (host: string, reason: RefusedReason) => REFUSALS[reason](host);
+export const refusalMessage = (host: string, reason: RefusalReason) => REFUSALS[reason](host);
 
 export type AuthResult = { ok: true } | { ok: false; attemptsLeft: number };
 
@@ -120,7 +137,9 @@ function dataChannelTransport(channel: RTCDataChannel): ChannelTransport {
  * Open a data channel to `host` through `rendezvous`. Rejects with a NearbyError if the host
  * leaves, doesn't answer within `answerTimeout`, or the channel isn't open within `timeout`;
  * `signal` gives up early. `resume` tells the host the channel will open with `resume`, so it
- * prints no code unless that fails.
+ * prints no code unless that fails. CPace (`pake`) loads while the offer is made, and the offer
+ * only goes out once it has: a page that can't load it rejects with a PageOutdatedError without
+ * spending one of the host's offers.
  */
 export async function connectToHost(
   rendezvous: Rendezvous,
@@ -130,8 +149,19 @@ export async function connectToHost(
     timeout = CONNECT_TIMEOUT,
     answerTimeout = ANSWER_TIMEOUT,
     resume = false,
-  }: { signal?: AbortSignal; timeout?: number; answerTimeout?: number; resume?: boolean } = {},
+    pake: load = loadPake,
+  }: {
+    signal?: AbortSignal;
+    timeout?: number;
+    answerTimeout?: number;
+    resume?: boolean;
+    pake?: () => Promise<Pake>;
+  } = {},
 ): Promise<GuestPeer> {
+  const loading = load().catch(() => {
+    throw new PageOutdatedError();
+  });
+  loading.catch(() => {}); // awaited below, unless setup fails first
   const pc = new RTCPeerConnection({ iceServers: [{ urls: STUN_URLS }] });
   // Ordered and reliable: no maxRetransmits or maxPacketLifeTime.
   const channel = pc.createDataChannel(DATA_CHANNEL_LABEL, { ordered: true });
@@ -151,7 +181,7 @@ export async function connectToHost(
     if (data.offerId !== offerId) return;
     try {
       if (data.kind === "refused") {
-        failSetup(new RefusedError(refusalMessage(host.name, data.reason)));
+        failSetup(new RefusedError(host.name, data.reason));
       } else if (data.kind === "answer" && !answered) {
         answered = true;
         remoteFingerprint = sdpFingerprint(data.sdp);
@@ -184,6 +214,7 @@ export async function connectToHost(
   let timer: ReturnType<typeof setTimeout> | undefined;
   let answerTimer: ReturnType<typeof setTimeout> | undefined;
   let localFingerprint: Fingerprint | null = null;
+  let pake: Pake | null = null;
   try {
     await new Promise<void>((resolve, reject) => {
       failSetup = reject;
@@ -213,7 +244,8 @@ export async function connectToHost(
       };
       channel.onopen = () => resolve();
       void (async () => {
-        await pc.setLocalDescription(await pc.createOffer());
+        const described = pc.createOffer().then((offer) => pc.setLocalDescription(offer));
+        [pake] = await Promise.all([loading, described]);
         const offer = pc.localDescription!.sdp;
         localFingerprint = sdpFingerprint(offer);
         const data: SignalData = {
@@ -247,7 +279,8 @@ export async function connectToHost(
     pc.close();
     throw new NearbyError("The connection has no single DTLS fingerprint to authenticate with.");
   }
-  return openPeer(host, pc, channel, { guest, host: remote });
+  // The channel only opens after the offer, which waited for CPace.
+  return openPeer(host, pc, channel, { guest, host: remote }, pake!);
 }
 
 /** What the guest waits for during authentication: the host's next message. */
@@ -261,6 +294,7 @@ function openPeer(
   pc: RTCPeerConnection,
   channel: RTCDataChannel,
   prints: Fingerprints,
+  { guestFinish, guestStart, resumeStart, resumeVerify }: Pake,
 ): GuestPeer {
   const client = createChannelClient(dataChannelTransport(channel), (reason) =>
     console.warn(`nearby: dropped a message from ${host.name}: ${reason}`),
@@ -325,7 +359,6 @@ function openPeer(
 
   const authenticate = async (code: string): Promise<AuthResult> => {
     if (authenticated) return { ok: true };
-    const { guestFinish, guestStart } = await loadPake();
     const start = guestStart(code, prints);
     const answer = next();
     send(start.message);
@@ -346,7 +379,6 @@ function openPeer(
 
   const resume = async (token: string): Promise<AuthResult> => {
     if (authenticated) return { ok: true };
-    const { resumeStart, resumeVerify } = await loadPake();
     const message = resumeStart(token, prints);
     const answer = next();
     send(message);
