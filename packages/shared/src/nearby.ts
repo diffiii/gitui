@@ -215,8 +215,6 @@ export type ServerMessage =
  * - `too-large`: over MAX_MESSAGE_LENGTH.
  * - `origin-required`: a guest's `hello` from a socket without an allowed Origin.
  * - `rate-limit`: this socket (or, for a host, its key) sent too much in its RATE_WINDOW.
- * - `network-rate-limit`: the network's guests, or its hosts, sent too much, and this socket
- *   (for a host, its key) had sent the most.
  * - `host-limit`: the network lists as many host keys as it may.
  * - `key-limit`: this host's key already has as many sockets as it may.
  * - `unknown-peer`: a signal to a peer that isn't here (or has the same role).
@@ -230,7 +228,6 @@ export type ErrorCode =
   | "too-large"
   | "origin-required"
   | "rate-limit"
-  | "network-rate-limit"
   | "host-limit"
   | "key-limit"
   | "unknown-peer"
@@ -241,7 +238,6 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "too-large",
   "origin-required",
   "rate-limit",
-  "network-rate-limit",
   "host-limit",
   "key-limit",
   "unknown-peer",

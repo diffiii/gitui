@@ -60,27 +60,25 @@ bounds what one client can make it do (`src/network.ts`). Every `error` it sends
   key may send `HOST_RATE_LIMIT` (256) over all its sockets: the CLI takes at most
   `MAX_OFFERS_PER_MINUTE` (12) offers, which can all land in one window, answers each with an
   answer and at most `MAX_LOCAL_CANDIDATES` (16) candidates, and tells at most
-  `MAX_REFUSALS_PER_WINDOW` (16) refusals: 1 + 12 × 17 + 16 = 221 (a test checks the limit
-  against these shared constants). Over its limit, a socket is closed with 1008 (`rate-limit`),
-  as is a host key's every socket that sends again in that window. Reconnecting doesn't start a
-  key's budget over within the window.
-- The network's guests and sockets that haven't said hello share `NETWORK_RATE_LIMIT` (200) per
-  window, and its hosts share `NETWORK_HOST_RATE_LIMIT` (512, two keys at their limit). Over
-  either, whoever sent the most in the window is closed with 1013 (`network-rate-limit`): the
-  socket, or for hosts every socket of the key. That happens whoever sent the last message, and
-  the closed sockets' messages stop counting, so the others go on.
+  `MAX_REFUSALS_PER_WINDOW` (16) refusals: 12 × 17 + 16 = 220 (a test checks the limit against
+  these shared constants; the hellos count against each socket's own budget). Over its limit, a
+  socket is closed with 1008 (`rate-limit`), as is a host key's every socket that sends again in
+  that window. Reconnecting doesn't start a key's budget over within the window.
 - Binary messages close the socket with 1003, messages over `MAX_MESSAGE_LENGTH` with 1009
   (`too-large`), and invalid ones with 1008 (`invalid-message`). A signal to an unknown peer
   gets an `unknown-peer` error, which the socket's limit bounds like any other answer.
 
-The worst case per window, with the sockets a network may hold at once: each socket that isn't
-a host's sends at most 51 messages (the 51st closes it), and each host key 256, plus two per
-socket (its hello, sent before it was a host's, and the message that closes it). The network
-budgets don't lower that, since they stop counting what they close: the most is `MAX_HOSTS`
-keys with a socket each and the other 40 sockets as guests, 10 × 258 + 40 × 51 = 4620
-messages, about 460 a second. Each socket opened during the window can add 51 more, or 258 as
-a new key in a host slot that a closed key freed. (Before host keys shared a budget,
-it was 30 host sockets × 201 + 20 × 51 = 7050.)
+There is no budget for the network as a whole. One could only close whoever sent the most, which
+over many sockets is rarely the flooder, and it would give anyone a way to close the others; it
+wouldn't lower the worst case either, since every socket and key has its own budget anyway. That
+worst case per window, with the sockets a network may hold at once: each socket that isn't a
+host's sends at most 51 messages (the 51st closes it), and each host key 256, plus two per socket
+(its hello, sent before it was a host's, and the message that closes it). The most is
+`MAX_HOSTS` keys with a socket each and the other 40 sockets as guests: 10 × 258 + 40 × 51 = 4620
+messages, about 460 a second. Each socket opened during the window can add 51 more, or 258 as a
+new key in a host slot that a closed key freed; the [WAF rule](#deploy) allows 30 upgrades per
+address per window, so one IPv4 address adds at most 30 × 258 = 7740 more (12 360 in all, about
+1240 a second).
 
 The counters live in memory, so hibernation resets them; a client has to keep the object awake
 to keep counting, and then the limits apply.
@@ -88,13 +86,10 @@ to keep counting, and then the limits apply.
 What these limits don't stop: anyone on the same network, which is to say behind the same
 public IPv4 address or in the same IPv6 /64, can deny nearby to the others there.
 
-- The network budgets close whoever sent the most, which is the flooder only when its traffic
-  comes from a few sockets. Spread over many sockets, each sending less than a pairing guest
-  (or host) does, a flood closes the one that is pairing instead.
 - Anyone can say hello as a host with a fresh secret, so a co-tenant can fill the `MAX_HOSTS`
-  slots (`host-limit` for everyone else) or spend the hosts' network budget.
+  slots (`host-limit` for everyone else).
 - The WAF rule in [Deploy](#deploy) counts per address, so over IPv6, where a /64 holds 2^64 of
-  them, it bounds nothing, and reconnects add to the worst case above.
+  them, it bounds nothing, and reconnects add to the worst case above without limit.
 - A client that says hello as a guest and then only sends the text keepalive, which never
   reaches the object, can hold all `MAX_SOCKETS` slots, so everyone else on the network gets a
   503 until it lets go.

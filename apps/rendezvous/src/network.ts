@@ -11,8 +11,6 @@ import {
   type ServerMessage,
 } from "@gitui/shared";
 
-export { RATE_WINDOW };
-
 /** Most sockets one network may hold open. */
 export const MAX_SOCKETS = 50;
 /**
@@ -31,14 +29,14 @@ export const HELLO_TIMEOUT = 10_000;
 // fixed windows of RATE_WINDOW ms (`floor(now / RATE_WINDOW)`, one clock for every budget). A
 // message over a limit is refused and closes its socket; it woke the object all the same.
 //
-// The worst case per window, with the sockets a network may hold at once: a socket that isn't a
-// host's sends at most GUEST_RATE_LIMIT + 1, and a host key HOST_RATE_LIMIT plus two per socket
-// (its hello, sent before it was a host's, and the message that closes it). The network's
-// budgets don't lower that: they close whoever sent the most and stop counting it, so a flood
-// spread over many sockets still gets each of them its own limit. The most is MAX_HOSTS keys
-// with a socket each and the rest guests: 10 × 258 + 40 × 51 = 4620 messages (about 460 a
-// second), and each socket opened during the window can add 51 more, or 258 for a new key in a
-// host slot that a closed one freed.
+// There is no budget for the network as a whole: it could only close someone, and over many
+// sockets that is rarely the one flooding. What bounds the cost is each socket's and key's own
+// budget times the sockets a network holds. The most per window: a socket that isn't a host's
+// sends GUEST_RATE_LIMIT + 1, and a host key HOST_RATE_LIMIT plus two per socket (its hello,
+// sent before it was a host's, and the message that closes it). With MAX_HOSTS keys of one
+// socket each and the rest guests, that is 10 × 258 + 40 × 51 = 4620 messages (about 460 a
+// second). Each socket opened during the window adds 51 more, or 258 for a new key in a host
+// slot that a closed one freed; the WAF rule (README) bounds those reconnects per address.
 
 /**
  * What a socket may send per RATE_WINDOW before it says hello and as a guest: enough for a
@@ -51,23 +49,11 @@ export const GUEST_RATE_LIMIT = 50;
  * secret, so nobody else's sockets spend it. The CLI takes at most MAX_OFFERS_PER_MINUTE offers
  * (12, all of which may land in one window, since guests that leave or offer again free their
  * pending slots), answering each with an answer and at most MAX_LOCAL_CANDIDATES (16)
- * candidates, and refuses at most MAX_REFUSALS_PER_WINDOW (16) more: 1 + 12 × 17 + 16 = 221
- * (network.test.ts checks this against the shared constants).
+ * candidates, and refuses at most MAX_REFUSALS_PER_WINDOW (16) more: 12 × 17 + 16 = 220
+ * (network.test.ts checks this against the shared constants). Its hellos aren't among them:
+ * each counts against its socket's own budget, as the socket isn't a host's before it.
  */
 export const HOST_RATE_LIMIT = 256;
-/**
- * What the network's guests and sockets that haven't said hello may send together per
- * RATE_WINDOW. Over it, the socket that sent the most is closed, whoever sent the last
- * message, and its messages stop counting. Spread over many sockets, a flood closes whichever
- * guest sent the most, which may be one that is pairing.
- */
-export const NETWORK_RATE_LIMIT = 200;
-/**
- * What the network's hosts may send together per RATE_WINDOW: two keys at their limit, as
- * anyone can say hello as a host. Over it, the key that sent the most has every socket closed
- * and its messages stop counting.
- */
-export const NETWORK_HOST_RATE_LIMIT = 2 * HOST_RATE_LIMIT;
 
 /**
  * A peer that said hello. `seq` orders hosts by when they joined: one more than the highest of
@@ -102,16 +88,14 @@ export interface Socket {
 
 /**
  * Messages counted in window `epoch` (floor(now / RATE_WINDOW)); a budget from an earlier window
- * counts as empty. `counted`: of `n`, those still counted in the network's budget. Kept in
- * memory only: hibernation resets them, which is fine.
+ * counts as empty. Kept in memory only: hibernation resets them, which is fine.
  */
 interface Budget {
   epoch: number;
   n: number;
-  counted: number;
 }
 
-const budget = (epoch: number): Budget => ({ epoch, n: 0, counted: 0 });
+const budget = (epoch: number): Budget => ({ epoch, n: 0 });
 
 export type Admission = { attachment: Attachment } | { status: number; message: string };
 
@@ -120,10 +104,6 @@ export class Network {
   readonly #sockets = new Map<string, Budget>();
   /** The budget of each host key, shared by its sockets. */
   readonly #keys = new Map<string, Budget>();
-  /** What guests and sockets that haven't said hello sent, together. */
-  readonly #guests = budget(0);
-  /** What hosts sent, together. */
-  readonly #hosts = budget(0);
 
   /** `sockets` lists every socket the object holds, open or closing. */
   constructor(
@@ -256,10 +236,7 @@ export class Network {
     return this.sockets().filter((socket) => socket.open);
   }
 
-  /**
-   * Counts a message from `socket` against its own budget (its key's, for a host) and the
-   * network's for its kind. False if that closed `socket`.
-   */
+  /** Counts a message from `socket` against its budget (its key's, for a host). False if over. */
   #charge(socket: Socket, peer: Attachment): boolean {
     const epoch = Math.floor(this.now() / RATE_WINDOW);
     const isHost = peer.role === "host";
@@ -269,46 +246,7 @@ export class Network {
       return false;
     }
     own.n++;
-    own.counted++;
-    const network = current(isHost ? this.#hosts : this.#guests, epoch);
-    if (++network.n <= (isHost ? NETWORK_HOST_RATE_LIMIT : NETWORK_RATE_LIMIT)) return true;
-    // Close whoever sent the most, which is rarely the one that tipped it over, and stop
-    // counting its messages against everyone else.
-    const [sockets, top] = isHost ? this.#topKey(epoch) : this.#topSocket(epoch);
-    network.n -= top.counted;
-    top.counted = 0;
-    for (const flooder of sockets) {
-      reject(flooder, 1013, "network-rate-limit", "Too many messages on this network");
-    }
-    return socket.open;
-  }
-
-  /** The open socket other than a host's whose messages count the most, with its budget. */
-  #topSocket(epoch: number): [Socket[], Budget] {
-    let top: [Socket[], Budget] | null = null;
-    for (const socket of this.#open()) {
-      const peer = socket.read();
-      const budget = this.#sockets.get(peer.id);
-      if (peer.role === "host" || budget?.epoch !== epoch) continue;
-      if (!top || budget.counted > top[1].counted) top = [[socket], budget];
-    }
-    // The socket that sent the last message is a candidate, so there is one.
-    return top!;
-  }
-
-  /** The host key whose messages count the most, with its open sockets and its budget. */
-  #topKey(epoch: number): [Socket[], Budget] {
-    let top: [string, Budget] | null = null;
-    for (const [key, budget] of this.#keys) {
-      if (budget.epoch !== epoch) continue;
-      if (!top || budget.counted > top[1].counted) top = [key, budget];
-    }
-    // The key that sent the last message is a candidate, so there is one.
-    const [key, budget] = top!;
-    const sockets = this.peers().flatMap((p) =>
-      p.role === "host" && p.key === key ? [p.socket] : [],
-    );
-    return [sockets, budget];
+    return true;
   }
 
   #socketBudget(id: string, epoch: number): Budget {
@@ -336,7 +274,6 @@ function current(budget: Budget, epoch: number): Budget {
   if (budget.epoch !== epoch) {
     budget.epoch = epoch;
     budget.n = 0;
-    budget.counted = 0;
   }
   return budget;
 }
