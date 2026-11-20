@@ -21,14 +21,14 @@ import type { Commit } from "@/lib/api";
 import { fullDate, initials, relativeTime } from "@/lib/format";
 import { layoutGraph } from "@/lib/graph";
 import { useHistoryDetails } from "@/lib/prefs";
-import { useRepo } from "@/lib/repo";
+import { useGitMutation, useRepo } from "@/lib/repo";
 import { cn } from "@/lib/utils";
 import { GraphCell, ROW_H } from "./CommitGraph";
 import { CommitTitle } from "./CommitTitle";
 import { DiffFiles, fileKey, useParsedPatch } from "./DiffView";
 import { EmptyState } from "./EmptyState";
 import { PathTree } from "./PathTree";
-import { RefBadges } from "./RefBadges";
+import { type ParsedRef, RefBadges } from "./RefBadges";
 
 const PAGE = 300;
 
@@ -156,6 +156,10 @@ function CommitList({
   footer?: React.ReactNode;
 }) {
   const { rows, width } = useMemo(() => layoutGraph(commits), [commits]);
+  const checkout = useGitMutation(
+    (api, r: ParsedRef) => api.checkout(r.name, r.kind === "remote"),
+    "Switched branch",
+  );
   return (
     <ScrollArea className="@container min-h-0 flex-1">
       <ul className="py-1">
@@ -172,7 +176,10 @@ function CommitList({
           >
             <GraphCell row={rows[i]} hash={c.hash} width={width} />
             <span className="flex min-w-0 flex-1 items-center gap-2">
-              <RefBadges refs={c.refs} />
+              <RefBadges
+                refs={c.refs}
+                onCheckout={(r) => !checkout.isPending && checkout.mutate(r)}
+              />
               <CommitTitle title={c.subject} />
             </span>
             <span className="hidden w-32 shrink-0 truncate text-xs text-muted-foreground @lg:inline">

@@ -31,24 +31,45 @@ const STYLE: Record<ParsedRef["kind"], string> = {
   tag: "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300",
 };
 
-export function RefBadges({ refs, className }: { refs: string[]; className?: string }) {
+export function RefBadges({
+  refs,
+  className,
+  onCheckout,
+}: {
+  refs: string[];
+  className?: string;
+  /** When set, branch and remote pills become buttons that switch to that branch. */
+  onCheckout?: (ref: ParsedRef) => void;
+}) {
   const parsed = parseRefs(refs);
   if (!parsed.length) return null;
   return (
     <span className={cn("flex shrink-0 items-center gap-1", className)}>
       {parsed.map((r) => {
         const Icon = r.kind === "tag" ? Tag : r.kind === "remote" ? Cloud : GitBranch;
+        const switchable = onCheckout && (r.kind === "branch" || r.kind === "remote");
+        const El = switchable ? "button" : "span";
         return (
-          <span
+          <El
             key={r.kind + r.name}
+            {...(switchable && {
+              type: "button" as const,
+              title: `Switch to ${r.name}`,
+              onClick: (e: React.MouseEvent) => {
+                e.stopPropagation();
+                onCheckout(r);
+              },
+              onDoubleClick: (e: React.MouseEvent) => e.stopPropagation(),
+            })}
             className={cn(
               "inline-flex h-[18px] max-w-48 items-center gap-1 rounded-md border px-1.5 text-[11px] leading-none font-medium",
               STYLE[r.kind],
+              switchable && "cursor-pointer hover:brightness-110 hover:ring-1 hover:ring-current/40",
             )}
           >
             <Icon className="size-3 shrink-0" />
             <span className="truncate">{r.name}</span>
-          </span>
+          </El>
         );
       })}
     </span>
