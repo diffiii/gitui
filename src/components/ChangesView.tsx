@@ -20,6 +20,7 @@ import { useGitMutation, useRepo } from "@/lib/repo";
 import { DiffView } from "./DiffView";
 import { EmptyState } from "./EmptyState";
 import { PathTree } from "./PathTree";
+import { TruncatedNotice } from "./TruncatedNotice";
 
 interface Selection {
   path: string;
@@ -269,11 +270,7 @@ function FileDiffPane({ file, staged }: { file: FileStatus; staged: boolean }) {
   }
   return (
     <ScrollArea className="h-full">
-      {data.truncated && (
-        <div className="mx-3 mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-          Diff is larger than 8 MB — showing only the first part
-        </div>
-      )}
+      {data.truncated && <TruncatedNotice className="mx-3 mt-3" />}
       <DiffView raw={data.diff} className="p-3" />
     </ScrollArea>
   );

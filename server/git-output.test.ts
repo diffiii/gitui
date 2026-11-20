@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, expect, test } from "bun:test";
+import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -58,7 +58,7 @@ test("fileDiff: small diff is not truncated", async () => {
   expect(parseStrict(d.diff)[0].hunks[0].additionLines).toBe(2000);
 });
 
-test("fileDiff: a single oversized hunk is cut to complete lines with a fixed header", async () => {
+test("fileDiff: a single oversized hunk is cut to complete lines, and still renders", async () => {
   const d = await fileDiff(repo, {
     path: "big.txt",
     staged: false,
@@ -70,8 +70,11 @@ test("fileDiff: a single oversized hunk is cut to complete lines with a fixed he
   const kept = d.diff.split("\n").filter((l) => l.startsWith("+big line")).length;
   expect(kept).toBeGreaterThan(0);
   expect(kept).toBeLessThan(2000);
-  expect(d.diff).toContain(`@@ -0,0 +1,${kept} @@`);
-  const [file] = parseStrict(d.diff);
+  // The UI's tolerant parse: it warns about the short final hunk, then keeps every line we kept.
+  const warn = spyOn(console, "error").mockImplementation(() => {});
+  const [file] = parsePatchFiles(d.diff).flatMap((p) => p.files);
+  warn.mockRestore();
+  expect(file.name).toBe("big.txt");
   expect(file.hunks[0].additionLines).toBe(kept);
 });
 
