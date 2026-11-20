@@ -51,13 +51,16 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   its requests over the data channel; `state.ts` and `tokens.ts` are its pure parts). `wrangler.jsonc` deploys `dist/` as Cloudflare
   Workers static assets, with the `_headers` file that a `vite.config.ts` plugin writes into the
   build from `hostedHeadersFile` (its CSP follows `VITE_GITUI_RENDEZVOUS_URL`), on the custom
-  domain `gitui.diffiii.dev` (`HOSTED_ORIGIN`); its `nearby-test` env is a test copy at
-  `gitui-test.diffiii.dev` for trying nearby on a phone first (`apps/rendezvous/README.md`).
+  domain `gitui.diffiii.dev` (`HOSTED_ORIGIN`). `wrangler.nearby-test.jsonc` (`bun run
+  deploy:nearby-test`) is a test copy at `gitui-test.diffiii.dev` for trying nearby on a phone
+  first (`apps/rendezvous/README.md`).
 - `apps/rendezvous/` (`@gitui/rendezvous`): the "nearby" rendezvous Worker (protocol in
   `packages/shared/src/nearby.ts`). `src/route.ts` checks the upgrade and Origin and names the
   caller's network with an HMAC keyed by the `NETWORK_KEY_SECRET` secret (500 without it),
-  `src/rendezvous.ts` is the hibernating Durable Object (one per network) that lists hosts (once
-  per key) and relays signals, `scripts/e2e.ts` checks it
+  `src/network.ts` decides what the object does (hello, signal routing, `gone`, the host list
+  once per key, and the socket, host and message limits) over plain socket records, and
+  `src/rendezvous.ts` adapts it to the hibernating Durable Object (one per network),
+  `scripts/e2e.ts` checks it
   all against `wrangler dev`. Worker code is type-checked with `@cloudflare/workers-types`, tests
   and scripts with bun's.
 - `packages/shared/` (`@gitui/shared`): API types and the connection contract (default port,
