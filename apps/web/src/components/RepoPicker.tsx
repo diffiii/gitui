@@ -42,8 +42,17 @@ function tildify(p: string, home?: string) {
   return home && p.startsWith(home) ? `~${p.slice(home.length)}` : p;
 }
 
-/** Full-page picker shown when no repository is selected. */
-export function RepoWelcome({ onOpen }: { onOpen: (root: string) => void }) {
+/**
+ * Full-page picker shown when no repository is selected, or when this device may not use the
+ * selected one (`notOpened`).
+ */
+export function RepoWelcome({
+  onOpen,
+  notOpened = false,
+}: {
+  onOpen: (root: string) => void;
+  notOpened?: boolean;
+}) {
   const { data: config } = useQuery({ queryKey: ["config"], queryFn: getConfig });
   const [path, setPath] = useState("");
   const open = useOpenRepo(onOpen);
@@ -72,7 +81,7 @@ export function RepoWelcome({ onOpen }: { onOpen: (root: string) => void }) {
           Open
         </Button>
       </form>
-      {open.notOpened && (
+      {(open.isIdle ? notOpened : open.notOpened) && (
         <p role="alert" className="mt-3 px-1 text-sm text-destructive">
           {NOT_OPENED}
         </p>

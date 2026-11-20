@@ -2,7 +2,9 @@ import { useQuery } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { getConfig } from "@/lib/api";
+import { isApiError } from "@/lib/connection";
 import { RepoProvider } from "@/lib/repo";
+import { useStatus } from "@/lib/status";
 import { openRepo, select, setView, useUrl } from "@/lib/url";
 import { cn } from "@/lib/utils";
 import type { View } from "@/lib/views";
@@ -28,17 +30,19 @@ export default function App() {
       <title>{repo ? `${repo.split("/").pop()} · gitui` : "gitui"}</title>
       {repo ? (
         <RepoProvider key={repo} repo={repo}>
-          {/* viewport-fit=cover (index.html) lays the page under iOS's notch and home indicator. */}
-          <div className="flex h-svh flex-col bg-background pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)] md:pb-[env(safe-area-inset-bottom)]">
-            <AppHeader view={view} onView={onView} onOpenRepo={openRepo} />
-            <main className="min-h-0 flex-1">
-              {view === "changes" && <ChangesView />}
-              {view === "history" && <HistoryView />}
-              {view === "branches" && <BranchesView />}
-              {view === "files" && <FilesView />}
-            </main>
-            <ViewTabBar view={view} onView={onView} />
-          </div>
+          <OpenedRepo>
+            {/* viewport-fit=cover (index.html) lays the page under iOS's notch and home indicator. */}
+            <div className="flex h-svh flex-col bg-background pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)] md:pb-[env(safe-area-inset-bottom)]">
+              <AppHeader view={view} onView={onView} onOpenRepo={openRepo} />
+              <main className="min-h-0 flex-1">
+                {view === "changes" && <ChangesView />}
+                {view === "history" && <HistoryView />}
+                {view === "branches" && <BranchesView />}
+                {view === "files" && <FilesView />}
+              </main>
+              <ViewTabBar view={view} onView={onView} />
+            </div>
+          </OpenedRepo>
         </RepoProvider>
       ) : isLoading ? null : (
         <RepoWelcome onOpen={openRepo} />
@@ -50,6 +54,16 @@ export default function App() {
       />
     </TooltipProvider>
   );
+}
+
+/**
+ * The repo's views, unless this device may only use repositories opened on the computer and
+ * this isn't one (a link from elsewhere): then the picker, saying so.
+ */
+function OpenedRepo({ children }: { children: React.ReactNode }) {
+  const { error } = useStatus();
+  if (isApiError(error, "not-opened")) return <RepoWelcome onOpen={openRepo} notOpened />;
+  return children;
 }
 
 function HistoryView() {
