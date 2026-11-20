@@ -1,6 +1,7 @@
 // Picks the address `gitui --lan` listens on.
 import dgram from "node:dgram";
 import { once } from "node:events";
+import net from "node:net";
 import os from "node:os";
 
 /** This machine's IPv4 addresses that other devices may reach: not loopback or link-local. */
@@ -28,9 +29,25 @@ async function defaultRouteAddress(): Promise<string | null> {
   }
 }
 
-/** The LAN address to listen on: the default route's, else the first one found, else null. */
+/** Private ranges: RFC 1918, and the shared range of carrier-grade NAT and Tailscale. */
+export const PRIVATE_RANGES = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"];
+
+const privateRanges = new net.BlockList();
+for (const range of PRIVATE_RANGES) {
+  const [network, prefix] = range.split("/");
+  privateRanges.addSubnet(network, Number(prefix), "ipv4");
+}
+
+/**
+ * The address to listen on among `candidates`, only ever a private one: `preferred` (the default
+ * route's) if it qualifies, else the first that does, else null.
+ */
+export function chooseLanAddress(candidates: string[], preferred: string | null): string | null {
+  const usable = candidates.filter((a) => net.isIPv4(a) && privateRanges.check(a, "ipv4"));
+  return preferred && usable.includes(preferred) ? preferred : (usable[0] ?? null);
+}
+
+/** The private LAN address to listen on, or null if this machine has none. */
 export async function pickLanAddress(): Promise<string | null> {
-  const candidates = lanAddresses();
-  const preferred = await defaultRouteAddress();
-  return preferred && candidates.includes(preferred) ? preferred : (candidates[0] ?? null);
+  return chooseLanAddress(lanAddresses(), await defaultRouteAddress());
 }
