@@ -1,4 +1,4 @@
-import { useEffect, useSyncExternalStore } from "react";
+import { useSyncExternalStore } from "react";
 
 /** Tiny localStorage-backed preference store usable from any component. */
 function createPref<T extends string>(key: string, fallback: T) {
@@ -22,7 +22,9 @@ function createPref<T extends string>(key: string, fallback: T) {
     listeners.add(cb);
     return () => listeners.delete(cb);
   };
-  return () => [useSyncExternalStore(subscribe, () => value), set] as const;
+  const get = () => value;
+  const use = () => [useSyncExternalStore(subscribe, get), set] as const;
+  return Object.assign(use, { get, subscribe });
 }
 
 export type Theme = "light" | "dark" | "system";
@@ -38,18 +40,21 @@ const subscribeMedia = (cb: () => void) => {
   return () => media.removeEventListener("change", cb);
 };
 
+const resolveTheme = (theme: Theme, systemDark: boolean): "light" | "dark" =>
+  theme === "system" ? (systemDark ? "dark" : "light") : theme;
+
 export function useTheme() {
   const [theme, setTheme] = useThemePref();
   const systemDark = useSyncExternalStore(subscribeMedia, () => media.matches);
-  const resolved: "light" | "dark" = theme === "system" ? (systemDark ? "dark" : "light") : theme;
-  return { theme, resolved, setTheme };
+  return { theme, resolved: resolveTheme(theme, systemDark), setTheme };
 }
 
-/** Mount once at the root to apply the theme class to <html>. */
-export function useApplyTheme() {
-  const { resolved } = useTheme();
-  useEffect(() => {
-    document.documentElement.classList.toggle("dark", resolved === "dark");
-    document.documentElement.style.colorScheme = resolved;
-  }, [resolved]);
+// Keep the theme class on <html> in sync, outside React, so it is right before first render.
+function applyTheme() {
+  const resolved = resolveTheme(useThemePref.get(), media.matches);
+  document.documentElement.classList.toggle("dark", resolved === "dark");
+  document.documentElement.style.colorScheme = resolved;
 }
+applyTheme();
+useThemePref.subscribe(applyTheme);
+subscribeMedia(applyTheme);
