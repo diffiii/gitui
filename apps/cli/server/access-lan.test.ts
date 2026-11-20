@@ -28,14 +28,38 @@ test("each LAN listener gets its own secret and cookie name", () => {
   expect(Buffer.from(a.secret, "base64url")).toHaveLength(16);
 });
 
-test("/pair with the key sets the session cookie and redirects to the UI", async () => {
+/** The cookies a response sets, each as its sorted attributes. */
+const setCookies = (res: Response) => res.headers.getSetCookie().map((c) => c.split("; ").sort());
+
+test("/pair with the key sets the session cookie for 30 days and redirects to the UI", async () => {
   const res = await get("/pair?key=lan-secret", { host: HOST });
   expect(res.status).toBe(302);
   expect(res.headers.get("location")).toBe("/");
-  const cookie = res.headers.get("set-cookie") ?? "";
-  expect(cookie.split("; ").sort()).toEqual(
-    ["HttpOnly", "Path=/", "SameSite=Strict", SESSION].sort(),
+  expect(setCookies(res)).toEqual([
+    ["HttpOnly", "Max-Age=2592000", "Path=/", "SameSite=Strict", SESSION].sort(),
+  ]);
+});
+
+test("/pair drops the session cookies of other runs, and leaves other cookies alone", async () => {
+  const res = await get("/pair?key=lan-secret", {
+    host: HOST,
+    cookie: "gitui-session-old1=x; theme=dark; gitui-session-a1=stale; gitui-session-old2=y",
+  });
+  expect(res.status).toBe(302);
+  const set = setCookies(res);
+  expect(set).toHaveLength(3);
+  for (const name of ["gitui-session-old1", "gitui-session-old2"]) {
+    expect(set).toContainEqual(["Max-Age=0", "Path=/", `${name}=`].sort());
+  }
+  expect(set).toContainEqual(
+    ["HttpOnly", "Max-Age=2592000", "Path=/", "SameSite=Strict", SESSION].sort(),
   );
+});
+
+test("/pair with a wrong key drops no cookies", async () => {
+  const res = await get("/pair?key=nope", { host: HOST, cookie: "gitui-session-old1=x" });
+  expect(res.status).toBe(403);
+  expect(res.headers.getSetCookie()).toEqual([]);
 });
 
 test("/pair with a wrong or missing key sets no cookie", async () => {
