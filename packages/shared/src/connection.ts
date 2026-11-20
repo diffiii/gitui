@@ -7,9 +7,8 @@ export const DEFAULT_PORT = 4777;
 export const CLIENT_HEADER = "x-gitui";
 
 /**
- * Name of a `<meta>` tag in pages served by gitui itself: the CLI's bundled UI (`--local`,
- * `--lan`) and the Vite dev server. Such a page calls its own `/api`. A page without it is a
- * hosted copy (HOSTED_ORIGIN, or one allowed with `--allow-origin`) and pairs with the CLI.
+ * @deprecated The web app no longer reads this `<meta>` tag (the dev server's pages are told by
+ * `import.meta.env.DEV`); only the CLI's `scripts/local-ui.ts` still writes it. Remove with it.
  */
 export const LOCAL_UI_META = "gitui-local-ui";
 

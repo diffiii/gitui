@@ -11,7 +11,7 @@ const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: false, refetchOnWindowFocus: true } },
 });
 
-initConnection(queryClient);
+initConnection(queryClient, { dev: import.meta.env.DEV });
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

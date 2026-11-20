@@ -5,8 +5,8 @@ import { rendezvousUrl } from "./nearby-codec.ts";
 
 /**
  * Headers for every UI response. `connectSrc` is the CSP connect-src: where the page may send
- * requests (its own origin for the CLI's bundled UI; the CLI on 127.0.0.1 and the rendezvous too
- * for the hosted app). It doesn't govern WebRTC, so it needn't list STUN servers or peers.
+ * requests (for the hosted app: its own origin, the CLI on 127.0.0.1 and the rendezvous). It
+ * doesn't govern WebRTC, so it needn't list STUN servers or peers.
  */
 export function uiSecurityHeaders(connectSrc: string): Record<string, string> {
   return {
