@@ -45,7 +45,7 @@ export function HistoryPane({
   const { repo, api } = useRepo();
   const [limit, setLimit] = useState(PAGE);
   const [choice, setSelected] = useState<string | null>(null);
-  const { data, isLoading, isFetching } = useQuery({
+  const { data, error, isLoading, isFetching } = useQuery({
     queryKey: [repo, "log", gitRef ?? null, all, limit],
     queryFn: () => api.log({ limit, all, ref: gitRef }),
     placeholderData: (prev) => prev,
@@ -67,7 +67,11 @@ export function HistoryPane({
 
   return (
     <ResizablePanelGroup orientation="horizontal">
-      <ResizablePanel defaultSize={closed ? "100%" : "55%"} minSize="320px" className="flex flex-col">
+      <ResizablePanel
+        defaultSize={closed ? "100%" : "55%"}
+        minSize="320px"
+        className="flex flex-col"
+      >
         <div className="flex h-10 shrink-0 items-center gap-2 border-b px-3">
           {toolbar}
           <Tooltip>
@@ -83,6 +87,8 @@ export function HistoryPane({
         </div>
         {isLoading ? (
           <ListSkeleton />
+        ) : error ? (
+          <div className="p-6 text-sm text-destructive">{error.message}</div>
         ) : commits.length === 0 ? (
           <EmptyState icon={History} title="No commits yet" />
         ) : (

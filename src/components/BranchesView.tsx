@@ -54,8 +54,12 @@ export function BranchesView() {
   }, [branches, filter]);
   const local = visible.filter((b) => !b.remote);
   const remote = visible.filter((b) => b.remote);
-  const current = branches.find((b) => b.current);
-  const active = selected ?? current?.name ?? branches[0]?.name ?? null;
+  // Keyed by full refname: a tag can share a branch's short name, and git prefers the tag.
+  const active =
+    branches.find((b) => b.ref === selected) ??
+    branches.find((b) => b.current) ??
+    branches[0] ??
+    null;
 
   const checkout = useGitMutation(
     (api, b: Branch) => api.checkout(b.name, b.remote),
@@ -66,8 +70,8 @@ export function BranchesView() {
     <BranchRow
       key={b.ref}
       branch={b}
-      active={active === b.name}
-      onSelect={() => setSelected(b.name)}
+      active={active?.ref === b.ref}
+      onSelect={() => setSelected(b.ref)}
       onCheckout={() => checkout.mutate(b)}
       onCreate={() => setCreating({ from: b.name })}
       onDelete={() => setDeleting(b)}
@@ -113,13 +117,13 @@ export function BranchesView() {
       <ResizablePanel minSize="680px">
         {active && (
           <HistoryPane
-            key={active}
-            gitRef={active}
+            key={active.ref}
+            gitRef={active.ref}
             all={false}
             toolbar={
               <>
                 <GitBranch className="size-4 text-muted-foreground" />
-                <span className="truncate text-sm font-medium">{active}</span>
+                <span className="truncate text-sm font-medium">{active.name}</span>
               </>
             }
           />
