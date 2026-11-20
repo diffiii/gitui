@@ -37,13 +37,12 @@ const until = async (condition: () => boolean, ms = 5000) => {
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-const RESUME_GRACE = 100;
-
 /** Connects a guest to a new session; resolves once the host answered. */
 async function connect({
   label = DATA_CHANNEL_LABEL,
   authTimeout = 10_000,
   tokens = new Tokens(),
+  resuming = false,
 } = {}) {
   const pc = new RTCPeerConnection({ iceServers: [] });
   peers.push(pc);
@@ -65,7 +64,7 @@ async function connect({
     offerSdp,
     stunUrls: [],
     authTimeout,
-    resumeGrace: RESUME_GRACE,
+    resuming,
     tokens,
     signal: (data) => {
       if (data.kind === "answer") {
@@ -104,7 +103,7 @@ async function connect({
       return ended;
     },
     opened: () => until(() => channel.readyState === "open"),
-    /** Waits for the code, which the host prints once no `resume` came in its grace. */
+    /** Waits for the code: the host prints it when the channel opens, or a resume failed. */
     shownCode: async () => {
       await until(() => code() !== "");
       return code();
@@ -158,7 +157,7 @@ test("a live token resumes without a code, and keeps the token", async () => {
   first.channel.close();
   await until(() => first.ended);
 
-  const guest = await connect({ tokens });
+  const guest = await connect({ tokens, resuming: true });
   await guest.opened();
   guest.send({ t: "resume", proof: await guest.proof(token) });
   guest.send({ t: "req", id: 1, method: "GET", path: "/api/status", headers: [] });
@@ -170,20 +169,23 @@ test("a live token resumes without a code, and keeps the token", async () => {
     expect.objectContaining({ t: "res", id: 1, status: 200 }),
   ]);
   expect(guest.session.authenticated).toBe(true);
-  // No code, even after the grace.
-  await sleep(RESUME_GRACE * 2);
+  // No code, then or later.
+  await sleep(100);
   expect(guest.log).toEqual(["Nearby: a device reconnected"]);
   expect(tokens.list()).toEqual([token]);
 });
 
-test("a failed resume costs an attempt and shows the code, which still works", async () => {
+test("a refused resume costs no attempt and shows the code, which still works", async () => {
   const tokens = new Tokens();
   const { token } = await pair(tokens);
-  const guest = await connect({ tokens });
+  const guest = await connect({ tokens, resuming: true });
   await guest.opened();
+  // A guest that said it would resume sees no code until its resume fails.
+  await sleep(100);
+  expect(guest.code()).toBe("");
   guest.send({ t: "resume", proof: await guest.proof(newToken()) });
   await until(() => guest.received.length === 1);
-  expect(guest.received).toEqual([{ t: "auth-fail", attemptsLeft: AUTH_ATTEMPTS - 1 }]);
+  expect(guest.received).toEqual([{ t: "auth-fail", attemptsLeft: AUTH_ATTEMPTS }]);
   const code = await guest.shownCode();
 
   guest.send({ t: "auth", proof: await guest.proof(code) });
@@ -194,18 +196,20 @@ test("a failed resume costs an attempt and shows the code, which still works", a
   expect(guest.log.at(-1)).toBe("Nearby: device connected");
 });
 
-test(`resumes and codes share ${AUTH_ATTEMPTS} attempts`, async () => {
+test(`after the first resume, resumes and codes share ${AUTH_ATTEMPTS} attempts`, async () => {
   const tokens = new Tokens();
   const { token } = await pair(tokens);
-  const guest = await connect({ tokens });
+  const guest = await connect({ tokens, resuming: true });
   await guest.opened();
   guest.send({ t: "resume", proof: await guest.proof(newToken()) });
-  guest.send({ t: "auth", proof: await guest.proof("000000") });
+  guest.send({ t: "auth", proof: await guest.proof(wrongCode(await guest.shownCode())) });
   guest.send({ t: "resume", proof: await authProof(token, "sha-256 AA", "sha-256 BB") });
+  guest.send({ t: "resume", proof: await guest.proof(newToken()) });
   // Too late: the attempts are spent.
   guest.send({ t: "resume", proof: await guest.proof(token) });
   await until(() => guest.ended && guest.closed);
   expect(guest.received).toEqual([
+    { t: "auth-fail", attemptsLeft: 3 },
     { t: "auth-fail", attemptsLeft: 2 },
     { t: "auth-fail", attemptsLeft: 1 },
     { t: "auth-fail", attemptsLeft: 0 },

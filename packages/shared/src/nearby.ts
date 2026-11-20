@@ -12,11 +12,16 @@
 //    Guests keep their rendezvous socket open for the whole session: hosts end a session as soon
 //    as its guest is `gone`, which is how a closed tab is noticed at once (WebRTC alone takes
 //    ~30 s, and WebKit doesn't fire `close`).
-// 3. Auth. The host prints a short code. The guest's first channel message is an `auth` with a
-//    proof derived from the code and both DTLS fingerprints (authProof). The host answers
-//    `auth-ok` (then `session`, a resume token) or `auth-fail`, and closes after AUTH_ATTEMPTS
-//    failures. A guest that already paired with this host (same HostInfo.key) may instead open
-//    with `resume`, a proof derived from the token, e.g. after iOS dropped the connection.
+// 3. Auth. The host prints a short code once the channel opens. The guest's first channel
+//    message is an `auth` with a proof derived from the code and both DTLS fingerprints
+//    (authProof). The host answers `auth-ok` (then `session`, a resume token) or `auth-fail`,
+//    and closes after AUTH_ATTEMPTS failures. A guest that already paired with this host (same
+//    HostInfo.key) may instead open with `resume`, a proof derived from the token, e.g. after
+//    iOS dropped the connection. Its offer then says `resume: true`, so the host prints no code
+//    unless the resume fails. A refused first `resume` gets `auth-fail` with every attempt still
+//    left (tokens can't be guessed; the attempts guard the code), and the host prints the code:
+//    the guest asks for it on the same channel. Any later `resume` counts as a failed attempt.
+//    Only the code and resume proofs authenticate: HostInfo.key is public.
 // 4. HTTP. After auth the guest sends requests and the host answers them with the Hono app.
 //    Heads are JSON text messages; bodies are binary frames (frameChunk) of at most CHUNK_SIZE
 //    payload bytes; an `end` message closes each body. A guest may `cancel` a request.
@@ -49,6 +54,13 @@ export interface HostInfo {
   /**
    * Random per-run id of the CLI, the same on all its sockets (it registers over IPv4 and IPv6,
    * and reconnects). Guests use it to list a host once and to find their resume token.
+   * Not a secret and no proof of identity: every guest on the network sees it, and any device
+   * there can register as a host with the same key and name. What authenticates is the code and
+   * resume proofs (step 3), which are bound to the connection's DTLS fingerprints. They
+   * authenticate the guest to the host only: a device posing as a host can answer `auth-ok` to
+   * anything, and would then see the guest's requests. It learns no usable token (a proof is
+   * bound to its own fingerprint), but it can brute-force a code from its proof, the same
+   * limitation as authProof's; a PAKE with key confirmation would close both.
    */
   key: string;
 }
@@ -58,7 +70,8 @@ export const HOST_KEY = /^[\w-]{16,64}$/;
 
 /** WebRTC signaling payload, relayed verbatim by the rendezvous object. */
 export type SignalData =
-  | { kind: "offer"; sdp: string }
+  /** `resume`: the guest will open with `resume`, so the host needn't print a code (step 3). */
+  | { kind: "offer"; sdp: string; resume?: boolean }
   | { kind: "answer"; sdp: string }
   | {
       kind: "candidate";

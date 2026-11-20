@@ -63,6 +63,11 @@ export type Verdict = { ok: true } | { ok: false; attemptsLeft: number };
 export class Attempts {
   #left = AUTH_ATTEMPTS;
 
+  /** The tries left. */
+  get left() {
+    return this.#left;
+  }
+
   check(ok: boolean): Verdict {
     if (this.#left > 0 && ok) return { ok: true };
     this.#left = Math.max(0, this.#left - 1);

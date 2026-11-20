@@ -39,6 +39,17 @@ test("parseClientMessage requires a HOST_KEY-shaped key from hosts", () => {
 test("parseClientMessage accepts signals and keeps only the contract's fields", () => {
   const offer = { type: "signal", to: "p1", data: { kind: "offer", sdp: "v=0" } } as const;
   expect(parse({ ...offer, extra: 1, data: { ...offer.data, extra: 2 } })).toEqual(offer);
+  // An offer's `resume` goes through when true, and only then.
+  expect(parse({ ...offer, data: { ...offer.data, resume: true } })).toEqual({
+    ...offer,
+    data: { ...offer.data, resume: true },
+  });
+  for (const resume of [false, "true", 1, null]) {
+    expect(parse({ ...offer, data: { ...offer.data, resume } })).toEqual(offer);
+  }
+  expect(
+    parse({ type: "signal", to: "p1", data: { kind: "answer", sdp: "v=0", resume: true } }),
+  ).toEqual({ type: "signal", to: "p1", data: { kind: "answer", sdp: "v=0" } });
   expect(parse({ type: "signal", to: "p1", data: { kind: "answer", sdp: "v=0" } })).toEqual({
     type: "signal",
     to: "p1",

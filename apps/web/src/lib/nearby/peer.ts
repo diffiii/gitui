@@ -68,7 +68,8 @@ function dataChannelTransport(channel: RTCDataChannel): ChannelTransport {
 /**
  * Open a data channel to `host` through `rendezvous`. Rejects with a NearbyError if the host
  * leaves, doesn't answer within `answerTimeout`, or the channel isn't open within `timeout`;
- * `signal` gives up early.
+ * `signal` gives up early. `resume` tells the host the channel will open with `resume`, so it
+ * prints no code unless that fails.
  */
 export async function connectToHost(
   rendezvous: Rendezvous,
@@ -77,7 +78,8 @@ export async function connectToHost(
     signal,
     timeout = CONNECT_TIMEOUT,
     answerTimeout = ANSWER_TIMEOUT,
-  }: { signal?: AbortSignal; timeout?: number; answerTimeout?: number } = {},
+    resume = false,
+  }: { signal?: AbortSignal; timeout?: number; answerTimeout?: number; resume?: boolean } = {},
 ): Promise<GuestPeer> {
   const pc = new RTCPeerConnection({ iceServers: [{ urls: STUN_URLS }] });
   // Ordered and reliable: no maxRetransmits or maxPacketLifeTime.
@@ -157,7 +159,8 @@ export async function connectToHost(
         await pc.setLocalDescription(await pc.createOffer());
         const offer = pc.localDescription!.sdp;
         localFingerprint = sdpFingerprint(offer);
-        if (!rendezvous.signal(host.id, { kind: "offer", sdp: offer })) {
+        const data: SignalData = { kind: "offer", sdp: offer, ...(resume && { resume: true }) };
+        if (!rendezvous.signal(host.id, data)) {
           throw new NearbyError("Not connected to the rendezvous server. Try again.");
         }
         for (const data of unsent ?? []) rendezvous.signal(host.id, data);

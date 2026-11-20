@@ -64,7 +64,6 @@ export interface NearbyOptions {
   backoff?: typeof BACKOFF;
   keepalive?: typeof KEEPALIVE;
   statusDelay?: number;
-  resumeGrace?: number;
 }
 
 /** Starts listing this machine and answering guests; `stop` ends every connection. */
@@ -138,7 +137,7 @@ export function startNearby(options: NearbyOptions) {
           }
         },
         signal(from, data) {
-          if (data.kind === "offer") offer(client, from, data.sdp);
+          if (data.kind === "offer") offer(client, from, data.sdp, data.resume === true);
           else if (data.kind === "candidate") {
             sessions.get(sessionKey(family, from))?.addCandidate(data.candidate);
           }
@@ -157,7 +156,7 @@ export function startNearby(options: NearbyOptions) {
     return client;
   });
 
-  function offer(client: RendezvousClient, from: string, offerSdp: string) {
+  function offer(client: RendezvousClient, from: string, offerSdp: string, resuming: boolean) {
     const at = sessionKey(client.family, from);
     const now = Date.now();
     while (offerTimes.length && offerTimes[0] <= now - 60_000) offerTimes.shift();
@@ -173,12 +172,12 @@ export function startNearby(options: NearbyOptions) {
     sessions.get(at)?.close();
     const session: GuestSession = new GuestSession({
       offerSdp,
+      resuming,
       stunUrls: STUN_URLS,
       signal: (data) => client.send(from, data),
       fetch,
       tokens,
       log,
-      resumeGrace: options.resumeGrace,
       onEnd: () => {
         if (sessions.get(at) === session) sessions.delete(at);
       },

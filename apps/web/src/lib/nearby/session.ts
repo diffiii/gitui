@@ -142,7 +142,9 @@ async function establish(
     try {
       const { host, restarted } = await locate(r, deadline, signal);
       const timeout = Math.max(2000, Math.min(CONNECT_TIMEOUT, deadline - Date.now()));
-      const peer = await connectToHost(rendezvous(), host, { signal, timeout });
+      // A restarted host has a new key, so no token: it asks for the code.
+      const resume = tokens.load(r.host.key) !== null;
+      const peer = await connectToHost(rendezvous(), host, { signal, timeout, resume });
       if (signal.aborted) return peer.close();
       return await authenticate(r, peer, restarted ? "restarted" : notice);
     } catch (e) {

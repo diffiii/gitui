@@ -16,14 +16,13 @@ import { type AnsweringPeer, createAnsweringPeer, type DataChannel } from "./web
 /** How long a guest has, from its offer, to prove itself. */
 export const AUTH_TIMEOUT = 60_000;
 
-/**
- * How long after its channel opens a guest may `resume` before the code is printed. A resuming
- * guest sends its proof at once; waiting this long keeps reconnections from printing codes.
- */
-export const RESUME_GRACE = 1000;
-
 export interface GuestOptions {
   offerSdp: string;
+  /**
+   * The offer said the guest will `resume` (SignalData): the code is printed only if that
+   * fails, so reconnections print nothing. Otherwise it is printed once the channel opens.
+   */
+  resuming?: boolean;
   stunUrls: string[];
   /** Sends a signal to the guest through the rendezvous service. */
   signal: (data: SignalData) => void;
@@ -36,7 +35,6 @@ export interface GuestOptions {
   /** Called once, when the session ends for any reason. */
   onEnd: () => void;
   authTimeout?: number;
-  resumeGrace?: number;
 }
 
 type State = "answering" | "authenticating" | "open" | "closed";
@@ -56,7 +54,8 @@ export class GuestSession {
   readonly #answered: Promise<void>;
   readonly #timer: ReturnType<typeof setTimeout>;
   readonly #attempts = new Attempts();
-  #grace: ReturnType<typeof setTimeout> | undefined;
+  /** Whether the guest sent its opening (`auth` or `resume`) yet. */
+  #opened = false;
   #state: State = "answering";
   #expected: Expected | null = null;
   #codeShown = false;
@@ -96,7 +95,6 @@ export class GuestSession {
     const wasOpen = this.#state === "open";
     this.#state = "closed";
     clearTimeout(this.#timer);
-    clearTimeout(this.#grace);
     this.#bridge?.close();
     this.#channel?.close();
     this.#peer.close();
@@ -142,7 +140,7 @@ export class GuestSession {
       message: (data) => this.#receive(channel, data),
       close: () => this.close(),
     });
-    this.#grace = setTimeout(() => this.#showCode(), this.#options.resumeGrace ?? RESUME_GRACE);
+    if (!this.#options.resuming) this.#showCode();
   }
 
   #receive(channel: DataChannel, data: string | Uint8Array) {
@@ -152,19 +150,28 @@ export class GuestSession {
     const opening = parseOpening(data);
     if (opening === null) return this.close("Nearby: a device sent requests before its code");
 
+    const first = !this.#opened;
+    this.#opened = true;
     // The token this guest resumes with, if it is a live one.
     let resumed: string | null = null;
     if (opening.t === "resume") {
       const at = findProof(opening.proof, expected.tokenProofs);
       resumed = at >= 0 ? expected.tokens[at] : null;
     }
+    const send = (message: ChannelMessage) => channel.send(JSON.stringify(message));
+    // A token from a CLI run that ended, or one this run forgot: the guest asks for the code on
+    // this channel next, with every attempt left. Tokens are too long to guess, so only this
+    // first resume is free; another one counts as a failed attempt.
+    if (first && opening.t === "resume" && resumed === null) {
+      send({ t: "auth-fail", attemptsLeft: this.#attempts.left });
+      this.#showCode();
+      return;
+    }
     const verdict = this.#attempts.check(
       opening.t === "auth" ? safeEqual(opening.proof, expected.codeProof) : resumed !== null,
     );
-    const send = (message: ChannelMessage) => channel.send(JSON.stringify(message));
     if (verdict.ok) {
       clearTimeout(this.#timer);
-      clearTimeout(this.#grace);
       this.#state = "open";
       this.#bridge = new Bridge(channel, this.#options.fetch);
       // A resumed guest keeps its token: it is as good as it was.
@@ -175,7 +182,8 @@ export class GuestSession {
     }
     send({ t: "auth-fail", attemptsLeft: verdict.attemptsLeft });
     if (verdict.attemptsLeft > 0) {
-      // A guest whose resume failed asks for the code next.
+      // Whoever sent a code without being shown one gets it now (a guest that said it would
+      // resume and then didn't).
       this.#showCode();
       return;
     }

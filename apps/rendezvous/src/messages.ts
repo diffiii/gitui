@@ -47,8 +47,14 @@ export function hostName(value: unknown): string | null {
 
 function signalData(value: unknown): SignalData | null {
   if (!isRecord(value)) return null;
-  if ((value.kind === "offer" || value.kind === "answer") && typeof value.sdp === "string") {
-    return { kind: value.kind, sdp: value.sdp };
+  if (value.kind === "offer" && typeof value.sdp === "string") {
+    // `resume` is relayed only when true; anything else means no.
+    return value.resume === true
+      ? { kind: "offer", sdp: value.sdp, resume: true }
+      : { kind: "offer", sdp: value.sdp };
+  }
+  if (value.kind === "answer" && typeof value.sdp === "string") {
+    return { kind: "answer", sdp: value.sdp };
   }
   if (value.kind !== "candidate" || !isRecord(value.candidate)) return null;
   const { candidate, sdpMid, sdpMLineIndex } = value.candidate;

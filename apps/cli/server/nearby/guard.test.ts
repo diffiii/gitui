@@ -132,7 +132,7 @@ test("a hostile guest's packets that werift chokes on are caught, and the host g
       offerSdp: pc.localDescription.sdp,
       stunUrls: [],
       tokens: new Tokens(),
-      resumeGrace: 60_000, // no code line
+      resuming: true, // no code line
       signal: (data) => {
         if (data.kind === "answer") void pc.setRemoteDescription({ type: "answer", sdp: data.sdp });
         else if (data.kind === "candidate") void pc.addIceCandidate(data.candidate);

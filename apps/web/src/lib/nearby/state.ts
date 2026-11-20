@@ -79,7 +79,8 @@ export const opening = (token: string | null): { t: "resume"; token: string } | 
 
 /**
  * After the host turned a `resume` away: ask for the code on the same channel while the host
- * still takes attempts, else on a new one (the host closes after its last failure).
+ * still takes attempts (a refused first `resume` costs none), else on a new one (the host
+ * closes after its last failure).
  */
 export const afterRejectedResume = (attemptsLeft: number): "ask-code" | "reopen" =>
   attemptsLeft > 0 ? "ask-code" : "reopen";

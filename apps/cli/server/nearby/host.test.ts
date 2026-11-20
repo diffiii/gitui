@@ -36,7 +36,6 @@ function host({ statusDelay = 1000 } = {}) {
     open: fake.open,
     backoff: { first: 10, max: 20 },
     statusDelay,
-    resumeGrace: 50,
   });
   cleanup.push(() => nearby.stop());
   return { nearby, log, ...fake };
