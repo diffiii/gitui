@@ -13,6 +13,7 @@ bun test                    # bun:test; server tests run against real temp repos
 vp check                    # format, lint (type-aware), type check
 bun run build               # tsc -b, build apps/web, bundle the CLI into apps/cli/dist (+ dist/web)
 cd apps/web && bun run deploy  # build and deploy the hosted UI to Cloudflare (needs wrangler login)
+cd apps/rendezvous && bun run dev  # nearby rendezvous Worker on :8787 (wrangler dev)
 scripts/smoke.sh            # run the built CLI with node (hosted and --local) and probe it
 ```
 
@@ -41,6 +42,11 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   startup wiring), and `ConnectionGate` gates the app until the CLI answers. `wrangler.jsonc` deploys `dist/` as Cloudflare
   Workers static assets, with the `_headers` file that a `vite.config.ts` plugin writes into the
   build from `hostedHeadersFile`, on the custom domain `gitui.diffiii.dev` (`HOSTED_ORIGIN`).
+- `apps/rendezvous/` (`@gitui/rendezvous`): the "nearby" rendezvous Worker (protocol in
+  `packages/shared/src/nearby.ts`). `src/route.ts` checks the upgrade and Origin and hashes the
+  caller's network, `src/rendezvous.ts` is the hibernating Durable Object (one per network) that
+  lists hosts and relays signals, `src/messages.ts` validates messages and holds the ping string.
+  Worker code is type-checked with `@cloudflare/workers-types`, tests with bun's.
 - `packages/shared/` (`@gitui/shared`): API types and the connection contract (default port,
   client header, local UI marker, hosted origin, loopback hosts, pairing links) and the UI's
   security headers (`headers.ts`), used by both sides, imported as `@gitui/shared`.
