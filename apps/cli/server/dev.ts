@@ -10,7 +10,6 @@ if (raw && !extraOrigin) throw new Error(`GITUI_ALLOW_ORIGIN is not an origin: $
 const { port, token } = await start({
   port: Number(process.env.GITUI_PORT ?? DEFAULT_PORT),
   initialRepo: process.env.GITUI_REPO,
-  serveStatic: false,
   allowedOrigins: extraOrigin ? [extraOrigin] : [],
 });
 console.log(`gitui api on http://127.0.0.1:${port}`);

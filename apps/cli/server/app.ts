@@ -211,6 +211,8 @@ export function createApp(opts: AppOptions) {
   });
 
   api.route("/repo", repo);
+  // Unknown API routes get a JSON 404 rather than falling through to the UI's index.html.
+  api.all("*", (c) => c.json({ error: "Not found" }, 404));
   app.route("/api", api);
   return app;
 }
