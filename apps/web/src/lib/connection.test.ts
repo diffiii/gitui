@@ -170,8 +170,7 @@ test("afterRejection: a local page loses its session, a pairing is rejected", ()
     { kind: "rejected", pairing },
     nearby,
   ]) {
-    const connection = settled as Connection;
-    expect(afterRejection(connection)).toBe(connection);
+    expect(afterRejection(settled as Connection)).toBeNull();
   }
 });
 

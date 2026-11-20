@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { getConfig } from "@/lib/api";
-import { isApiError } from "@/lib/connection";
+import { notOpened } from "@/lib/notOpened";
 import { RepoProvider } from "@/lib/repo";
 import { useStatus } from "@/lib/status";
 import { openRepo, select, setView, useUrl } from "@/lib/url";
@@ -66,17 +66,16 @@ export default function App() {
  */
 function OpenedRepo({ repo, children }: { repo: string; children: React.ReactNode }) {
   const { data, error } = useStatus();
-  // A query without data drops its error while it fetches again, so the verdict is kept until
-  // the next one (adjusting state while rendering, as React's docs describe), and the screen
-  // doesn't flash away on every poll, or for as long as a nearby session reconnects.
+  // The verdict is kept until the next one (adjusting state while rendering, as React's docs
+  // describe).
   const [kept, setKept] = useState(false);
-  const notOpened = isApiError(error, "not-opened") || (kept && data === undefined && !error);
-  if (notOpened !== kept) setKept(notOpened);
-  if (notOpened) {
+  const verdict = notOpened(kept, { data, error });
+  if (verdict !== kept) setKept(verdict);
+  if (verdict) {
     return (
       <RepoWelcome
         onOpen={openRepo}
-        notOpened={repo}
+        notOpenedRepo={repo}
         className="h-full min-h-0 overflow-y-auto p-4"
       />
     );
