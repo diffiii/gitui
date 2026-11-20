@@ -17,10 +17,16 @@ export function uiSecurityHeaders(connectSrc: string): Record<string, string> {
 
 /**
  * The hosted app's `_headers` file (Cloudflare's format: a path pattern, then its headers
- * indented), which the web build emits next to the UI.
+ * indented), which the web build emits next to the UI. `rendezvousOrigin` is the build's
+ * rendezvous (VITE_GITUI_RENDEZVOUS_URL, e.g. a test deployment's); it must be a ws: or wss:
+ * origin, since it goes into the CSP as is.
  */
-export function hostedHeadersFile(): string {
-  const headers = uiSecurityHeaders(`'self' http://127.0.0.1:* ${RENDEZVOUS_ORIGIN}`);
+export function hostedHeadersFile(rendezvousOrigin = RENDEZVOUS_ORIGIN): string {
+  const url = URL.parse(rendezvousOrigin);
+  if (!url || !/^wss?:$/.test(url.protocol) || url.origin !== rendezvousOrigin) {
+    throw new Error(`The rendezvous URL must be a ws: or wss: origin, not ${rendezvousOrigin}`);
+  }
+  const headers = uiSecurityHeaders(`'self' http://127.0.0.1:* ${rendezvousOrigin}`);
   return ["/*", ...Object.entries(headers).map(([name, value]) => `  ${name}: ${value}`), ""].join(
     "\n",
   );

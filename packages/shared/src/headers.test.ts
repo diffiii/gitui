@@ -17,3 +17,12 @@ test("the hosted app's _headers file applies them to every path and lets it reac
   X-Content-Type-Options: nosniff
 `);
 });
+
+test("a build for another rendezvous lets the page reach that one instead", () => {
+  expect(hostedHeadersFile("ws://127.0.0.1:5187")).toContain(
+    "connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:5187;",
+  );
+  for (const bad of ["https://x.example", "wss://x.example/v1", "wss://a.example; script-src *"]) {
+    expect(() => hostedHeadersFile(bad)).toThrow(/ws: or wss: origin/);
+  }
+});
