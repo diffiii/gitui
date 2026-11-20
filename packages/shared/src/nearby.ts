@@ -139,9 +139,15 @@ export const HOST_KEY = /^[\w-]{16,64}$/;
 /** A host's hello secret: at least 32 random bytes, base64url (43 to 128 characters). */
 export const HOST_SECRET = /^[\w-]{43,128}$/;
 
-/** A host's public key, HostInfo.key: the first 16 bytes of SHA-256(secret), base64url. */
+/** The label hostKey hashes before the secret, so the hash is of use for nothing else. */
+const HOST_KEY_LABEL = "gitui-nearby-host-key";
+
+/**
+ * A host's public key, HostInfo.key: the first 16 bytes of
+ * SHA-256(HOST_KEY_LABEL ‖ secret), base64url. The label is fixed, so the split is unambiguous.
+ */
 export function hostKey(secret: string): string {
-  return toBase64Url(sha256(utf8(secret)).subarray(0, 16));
+  return toBase64Url(sha256(utf8(HOST_KEY_LABEL + secret)).subarray(0, 16));
 }
 
 /** A peer id the rendezvous assigned (a UUID from the Worker). */

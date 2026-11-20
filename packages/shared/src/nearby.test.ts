@@ -14,9 +14,9 @@ test("chunks splits a body into CHUNK_SIZE pieces", () => {
   expect([...chunks(new Uint8Array(0))]).toEqual([]);
 });
 
-test("hostKey is the first 16 bytes of SHA-256(secret), base64url", () => {
-  // SHA-256("abc") = ba7816bf8f01cfea414140de5dae2223 b00361a3…
-  expect(hostKey("abc")).toBe("ungWv48Bz-pBQUDeXa4iIw");
+test("hostKey is the first 16 bytes of SHA-256(label ‖ secret), base64url", () => {
+  // printf 'gitui-nearby-host-keyabc' | openssl dgst -sha256 -binary | head -c 16 | base64
+  expect(hostKey("abc")).toBe("AUVnxQpqbg-ntJF0DrbTxw");
   const secret = "s".repeat(43);
   expect(hostKey(secret)).toMatch(HOST_KEY);
   expect(hostKey(secret)).toHaveLength(22);

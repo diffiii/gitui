@@ -21,7 +21,7 @@ browser can send whatever Origin it likes.
 A host says hello with a display name (at most `MAX_NAME_LENGTH` code points, without control
 or bidi characters: `hostName` in `@gitui/shared`) and a random per-run `secret` (`HOST_SECRET`,
 32 bytes or more). The object lists it under its key, `hostKey(secret)`: the first 16 bytes of
-the secret's SHA-256, base64url. It keeps the key, not the secret, so only sockets with the same
+the SHA-256 of a fixed label (`gitui-nearby-host-key`) and the secret, base64url. It keeps the key, not the secret, so only sockets with the same
 secret count as that key: a co-tenant who copies a listed key can't list itself under it or
 take its sockets. The CLI registers over IPv4 and IPv6 with the same secret and name; the two
 sockets land in different objects, or in one when both addresses map to the same network. An
