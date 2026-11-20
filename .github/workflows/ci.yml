@@ -26,7 +26,9 @@ jobs:
         run: bun test
       - name: Rendezvous end-to-end (wrangler dev)
         run: bun run --cwd apps/rendezvous e2e
-      - name: Build
+      - name: Build the web app
+        run: bun run --cwd apps/web build
+      - name: Build the CLI
         run: bun run --cwd apps/cli build
       # After the build: the tooling (vite-plus) needs a newer Node than the package's floor.
       - uses: actions/setup-node@v5

@@ -9,7 +9,7 @@
   "type": "module",
   "scripts": {
     "dev": "bun scripts/dev.ts",
-    "build": "tsc -b && bun run --cwd apps/cli build",
+    "build": "tsc -b && bun run --cwd apps/web build && bun run --cwd apps/cli build",
     "start": "bun apps/cli/bin/gitui.ts",
     "check": "vp check",
     "lint": "vp lint",

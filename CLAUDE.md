@@ -11,10 +11,10 @@ bun run dev [repo-path]     # API on :4777 (bun --watch) + Vite+ dev server with
 bun test                    # bun:test; server tests run against real temp repos
 ./node_modules/.bin/tsc -b  # type check every tsconfig project
 vp check                    # format, lint (type-aware), type check
-bun run build               # tsc -b, build apps/web, bundle the CLI into apps/cli/dist (+ dist/web)
+bun run build               # tsc -b, build apps/web, bundle the CLI into apps/cli/dist
 cd apps/web && bun run deploy  # build and deploy the hosted UI to Cloudflare (needs wrangler login)
 cd apps/rendezvous && bun run dev  # nearby rendezvous Worker on :8787 (wrangler dev)
-scripts/smoke.sh            # run the built CLI with node (hosted and --local) and probe it
+scripts/smoke.sh            # run the built CLI with node and probe it
 ```
 
 ## Layout
@@ -23,19 +23,18 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
 
 - `apps/cli/` (`@diffiii/gitui`, published to npm): the `gitui` bin (`bin/gitui.ts`) and the
   Hono API in `server/`. `app.ts` holds the routes, `git.ts` wraps the git CLI and parses its
-  output, `main.ts` starts the server (`@hono/node-server`), serving the UI directory it's given
-  with `uiSecurityHeaders` (`bin/gitui.ts` passes `dist/web` only with `--local` and `--lan`;
-  by default the hosted app is the UI), `bin/args.ts` parses the command line, `dev.ts` is the
-  dev API entry, `lan.ts` picks the `--lan` address. `server/nearby/` is `--nearby`, the host
+  output, `main.ts` starts the server (`@hono/node-server`) on 127.0.0.1, with only a plain-text
+  pointer to the hosted app at `/`: the CLI serves no UI. `bin/args.ts` parses the command line,
+  `dev.ts` is the dev API entry. `server/nearby/` is `--nearby`, the host
   side of `@gitui/shared`'s nearby protocol: `rendezvous.ts` (one `ws` socket, pinned to IPv4
   or IPv6, with pings and reconnects), `peer.ts` (one guest: answer, trickle, CPace or resume
   check from `auth.ts`), `bridge.ts` (HTTP over the data channel, pure and unit-tested),
   `host.ts` (wires them up: two sockets, sessions bound to theirs), `guard.ts` (survives
   werift's unhandled rejections on malformed SCTP packets; werift callbacks go through
   `isolate`) and `webrtc.ts`, the only file that imports werift. `bun run build`
-  (`scripts/build.ts`) bundles `bin/gitui.ts` for Node into `dist/gitui.js`, copies
-  `apps/web/dist` to `dist/web` (`scripts/local-ui.ts` adds the `LOCAL_UI_META` tag to that copy
-  only, never to `apps/web/dist`, which is the hosted app, and leaves `_headers` out) and the root `LICENSE` into the package; with `README.md` that is all the package ships, with no runtime dependencies.
+  (`scripts/build.ts`) bundles `bin/gitui.ts` for Node into `dist/gitui.js` and copies the root
+  `LICENSE` into the package; with `README.md` that is all the package ships, with no runtime
+  dependencies.
   Code in `bin/` and `server/` must run on Node too: no `Bun.*` APIs outside tests, `dev.ts`
   and `test-repo.ts` (a lint rule enforces it). Tests live next to the code (`server/*.test.ts`).
 - `apps/web/` (`@gitui/web`): React app. `src/lib/` holds the API client, graph layout and
@@ -88,13 +87,11 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
 - `/api/*` access policy lives in `apps/cli/server/access.ts`, keyed by the `Listener`: the
   `x-gitui` header always. `loopback`: localhost `Host`; cross-origin callers only from
   `allowedOrigins`, with CORS headers and the pairing token (`loadToken` in `server/config.ts`)
-  as a bearer token. `lan` (`--lan`): `Host` names the listen address (hostnames only, ports
-  aren't checked), no cross-origin callers, and the per-run session cookie that
-  `/pair?key=<per-run secret>` sets. `nearby`: requests from an authenticated data channel,
+  as a bearer token. `nearby`: requests from an authenticated data channel,
   through `nearby/bridge.ts`, which gives them the Host `NEARBY_HOST`. Don't add checks in
   routes or `main.ts`.
-- Each listener also has a `repoScope`: `loopback` is `any`; `lan` and `nearby` (other devices)
-  are `opened`, i.e. only the `initialRepo` and the recent list, compared as realpaths, read per
+- Each listener also has a `repoScope`: `loopback` is `any`; `nearby` (other devices) is
+  `opened`, i.e. only the `initialRepo` and the recent list, compared as realpaths, read per
   request. Every repo path a request names goes through `repoGate` (`server/repo-scope.ts`): the `repo`
   middleware and `/open`, which only records repos in the recent list for `any`. A refusal is a
   403 `{ error, code: REPO_NOT_OPENED }`. New routes that take a repo path must use the gate.
