@@ -171,15 +171,71 @@ test("protocol violations fail the request they concern", async () => {
   );
 });
 
-test("a caller's abort signal stops the wait, and later answers are dropped", async () => {
+test("a caller's abort sends cancel, and later answers are dropped", async () => {
   const errors: string[] = [];
-  const client = createChannelClient(fakeTransport(), (e) => errors.push(e));
+  const transport = fakeTransport();
+  const client = createChannelClient(transport, (e) => errors.push(e));
   const controller = new AbortController();
   const res = client.fetch("/slow", { signal: controller.signal });
+  await tick();
+  client.receive(text({ t: "res", id: 1, status: 200, headers: [] }));
   controller.abort();
   expect(await rejection(res)).toMatchObject({ name: "AbortError" });
-  client.receive(text({ t: "res", id: 1, status: 200, headers: [] }));
-  expect(errors).toEqual(["res for unknown request 1"]);
+  expect(messages(transport.sent)).toEqual([
+    { t: "req", id: 1, method: "GET", path: "/slow", headers: [] },
+    { t: "end", id: 1 },
+    { t: "cancel", id: 1 },
+  ]);
+  client.receive(frame(1, "late"));
+  client.receive(text({ t: "end", id: 1 }));
+  expect(errors).toEqual(["frame for unknown request 1", "end for unknown request 1"]);
+});
+
+test("a request aborted before it went out sends nothing", async () => {
+  const transport = fakeTransport();
+  const client = createChannelClient(transport);
+  const aborted = AbortSignal.abort();
+  expect(await rejection(client.fetch("/a", { signal: aborted }))).toMatchObject({
+    name: "AbortError",
+  });
+  // Aborted while waiting for the send buffer to drain: the host never heard of it.
+  transport.bufferedAmount = SEND_HIGH_WATER + 1;
+  const controller = new AbortController();
+  const waiting = client.fetch("/b", { signal: controller.signal });
+  await tick();
+  controller.abort();
+  await rejection(waiting);
+  transport.drain();
+  await tick();
+  expect(transport.sent).toEqual([]);
+});
+
+test("aborting a request that was answered, or after close, sends no cancel", async () => {
+  const transport = fakeTransport();
+  const client = createChannelClient(transport);
+  const done = new AbortController();
+  const res = client.fetch("/a", { signal: done.signal });
+  await tick();
+  client.receive(text({ t: "res", id: 1, status: 204, headers: [] }));
+  client.receive(text({ t: "end", id: 1 }));
+  await res;
+  done.abort();
+
+  const closing = new AbortController();
+  const lost = client.fetch("/b", { signal: closing.signal });
+  await tick();
+  client.close("gone");
+  closing.abort();
+  await rejection(lost);
+  expect(messages(transport.sent).filter((m) => m.t === "cancel")).toEqual([]);
+});
+
+test("a session token from the host decodes as a message", () => {
+  expect(decodeIncoming(text({ t: "session", token: "tok" }))).toEqual({
+    kind: "message",
+    message: { t: "session", token: "tok" },
+  });
+  expect(decodeIncoming(JSON.stringify({ t: "session", token: "" })).kind).toBe("invalid");
 });
 
 test("close fails requests in flight and later ones", async () => {

@@ -1,15 +1,21 @@
 import {
+  HOST_KEY,
   RENDEZVOUS_ORIGIN,
   RENDEZVOUS_PATH,
+  RENDEZVOUS_PING,
   type ClientMessage,
   type HostInfo,
   type ServerMessage,
   type SignalData,
 } from "@gitui/shared";
+import { dedupeHosts } from "./state.ts";
 
 // The guest's side of the rendezvous WebSocket: it says hello as a guest, keeps the list of hosts
 // on this network as an external store, and relays WebRTC signals to and from them. The socket
-// is open while anything subscribes, and reconnects with backoff when it drops.
+// is open while anything subscribes, and reconnects with backoff when it drops. It pings every
+// `keepalive`, and a socket that doesn't answer a ping within `pingTimeout`, or is still
+// connecting after `watchdog` (Safari can leave one stuck after the page comes back), is
+// replaced: browsers keep a dead socket "open" for a long time after the network went away.
 
 /**
  * The rendezvous WebSocket URL. `VITE_GITUI_RENDEZVOUS_URL` replaces the origin at build or dev
@@ -21,7 +27,7 @@ export const rendezvousUrl = (origin: string = RENDEZVOUS_ORIGIN) =>
 export interface RendezvousState {
   /** `connecting`: no socket has been welcomed yet; `retrying`: the last one dropped. */
   status: "connecting" | "open" | "retrying";
-  /** Hosts on this network, as of the last `hosts` message of an open socket. */
+  /** Hosts on this network, one per key, as of the last `hosts` message of an open socket. */
   hosts: HostInfo[];
 }
 
@@ -48,13 +54,30 @@ export interface RendezvousOptions {
   backoff?: (attempt: number) => number;
   /** How long the socket stays open after the last subscriber leaves (a remount comes back). */
   linger?: number;
+  /** Milliseconds between pings while the socket is open. */
+  keepalive?: number;
+  /** How long a ping may go unanswered (by any message) before the socket is replaced. */
+  pingTimeout?: number;
+  /** How long a socket may stay connecting before it is replaced. */
+  watchdog?: number;
 }
 
+const CONNECTING = 0;
 const OPEN = 1;
 
 /** 0.5 s, doubling up to 15 s, with jitter so a network's guests don't reconnect in step. */
 export const defaultBackoff = (attempt: number) =>
   Math.min(15_000, 500 * 2 ** (attempt - 1)) * (0.75 + Math.random() * 0.5);
+
+const isHost = (h: unknown): h is HostInfo => {
+  const { id, name, key } = (h ?? {}) as Record<string, unknown>;
+  return (
+    typeof id === "string" &&
+    typeof name === "string" &&
+    typeof key === "string" &&
+    HOST_KEY.test(key)
+  );
+};
 
 function parseServerMessage(data: unknown): ServerMessage | null {
   if (typeof data !== "string") return null;
@@ -77,12 +100,18 @@ export class Rendezvous {
   #failures = 0;
   #retry: ReturnType<typeof setTimeout> | undefined;
   #linger: ReturnType<typeof setTimeout> | undefined;
+  /** The socket's watchdog while it connects, then its unanswered ping's deadline. */
+  #deadline: ReturnType<typeof setTimeout> | undefined;
+  #keepalive: ReturnType<typeof setInterval> | undefined;
 
   constructor(options: RendezvousOptions) {
     this.#options = {
       connect: (url) => new WebSocket(url),
       backoff: defaultBackoff,
       linger: 1000,
+      keepalive: 30_000,
+      pingTimeout: 5000,
+      watchdog: 5000,
       ...options,
     };
   }
@@ -120,6 +149,23 @@ export class Rendezvous {
     return this.#send({ type: "signal", to, data });
   }
 
+  /**
+   * The page is back (e.g. iOS resumed it): reconnect now if the socket is down, instead of
+   * after the backoff, and ping an open one to find out whether it still works.
+   */
+  wake() {
+    if (!this.#users()) return;
+    const socket = this.#socket;
+    if (!socket) {
+      clearTimeout(this.#retry);
+      this.#failures = 0;
+      this.#open();
+    } else if (socket.readyState === OPEN) {
+      this.#ping(socket);
+    }
+    // A connecting socket has its watchdog.
+  }
+
   #users() {
     return this.#listeners.size + this.#peers.size;
   }
@@ -142,28 +188,68 @@ export class Rendezvous {
     this.#retry = undefined;
     const socket = this.#socket;
     this.#socket = null;
-    if (socket) {
-      socket.onclose = socket.onmessage = socket.onopen = null;
-      socket.close();
-    }
+    this.#stopTimers();
+    if (socket) this.#discard(socket);
     this.#failures = 0;
     this.#setState({ status: "connecting", hosts: [] });
+  }
+
+  #stopTimers() {
+    this.#clearDeadline();
+    clearInterval(this.#keepalive);
+  }
+
+  #clearDeadline() {
+    clearTimeout(this.#deadline);
+    this.#deadline = undefined;
+  }
+
+  #discard(socket: SocketLike) {
+    socket.onclose = socket.onmessage = socket.onopen = null;
+    socket.close();
   }
 
   #open() {
     this.#retry = undefined;
     const socket = this.#options.connect(this.#options.url);
     this.#socket = socket;
-    socket.onopen = () => this.#send({ type: "hello", role: "guest" });
-    socket.onmessage = (event) => this.#receive(parseServerMessage(event.data));
-    socket.onclose = () => {
-      if (this.#socket !== socket) return;
-      this.#socket = null;
-      // Peers signaling through this socket lose their id with it, so they are gone too.
-      for (const handlers of [...this.#peers.values()].flatMap((set) => [...set])) handlers.gone();
-      this.#setState({ status: "retrying", hosts: [] });
-      this.#retry = setTimeout(() => this.#open(), this.#options.backoff(++this.#failures));
+    this.#deadline = setTimeout(() => {
+      if (socket.readyState === CONNECTING) this.#replace(socket);
+    }, this.#options.watchdog);
+    socket.onopen = () => {
+      this.#clearDeadline();
+      this.#send({ type: "hello", role: "guest" });
+      this.#keepalive = setInterval(() => this.#ping(socket), this.#options.keepalive);
     };
+    socket.onmessage = (event) => {
+      this.#clearDeadline(); // anything counts as an answer to a ping
+      this.#receive(parseServerMessage(event.data));
+    };
+    socket.onclose = () => this.#dropped(socket, this.#options.backoff(++this.#failures));
+  }
+
+  #ping(socket: SocketLike) {
+    if (this.#socket !== socket || socket.readyState !== OPEN) return;
+    socket.send(RENDEZVOUS_PING);
+    // An earlier ping still unanswered keeps its deadline.
+    this.#deadline ??= setTimeout(() => this.#replace(socket), this.#options.pingTimeout);
+  }
+
+  /** Give up on a socket that hangs, and open another straight away. */
+  #replace(socket: SocketLike) {
+    if (this.#socket !== socket) return;
+    this.#discard(socket);
+    this.#dropped(socket, 0);
+  }
+
+  #dropped(socket: SocketLike, retryIn: number) {
+    if (this.#socket !== socket) return;
+    this.#socket = null;
+    this.#stopTimers();
+    // Peers signaling through this socket lose their id with it, so they are gone too.
+    for (const handlers of [...this.#peers.values()].flatMap((set) => [...set])) handlers.gone();
+    this.#setState({ status: "retrying", hosts: [] });
+    this.#retry = setTimeout(() => this.#open(), retryIn);
   }
 
   #receive(message: ServerMessage | null) {
@@ -173,7 +259,10 @@ export class Rendezvous {
         this.#setState({ ...this.#state, status: "open" });
         return;
       case "hosts":
-        this.#setState({ status: "open", hosts: message.hosts });
+        this.#setState({
+          status: "open",
+          hosts: dedupeHosts(Array.isArray(message.hosts) ? message.hosts.filter(isHost) : []),
+        });
         return;
       case "signal":
         this.#peers.get(message.from)?.forEach((h) => h.signal(message.data));
@@ -183,6 +272,8 @@ export class Rendezvous {
         return;
       case "error":
         console.warn("rendezvous:", message.message);
+        return;
+      case "pong":
         return;
       default:
         console.warn("rendezvous: dropped an unreadable message");

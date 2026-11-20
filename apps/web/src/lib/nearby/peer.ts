@@ -16,8 +16,8 @@ import {
 import type { Rendezvous } from "./rendezvous.ts";
 
 // The guest's WebRTC connection to a host: it makes the offer, trickles ICE candidates through
-// the rendezvous, opens the data channel, proves it knows the host's code, and then carries HTTP
-// requests (channelFetch.ts).
+// the rendezvous, opens the data channel, proves it knows the host's code (or holds a resume
+// token from an earlier connection), and then carries HTTP requests (channelFetch.ts).
 
 /** A failure worth showing as is. */
 export class NearbyError extends Error {
@@ -30,6 +30,12 @@ export interface GuestPeer {
   readonly host: HostInfo;
   /** Send the proof for `code`. After `attemptsLeft: 0` the host closes the connection. */
   authenticate(code: string): Promise<AuthResult>;
+  /** Send the proof for a resume token instead of a code. */
+  resume(token: string): Promise<AuthResult>;
+  /** Hear the resume tokens the host sends after `auth-ok`. */
+  onSession(listener: (token: string) => void): void;
+  /** False once the channel closed or the connection failed, even if no event said so yet. */
+  isOpen(): boolean;
   /** `fetch` for paths on the host, once authenticated. */
   fetch(path: string, init?: RequestInit): Promise<Response>;
   /** Called once when the connection ends, with why; not after close(). */
@@ -39,6 +45,8 @@ export interface GuestPeer {
 
 /** How long the data channel may take to open. */
 export const CONNECT_TIMEOUT = 20_000;
+/** How long the host may take to answer the offer; a lost offer is better sent again. */
+export const ANSWER_TIMEOUT = 5000;
 
 function dataChannelTransport(channel: RTCDataChannel): ChannelTransport {
   channel.bufferedAmountLowThreshold = SEND_HIGH_WATER / 4;
@@ -59,12 +67,17 @@ function dataChannelTransport(channel: RTCDataChannel): ChannelTransport {
 
 /**
  * Open a data channel to `host` through `rendezvous`. Rejects with a NearbyError if the host
- * leaves, or the channel isn't open within `timeout`; `signal` gives up early.
+ * leaves, doesn't answer within `answerTimeout`, or the channel isn't open within `timeout`;
+ * `signal` gives up early.
  */
 export async function connectToHost(
   rendezvous: Rendezvous,
   host: HostInfo,
-  { signal, timeout = CONNECT_TIMEOUT }: { signal?: AbortSignal; timeout?: number } = {},
+  {
+    signal,
+    timeout = CONNECT_TIMEOUT,
+    answerTimeout = ANSWER_TIMEOUT,
+  }: { signal?: AbortSignal; timeout?: number; answerTimeout?: number } = {},
 ): Promise<GuestPeer> {
   const pc = new RTCPeerConnection({ iceServers: [{ urls: STUN_URLS }] });
   // Ordered and reliable: no maxRetransmits or maxPacketLifeTime.
@@ -110,6 +123,7 @@ export async function connectToHost(
   };
 
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let answerTimer: ReturnType<typeof setTimeout> | undefined;
   let localFingerprint: string | null = null;
   try {
     await new Promise<void>((resolve, reject) => {
@@ -125,6 +139,12 @@ export async function connectToHost(
           ),
         timeout,
       );
+      answerTimer = setTimeout(() => {
+        if (!answered)
+          reject(
+            new NearbyError(`${host.name} didn't answer. Is gitui still running with --nearby?`),
+          );
+      }, answerTimeout);
       signal?.throwIfAborted();
       signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
       pc.onconnectionstatechange = () => {
@@ -149,6 +169,7 @@ export async function connectToHost(
     throw e;
   } finally {
     clearTimeout(timer);
+    clearTimeout(answerTimer);
     // Signaling is done once the channel is open: later candidates can't help an open channel.
     stopListening();
     pc.onicecandidate = pc.onconnectionstatechange = channel.onopen = null;
@@ -178,6 +199,7 @@ function openPeer(
   let awaitingAuth: { resolve(r: AuthResult): void; reject(e: Error): void } | null = null;
   let closed = false;
   const closeListeners: ((reason: string) => void)[] = [];
+  const sessionListeners: ((token: string) => void)[] = [];
 
   const end = (reason: string, notify: boolean) => {
     if (closed) return;
@@ -191,9 +213,12 @@ function openPeer(
   };
 
   channel.onmessage = ({ data }: MessageEvent<string | ArrayBuffer>) => {
-    if (authenticated) return client.receive(data);
     const incoming = decodeIncoming(data);
     const message = incoming.kind === "message" ? incoming.message : null;
+    if (authenticated && message?.t === "session") {
+      return sessionListeners.forEach((l) => l(message.token));
+    }
+    if (authenticated) return client.handle(incoming);
     if (!awaitingAuth || (message?.t !== "auth-ok" && message?.t !== "auth-fail")) {
       return console.warn(`nearby: ${host.name} sent a message before authentication`);
     }
@@ -206,22 +231,34 @@ function openPeer(
   };
   channel.onclose = () => end(`${host.name} closed the connection.`, true);
   pc.onconnectionstatechange = () => {
-    if (pc.connectionState === "failed") end(`The connection to ${host.name} dropped.`, true);
+    if (pc.connectionState === "failed" || pc.connectionState === "closed") {
+      end(`The connection to ${host.name} dropped.`, true);
+    }
+  };
+
+  /** Send an `auth` or `resume` proof of `secret` and wait for the host's verdict. */
+  const prove = async (t: "auth" | "resume", secret: string): Promise<AuthResult> => {
+    if (closed) throw new NearbyError("The connection is closed.");
+    if (authenticated) return { ok: true };
+    if (awaitingAuth) throw new Error("already waiting for an answer to auth or resume");
+    const answer = new Promise<AuthResult>((resolve, reject) => {
+      awaitingAuth = { resolve, reject };
+    });
+    const proof = await authProof(secret, localFingerprint, remoteFingerprint);
+    if (!closed) channel.send(JSON.stringify({ t, proof } satisfies ChannelMessage));
+    return answer;
   };
 
   return {
     host,
-    authenticate: async (code) => {
-      if (closed) throw new NearbyError("The connection is closed.");
-      if (authenticated) return { ok: true };
-      if (awaitingAuth) throw new Error("authenticate is already waiting for an answer");
-      const answer = new Promise<AuthResult>((resolve, reject) => {
-        awaitingAuth = { resolve, reject };
-      });
-      const proof = await authProof(code, localFingerprint, remoteFingerprint);
-      if (!closed) channel.send(JSON.stringify({ t: "auth", proof } satisfies ChannelMessage));
-      return answer;
-    },
+    authenticate: (code) => prove("auth", code),
+    resume: (token) => prove("resume", token),
+    onSession: (listener) => void sessionListeners.push(listener),
+    isOpen: () =>
+      !closed &&
+      channel.readyState === "open" &&
+      pc.connectionState !== "failed" &&
+      pc.connectionState !== "closed",
     fetch: (path, init) =>
       authenticated
         ? client.fetch(path, init)

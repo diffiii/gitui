@@ -1,6 +1,11 @@
-import type { ServerMessage } from "@gitui/shared";
+import { RENDEZVOUS_PING, type ServerMessage } from "@gitui/shared";
 import { expect, test } from "bun:test";
-import { Rendezvous, rendezvousUrl, type SocketLike } from "./rendezvous.ts";
+import {
+  Rendezvous,
+  rendezvousUrl,
+  type RendezvousOptions,
+  type SocketLike,
+} from "./rendezvous.ts";
 
 class FakeSocket implements SocketLike {
   readyState = 0;
@@ -10,7 +15,7 @@ class FakeSocket implements SocketLike {
   onmessage: ((event: MessageEvent) => void) | null = null;
   onclose: ((event: CloseEvent) => void) | null = null;
   send(data: string) {
-    this.sent.push(JSON.parse(data));
+    this.sent.push(data === RENDEZVOUS_PING ? "ping" : JSON.parse(data));
   }
   close() {
     this.closed = true;
@@ -29,7 +34,7 @@ class FakeSocket implements SocketLike {
   }
 }
 
-function setup() {
+function setup(options: Partial<RendezvousOptions> = {}) {
   const sockets: FakeSocket[] = [];
   const delays: number[] = [];
   const client = new Rendezvous({
@@ -41,12 +46,13 @@ function setup() {
     },
     backoff: (attempt) => (delays.push(attempt), 0),
     linger: 0,
+    ...options,
   });
   return { client, sockets, delays };
 }
 
 const wait = (ms = 1) => new Promise((r) => setTimeout(r, ms));
-const host = { id: "h1", name: "Jan's MacBook" };
+const host = { id: "h1", name: "Jan's MacBook", key: "k".repeat(16) };
 
 test("rendezvousUrl puts the protocol path on the origin", () => {
   expect(rendezvousUrl("ws://127.0.0.1:8787")).toBe("ws://127.0.0.1:8787/v1/connect");
@@ -141,4 +147,77 @@ test("closes the socket once the last subscriber leaves, and reopens for the nex
 
   client.subscribe(() => {});
   expect(sockets).toHaveLength(2);
+});
+
+test("lists each host key once, and drops hosts without a valid key", () => {
+  const { client, sockets } = setup();
+  client.subscribe(() => {});
+  sockets[0]!.open();
+  const ipv6 = { ...host, id: "h2" };
+  const other = { id: "h3", name: "Desktop", key: "d".repeat(16) };
+  sockets[0]!.receive({
+    type: "hosts",
+    hosts: [host, other, ipv6, { id: "h4", name: "Old CLI" } as never],
+  });
+  expect(client.getSnapshot().hosts).toEqual([ipv6, other]);
+});
+
+test("pings while open, ignores the pong, and replaces a socket that stops answering", async () => {
+  const { client, sockets } = setup({ keepalive: 5, pingTimeout: 20 });
+  client.subscribe(() => {});
+  sockets[0]!.open();
+  await wait(8);
+  expect(sockets[0]!.sent).toEqual([{ type: "hello", role: "guest" }, "ping"]);
+  sockets[0]!.receive({ type: "pong" });
+  expect(client.getSnapshot().status).toBe("connecting"); // a pong isn't a welcome
+  // Keep answering: the socket stays.
+  for (let i = 0; i < 4; i++) {
+    await wait(6);
+    sockets[0]!.receive({ type: "pong" });
+  }
+  expect(sockets).toHaveLength(1);
+  // Stop answering: it's replaced with a new socket, without waiting for a backoff.
+  await wait(40);
+  expect(sockets[0]!.closed).toBe(true);
+  expect(sockets.length).toBeGreaterThanOrEqual(2);
+});
+
+test("replaces a socket stuck connecting", async () => {
+  const { client, sockets, delays } = setup({ watchdog: 5 });
+  client.subscribe(() => {});
+  await wait(12);
+  expect(sockets[0]!.closed).toBe(true);
+  expect(sockets.length).toBeGreaterThanOrEqual(2);
+  expect(delays).toEqual([]); // straight away, not after a backoff
+  sockets.at(-1)!.open();
+  await wait(10);
+  expect(sockets.at(-1)!.closed).toBe(false);
+});
+
+test("wake reconnects at once instead of after the backoff, and pings an open socket", async () => {
+  const { client, sockets } = setup({ backoff: () => 60_000, pingTimeout: 10 });
+  client.subscribe(() => {});
+  sockets[0]!.open();
+  sockets[0]!.drop();
+  expect(sockets).toHaveLength(1);
+  client.wake();
+  expect(sockets).toHaveLength(2);
+
+  sockets[1]!.open();
+  client.wake();
+  expect(sockets[1]!.sent.at(-1)).toBe("ping");
+  sockets[1]!.receive({ type: "welcome", id: "g2" }); // anything counts as an answer
+  await wait(20);
+  expect(sockets[1]!.closed).toBe(false);
+
+  client.wake();
+  await wait(20);
+  expect(sockets[1]!.closed).toBe(true);
+  expect(sockets).toHaveLength(3);
+});
+
+test("wake does nothing while no one uses the socket", () => {
+  const { client, sockets } = setup();
+  client.wake();
+  expect(sockets).toHaveLength(0);
 });

@@ -45,7 +45,10 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   dev server, whose `vite.config.ts` plugin adds it) calls its own `/api`; without it, whatever
   the host, it is the hosted app: `src/lib/connection.ts` decides this and holds the pairing with
   the CLI and where requests go (its store reads `window` lazily; `initConnection` does the
-  startup wiring), and `ConnectionGate` gates the app until the CLI answers. `wrangler.jsonc` deploys `dist/` as Cloudflare
+  startup wiring), and `ConnectionGate` gates the app until the CLI answers. Its `nearby` kind
+  is a `gitui --nearby` found through the rendezvous: `src/lib/nearby/` holds the guest
+  (`session.ts` runs the session the connection names, `initNearby` wires it, and `api.ts` sends
+  its requests over the data channel; `state.ts` and `tokens.ts` are its pure parts). `wrangler.jsonc` deploys `dist/` as Cloudflare
   Workers static assets, with the `_headers` file that a `vite.config.ts` plugin writes into the
   build from `hostedHeadersFile`, on the custom domain `gitui.diffiii.dev` (`HOSTED_ORIGIN`).
 - `apps/rendezvous/` (`@gitui/rendezvous`): the "nearby" rendezvous Worker (protocol in

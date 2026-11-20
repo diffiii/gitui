@@ -2,8 +2,9 @@ import { chunks, frameChunk, parseChunk, type ChannelMessage } from "@gitui/shar
 
 // HTTP over the nearby data channel (see @gitui/shared nearby.ts): a request is a `req` head,
 // its body as binary frames and an `end`; the host answers with `res`, frames and `end`, or
-// `abort`. Nothing here knows about WebRTC: a ChannelTransport is anything that sends text and
-// binary messages in order and reports its send buffer, so tests drive it with in-memory fakes.
+// `abort`, unless the guest sent `cancel` first. Nothing here knows about WebRTC: a
+// ChannelTransport is anything that sends text and binary messages in order and reports its send
+// buffer, so tests drive it with in-memory fakes.
 
 export interface ChannelTransport {
   send(data: string | Uint8Array<ArrayBuffer>): void;
@@ -37,6 +38,8 @@ function isChannelMessage(v: Record<string, unknown>): boolean {
       return true;
     case "auth-fail":
       return isId(v.attemptsLeft);
+    case "session":
+      return typeof v.token === "string" && v.token.length > 0;
     case "res":
       return isId(v.id) && Number.isInteger(v.status) && isHeaders(v.headers);
     case "end":
@@ -44,7 +47,7 @@ function isChannelMessage(v: Record<string, unknown>): boolean {
     case "abort":
       return isId(v.id) && typeof v.message === "string";
     default:
-      // `auth` and `req` only ever go from guest to host.
+      // `auth`, `resume`, `req` and `cancel` only ever go from guest to host.
       return false;
   }
 }
@@ -116,6 +119,8 @@ export interface ChannelClient {
   fetch(path: string, init?: RequestInit): Promise<Response>;
   /** Feed every message the channel receives (after auth) here. */
   receive(data: string | ArrayBuffer | Uint8Array): void;
+  /** receive() for a message the caller already decoded. */
+  handle(incoming: Incoming): void;
   /** Fail every request in flight, and any made later; the channel is gone. */
   close(reason: string): void;
 }
@@ -130,12 +135,28 @@ export function createChannelClient(
   onProtocolError: (reason: string) => void = () => {},
 ): ChannelClient {
   const pending = new Map<number, Pending>();
+  /** Requests whose head went out, so the host knows them and must hear when they're cancelled. */
+  const sent = new Set<number>();
   let nextId = 1;
   let closed: string | null = null;
 
   const fail = (id: number, error: Error) => {
     pending.get(id)?.reject(error);
     pending.delete(id);
+    sent.delete(id);
+  };
+
+  /** The caller gave up on `id`: stop waiting, and tell the host if it has the request. */
+  const cancel = (id: number, reason: Error) => {
+    if (!pending.has(id)) return;
+    const known = sent.has(id);
+    fail(id, reason);
+    if (!known || closed !== null) return;
+    try {
+      transport.send(JSON.stringify({ t: "cancel", id } satisfies ChannelMessage));
+    } catch {
+      // the channel is closing; the host drops the request with it
+    }
   };
 
   async function send(id: number, request: Request, path: string) {
@@ -146,6 +167,50 @@ export function createChannelClient(
       if (transport.bufferedAmount > SEND_HIGH_WATER) await transport.drained();
       if (!pending.has(id)) return;
       transport.send(message);
+      sent.add(id);
+    }
+  }
+
+  function handle(incoming: Incoming) {
+    if (incoming.kind === "invalid") return onProtocolError(incoming.reason);
+    if (incoming.kind === "chunk") {
+      const request = pending.get(incoming.id);
+      if (!request) return onProtocolError(`frame for unknown request ${incoming.id}`);
+      if (!request.head) {
+        return fail(incoming.id, new ChannelRequestError("body frame before the response head"));
+      }
+      // The payload views the channel's buffer; copy it out, the buffer isn't ours to keep.
+      request.body.push(incoming.payload.slice());
+      return;
+    }
+    const { message } = incoming;
+    if (message.t !== "res" && message.t !== "end" && message.t !== "abort") {
+      return onProtocolError(`unexpected ${message.t} message`);
+    }
+    const request = pending.get(message.id);
+    if (!request) return onProtocolError(`${message.t} for unknown request ${message.id}`);
+    switch (message.t) {
+      case "res":
+        if (request.head) return fail(message.id, new ChannelRequestError("second response head"));
+        request.head = { status: message.status, headers: message.headers };
+        return;
+      case "abort":
+        return fail(message.id, new ChannelRequestError(message.message));
+      case "end": {
+        if (!request.head) {
+          return fail(message.id, new ChannelRequestError("end before the response head"));
+        }
+        pending.delete(message.id);
+        sent.delete(message.id);
+        const { status, headers } = request.head;
+        try {
+          const body = NULL_BODY_STATUSES.has(status) ? null : concat(request.body);
+          request.resolve(new Response(body, { status, headers }));
+        } catch (e) {
+          // A status or header the Response constructor won't take.
+          request.reject(new ChannelRequestError(`invalid response: ${String(e)}`));
+        }
+      }
     }
   }
 
@@ -166,62 +231,21 @@ export function createChannelClient(
       return new Promise<Response>((resolve, reject) => {
         pending.set(id, { resolve, reject, body: [] });
         const { signal } = request;
-        if (signal.aborted) return fail(id, signal.reason);
-        // The protocol can't cancel a request on the host, so an aborted request only stops
-        // waiting; whatever the host still sends for it is dropped as an unknown id.
-        signal.addEventListener("abort", () => fail(id, signal.reason), { once: true });
+        if (signal.aborted) return cancel(id, signal.reason);
+        // Whatever the host sent before it saw the `cancel` is dropped as an unknown id.
+        signal.addEventListener("abort", () => cancel(id, signal.reason), { once: true });
         send(id, request, url.pathname + url.search).catch((e: unknown) =>
           fail(id, e instanceof Error ? e : new Error(String(e))),
         );
       });
     },
 
-    receive(data) {
-      const incoming = decodeIncoming(data);
-      if (incoming.kind === "invalid") return onProtocolError(incoming.reason);
-      if (incoming.kind === "chunk") {
-        const request = pending.get(incoming.id);
-        if (!request) return onProtocolError(`frame for unknown request ${incoming.id}`);
-        if (!request.head) {
-          return fail(incoming.id, new ChannelRequestError("body frame before the response head"));
-        }
-        // The payload views the channel's buffer; copy it out, the buffer isn't ours to keep.
-        request.body.push(incoming.payload.slice());
-        return;
-      }
-      const { message } = incoming;
-      if (message.t !== "res" && message.t !== "end" && message.t !== "abort") {
-        return onProtocolError(`unexpected ${message.t} message`);
-      }
-      const request = pending.get(message.id);
-      if (!request) return onProtocolError(`${message.t} for unknown request ${message.id}`);
-      switch (message.t) {
-        case "res":
-          if (request.head)
-            return fail(message.id, new ChannelRequestError("second response head"));
-          request.head = { status: message.status, headers: message.headers };
-          return;
-        case "abort":
-          return fail(message.id, new ChannelRequestError(message.message));
-        case "end": {
-          if (!request.head) {
-            return fail(message.id, new ChannelRequestError("end before the response head"));
-          }
-          pending.delete(message.id);
-          const { status, headers } = request.head;
-          try {
-            const body = NULL_BODY_STATUSES.has(status) ? null : concat(request.body);
-            request.resolve(new Response(body, { status, headers }));
-          } catch (e) {
-            // A status or header the Response constructor won't take.
-            request.reject(new ChannelRequestError(`invalid response: ${String(e)}`));
-          }
-        }
-      }
-    },
+    receive: (data) => handle(decodeIncoming(data)),
+    handle,
 
     close(reason) {
       closed ??= reason;
+      sent.clear();
       for (const id of [...pending.keys()]) fail(id, new ChannelClosedError(reason));
     },
   };

@@ -77,7 +77,7 @@ function RemoteButtons({ run }: { run: RemoteAction }) {
 
 /** HeaderActions as a menu, for narrow screens: remotes, theme, disconnect. */
 export function MoreMenu({ remote: run }: { remote: RemoteAction }) {
-  const pairing = useDisconnect();
+  const connected = useDisconnect();
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -103,12 +103,12 @@ export function MoreMenu({ remote: run }: { remote: RemoteAction }) {
         ))}
         <DropdownMenuSeparator />
         <ThemeMenuItems />
-        {pairing && (
+        {connected && (
           <>
             <DropdownMenuSeparator />
-            <DropdownMenuItem onSelect={pairing.disconnect}>
+            <DropdownMenuItem onSelect={connected.disconnect}>
               <Unplug />
-              Disconnect from port {pairing.port}
+              <span className="truncate">Disconnect from {connected.target}</span>
             </DropdownMenuItem>
           </>
         )}

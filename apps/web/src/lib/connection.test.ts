@@ -13,10 +13,13 @@ import {
   rejectConnection,
   retrySession,
   retryWhileUnreachable,
+  setNearbyHost,
   setPairing,
   type Connection,
   type ConnectionStatus,
 } from "./connection.ts";
+import type { NearbyState } from "./nearby/state.ts";
+import { tokens } from "./nearby/tokens.ts";
 
 const pairing = { port: 4778, token: "s3cret" };
 const paired: Connection = { kind: "paired", pairing };
@@ -27,6 +30,56 @@ test("initialConnection is local in a page gitui served and uses the saved pairi
   expect(initialConnection(false, saved)).toEqual(paired);
   expect(initialConnection(false, "")).toEqual({ kind: "unpaired" });
   expect(initialConnection(false, "garbage")).toEqual({ kind: "unpaired" });
+});
+
+const host = { key: "k".repeat(16), name: "Jan's MacBook" };
+const nearby: Connection = { kind: "nearby", host };
+
+test("initialConnection falls back to the saved nearby host", () => {
+  const savedHost = JSON.stringify(host);
+  expect(initialConnection(false, "", savedHost)).toEqual(nearby);
+  expect(initialConnection(true, "", savedHost)).toEqual({ kind: "local" });
+  expect(initialConnection(false, pairingFragment(pairing), savedHost)).toEqual(paired);
+  expect(initialConnection(false, "", "{bad json")).toEqual({ kind: "unpaired" });
+  expect(initialConnection(false, "", '{"key":"short","name":"x"}')).toEqual({ kind: "unpaired" });
+});
+
+test("apiTarget sends nearby requests as paths, with the client header", () => {
+  expect(apiTarget(nearby)).toEqual({ base: "", headers: { [CLIENT_HEADER]: "1" } });
+});
+
+test("connectionStatus of a nearby connection follows its session", () => {
+  const config = { dataUpdatedAt: 0, errorUpdatedAt: 0, failureReason: null };
+  const status = (session: NearbyState) => connectionStatus(nearby, config, session);
+  const name = host.name;
+  expect(status({ kind: "off" })).toEqual({ kind: "nearbyConnecting", host: name });
+  expect(status({ kind: "connecting", host })).toEqual({ kind: "nearbyConnecting", host: name });
+  expect(status({ kind: "code", host, checking: false })).toEqual({
+    kind: "nearbyCode",
+    host: name,
+    checking: false,
+  });
+  expect(
+    status({ kind: "code", host, checking: true, attemptsLeft: 2, notice: "expired" }),
+  ).toEqual({ kind: "nearbyCode", host: name, checking: true, attemptsLeft: 2, notice: "expired" });
+  expect(status({ kind: "connected", host })).toEqual({ kind: "connected" });
+  expect(status({ kind: "reconnecting", host })).toEqual({ kind: "reconnecting", host: name });
+  expect(status({ kind: "failed", host, reason: "gone" })).toEqual({
+    kind: "nearbyFailed",
+    host: name,
+    reason: "gone",
+  });
+  // A session for another host is one the store hasn't caught up with yet.
+  const other = { key: "o".repeat(16), name: "Desktop" };
+  expect(status({ kind: "connected", host: other })).toEqual({
+    kind: "nearbyConnecting",
+    host: name,
+  });
+  // Without a session it is connecting, whatever the config query did.
+  expect(connectionStatus(nearby, { ...config, dataUpdatedAt: 1 })).toEqual({
+    kind: "nearbyConnecting",
+    host: name,
+  });
 });
 
 test("apiTarget stays same-origin for the local UI", () => {
@@ -104,6 +157,7 @@ test("afterRejection: a local page loses its session, a pairing is rejected", ()
     { kind: "noSession" },
     { kind: "unpaired" },
     { kind: "rejected", pairing },
+    nearby,
   ]) {
     const connection = settled as Connection;
     expect(afterRejection(connection)).toBe(connection);
@@ -234,6 +288,48 @@ describe("the connection store in the hosted app", () => {
     setPairing(null);
     expect(getConnection()).toEqual({ kind: "unpaired" });
     expect(storage.has("gitui-pairing")).toBe(false);
+  });
+
+  test("picking a nearby host saves it in place of a pairing, and drops the cache", () => {
+    setPairing(pairing);
+    queryClient.setQueryData(["/r", "status"], {});
+    setNearbyHost(host);
+    expect(getConnection()).toEqual(nearby);
+    expect(storage.has("gitui-pairing")).toBe(false);
+    expect(JSON.parse(storage.get("gitui-nearby-host")!)).toEqual(host);
+    expect(queryClient.getQueryData(["/r", "status"])).toBeUndefined();
+  });
+
+  test("the host's restarted run replaces it and its dead token", () => {
+    tokens.save(host.key, "old");
+    const next = { key: "n".repeat(16), name: host.name };
+    setNearbyHost(next);
+    expect(tokens.load(host.key)).toBeNull();
+    setNearbyHost(host);
+  });
+
+  test("picking the same host again keeps its token", () => {
+    tokens.save(host.key, "tok");
+    setNearbyHost(host);
+    expect(tokens.load(host.key)).toBe("tok");
+  });
+
+  test("disconnecting forgets the nearby host and its token", () => {
+    tokens.save(host.key, "tok");
+    setNearbyHost(null);
+    expect(getConnection()).toEqual({ kind: "unpaired" });
+    expect(storage.has("gitui-nearby-host")).toBe(false);
+    expect(tokens.load(host.key)).toBeNull();
+  });
+
+  test("a pairing link replaces the nearby host and forgets its token", () => {
+    setNearbyHost(host);
+    tokens.save(host.key, "tok");
+    setPairing(pairing);
+    expect(getConnection()).toEqual(paired);
+    expect(storage.has("gitui-nearby-host")).toBe(false);
+    expect(tokens.load(host.key)).toBeNull();
+    setPairing(null);
   });
 });
 

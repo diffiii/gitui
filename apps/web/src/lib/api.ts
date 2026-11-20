@@ -8,13 +8,16 @@ import type {
   WorkingFiles,
 } from "@gitui/shared";
 import { ApiError, apiTarget, getConnection, rejectConnection } from "./connection.ts";
+import { nearbyFetch } from "./nearby/session.ts";
 
 export type { Branch, Commit, CommitDetail, FileStatus, Status, WorkingFile, WorkingFiles };
 
 async function request<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
   const connection = getConnection();
   const { base, headers } = apiTarget(connection);
-  const res = await fetch(base + path, {
+  // A nearby host's requests go over the session's data channel instead.
+  const send = connection.kind === "nearby" ? nearbyFetch : fetch;
+  const res = await send(base + path, {
     method,
     headers: {
       ...headers,
