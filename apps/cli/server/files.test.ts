@@ -189,6 +189,103 @@ test("refuses paths into .git, the repo's or a nested repo's", async () => {
   }
 });
 
+/** A repo whose git directory is `meta/`, inside its own work tree, holding a credential. */
+function separateGitDir() {
+  const repo = tmpDir();
+  git(repo, "init", "-q", "-b", "main", "--separate-git-dir", path.join(repo, "meta"));
+  git(repo, "config", "user.name", "Test User");
+  git(repo, "config", "user.email", "test@example.com");
+  git(repo, "config", "remote.origin.url", "https://user:token@example.com/r.git");
+  commitFile(repo, "a.txt", "a\n");
+  return repo;
+}
+
+test("leaves out a git directory in the work tree under another name, and refuses its files", async () => {
+  const repo = separateGitDir();
+  // Git itself lists them as untracked.
+  expect(git(repo, "ls-files", "-o", "--exclude-standard")).toContain("meta/config");
+
+  expect((await listFiles(repo)).body.paths).toEqual(["a.txt"]);
+  expect(await readFile(repo, "meta/config")).toEqual(
+    refused("Inside a git directory: meta/config"),
+  );
+  expect((await readFile(repo, "a.txt")).body.content).toBe("a\n");
+});
+
+test("refuses a case variant of a git directory's path", async () => {
+  const repo = separateGitDir();
+  for (const file of ["META/config", "Meta/HEAD"]) {
+    const { status, body } = await readFile(repo, file);
+    expect({ file, status }).toEqual({ file, status: 400 });
+    expect(JSON.stringify(body)).not.toContain("token");
+  }
+});
+
+test("leaves out a bare repo in the work tree, and refuses its files", async () => {
+  const repo = initRepo();
+  commitFile(repo, "a.txt", "a\n");
+  git(repo, "init", "-q", "--bare", "backup.git");
+  git(path.join(repo, "backup.git"), "config", "remote.origin.url", "https://u:token@x/r.git");
+  expect(git(repo, "ls-files", "-o", "--exclude-standard")).toContain("backup.git/config");
+
+  expect((await listFiles(repo)).body.paths).toEqual(["a.txt"]);
+  for (const file of ["backup.git/config", "backup.git/HEAD"]) {
+    expect(await readFile(repo, file)).toEqual(refused(`Inside a git directory: ${file}`));
+  }
+});
+
+test("refuses a nested repo's folder, which git lists as `nested/`", async () => {
+  const repo = initRepo();
+  commitFile(repo, "a.txt", "a\n");
+  fs.mkdirSync(path.join(repo, "nested"));
+  const nested = initRepo(path.join(repo, "nested"));
+  commitFile(nested, "b.txt", "b\n");
+  expect(git(repo, "ls-files", "-o", "--exclude-standard")).toBe("nested/\n");
+
+  for (const file of ["nested/", "nested//b.txt"]) {
+    expect(await readFile(repo, file)).toEqual({ status: 400, body: { error: "Invalid path" } });
+  }
+  // The reader checks for itself, whoever calls it.
+  for (const file of ["nested/", "nested//b.txt", "./a.txt", "/a.txt"]) {
+    const err = await g.workingFile(repo, file).catch((e: Error) => e);
+    expect({ file, error: (err as Error).message }).toEqual({
+      file,
+      error: `Not a file in the working copy: ${file}`,
+    });
+  }
+});
+
+test("leaves out a tracked path behind an ignored symlink to .git", async () => {
+  const repo = initRepo();
+  commitFile(repo, "x/config", "tracked\n");
+  commitFile(repo, ".gitignore", "/x\n");
+  git(repo, "config", "remote.origin.url", "https://user:token@example.com/r.git");
+  fs.rmSync(path.join(repo, "x"), { recursive: true });
+  fs.symlinkSync(".git", path.join(repo, "x"));
+  // Still listed by git, through the symlink.
+  expect(git(repo, "ls-files", "--cached", "--deleted")).toContain("x/config");
+
+  expect((await listFiles(repo)).body.paths).toEqual([".gitignore"]);
+  expect(await readFile(repo, "x/config")).toEqual(refused("Behind a symbolic link: x/config"));
+});
+
+test("lists a skip-worktree file while it's on disk", async () => {
+  const repo = initRepo();
+  commitFile(repo, "a.txt", "a\n");
+  commitFile(repo, "dir/b.txt", "b\n");
+  git(repo, "update-index", "--skip-worktree", "dir/b.txt");
+  expect(git(repo, "ls-files", "-t", "dir/b.txt")).toBe("S dir/b.txt\n");
+
+  expect([...(await listFiles(repo)).body.paths].sort()).toEqual(["a.txt", "dir/b.txt"]);
+  expect((await readFile(repo, "dir/b.txt")).body.content).toBe("b\n");
+
+  fs.rmSync(path.join(repo, "dir"), { recursive: true });
+  expect((await listFiles(repo)).body.paths).toEqual(["a.txt"]);
+  expect(await readFile(repo, "dir/b.txt")).toEqual(
+    refused("Not a file in the working copy: dir/b.txt"),
+  );
+});
+
 test("refuses a tracked file swapped for a FIFO without blocking", async () => {
   if (process.platform === "win32") return;
   const repo = initRepo();

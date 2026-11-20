@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { parsePatchFiles } from "@pierre/diffs";
-import { fileDiff, git, GitError, showCommit } from "./git.ts";
+import { untrackedDiff } from "./files.ts";
+import { git, GitError, showCommit } from "./git.ts";
 import { git as sh, initRepo, removeTempDirs, revParse, write } from "./test-repo.ts";
 
 afterAll(removeTempDirs);
@@ -48,19 +49,14 @@ test("showCommit: over the cap, trims back to the last complete file", async () 
   expect(files.length).toBeLessThan(6);
 });
 
-test("fileDiff: small diff is not truncated", async () => {
-  const d = await fileDiff(repo, { path: "big.txt", staged: false, untracked: true });
+test("untrackedDiff: small diff is not truncated", async () => {
+  const d = await untrackedDiff(repo, "big.txt");
   expect(d.truncated).toBe(false);
   expect(parseStrict(d.diff)[0].hunks[0].additionLines).toBe(2000);
 });
 
-test("fileDiff: a single oversized hunk is cut to complete lines, and still renders", async () => {
-  const d = await fileDiff(repo, {
-    path: "big.txt",
-    staged: false,
-    untracked: true,
-    maxBytes: 4000,
-  });
+test("untrackedDiff: a single oversized hunk is cut to complete lines, and still renders", async () => {
+  const d = await untrackedDiff(repo, "big.txt", { maxBytes: 4000 });
   expect(d.truncated).toBe(true);
   expect(d.diff).toMatch(/\+big line \d+\n$/);
   const kept = d.diff.split("\n").filter((l) => l.startsWith("+big line")).length;

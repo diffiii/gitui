@@ -38,7 +38,7 @@ export async function git(cwd: string, args: string[], opts: RunOptions = {}): P
  * line (the diff parser accepts the shortened final hunk). Content lines start with ' ', '+', '-'
  * or '\\', so "\ndiff --git " only matches real file headers.
  */
-async function gitPatch(
+export async function gitPatch(
   cwd: string,
   args: string[],
   opts: RunOptions = {},
@@ -204,9 +204,8 @@ async function hasHead(repo: string) {
 // ---------------------------------------------------------------- diff
 
 /**
- * A file's diff. With `untracked`, it runs `git diff --no-index`, which reads any path it's given,
- * inside the repo or not: the caller must first check `path` with
- * `assertWorkingFile(repo, path, { untracked: true })` from `files.ts`.
+ * A file's diff against the index, or with `staged`, the index's against HEAD. An untracked file
+ * has neither: `untrackedDiff` in `files.ts` diffs it.
  */
 export async function fileDiff(
   repo: string,
@@ -214,30 +213,23 @@ export async function fileDiff(
     path: string;
     origPath?: string;
     staged: boolean;
-    untracked: boolean;
     /** Output cap; defaults to 8 MB. */
     maxBytes?: number;
   },
 ): Promise<{ diff: string; truncated: boolean }> {
-  const { maxBytes } = opts;
-  const { patch, truncated } = opts.untracked
-    ? await gitPatch(repo, ["diff", "--no-index", "--no-color", "--", "/dev/null", opts.path], {
-        okCodes: [0, 1],
-        maxBytes,
-      })
-    : await gitPatch(
-        repo,
-        [
-          "diff",
-          "--no-color",
-          "-M",
-          "--no-ext-diff",
-          ...(opts.staged ? ["--cached"] : []),
-          "--",
-          ...(opts.origPath ? [opts.origPath, opts.path] : [opts.path]),
-        ],
-        { maxBytes },
-      );
+  const { patch, truncated } = await gitPatch(
+    repo,
+    [
+      "diff",
+      "--no-color",
+      "-M",
+      "--no-ext-diff",
+      ...(opts.staged ? ["--cached"] : []),
+      "--",
+      ...(opts.origPath ? [opts.origPath, opts.path] : [opts.path]),
+    ],
+    { maxBytes: opts.maxBytes },
+  );
   return { diff: patch, truncated };
 }
 
