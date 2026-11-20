@@ -43,11 +43,12 @@ export function createApp(opts: AppOptions = {}) {
   const api = new Hono<Env>();
 
   // Only accept requests addressed to localhost (defends against DNS rebinding) and require a
-  // custom header on mutations, which cross-origin pages can't send without a CORS preflight.
+  // custom header on every request, which cross-origin pages can't send without a CORS preflight.
+  // GETs need it too: they run git in the requested directory.
   app.use("/api/*", async (c, next) => {
     const host = (c.req.header("host") ?? "").replace(/:\d+$/, "");
     if (!["localhost", "127.0.0.1", "[::1]"].includes(host)) return c.text("Forbidden host", 403);
-    if (c.req.method !== "GET" && c.req.header("x-gitui") !== "1") return c.text("Forbidden", 403);
+    if (c.req.header("x-gitui") !== "1") return c.text("Forbidden", 403);
     await next();
   });
 
