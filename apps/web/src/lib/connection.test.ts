@@ -3,13 +3,14 @@ import { CLIENT_HEADER, pairingFragment } from "@gitui/shared";
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import { getConfig } from "./api.ts";
 import {
+  afterRejection,
   ApiError,
   apiTarget,
   connectionStatus,
   getConnection,
   initConnection,
   initialConnection,
-  rejectPairing,
+  rejectConnection,
   retryWhileUnreachable,
   setPairing,
   type Connection,
@@ -38,8 +39,9 @@ test("apiTarget sends paired requests to the CLI on loopback with the token", ()
   });
 });
 
-test("apiTarget fails requests without an accepted pairing as unauthorized", () => {
-  for (const connection of [{ kind: "unpaired" }, { kind: "rejected", pairing }] as const) {
+test("apiTarget fails requests without an accepted pairing or session as unauthorized", () => {
+  const connections = [{ kind: "unpaired" }, { kind: "rejected", pairing }, { kind: "noSession" }];
+  for (const connection of connections as Connection[]) {
     const fail = () => apiTarget(connection);
     expect(fail).toThrow(ApiError);
     expect(fail).toThrow(expect.objectContaining({ kind: "unauthorized" }));
@@ -82,11 +84,29 @@ function observeGate(queryFn: () => Promise<unknown>) {
   };
 }
 
-test("connectionStatus: local is always connected, unpaired and rejected need pairing", () => {
-  const settled = { dataUpdatedAt: 1, errorUpdatedAt: 0, failureReason: null };
-  expect(connectionStatus({ kind: "local" }, settled)).toEqual({ kind: "connected" });
-  expect(connectionStatus({ kind: "unpaired" }, settled)).toEqual({ kind: "unpaired" });
-  expect(connectionStatus({ kind: "rejected", pairing }, settled)).toEqual({ kind: "rejected" });
+test("connectionStatus: local is connected, the others need pairing", () => {
+  const pending = { dataUpdatedAt: 0, errorUpdatedAt: 0, failureReason: null };
+  const failed = { dataUpdatedAt: 0, errorUpdatedAt: 1, failureReason: new Error("boom") };
+  for (const config of [pending, failed]) {
+    expect(connectionStatus({ kind: "local" }, config)).toEqual({ kind: "connected" });
+    expect(connectionStatus({ kind: "noSession" }, config)).toEqual({ kind: "noSession" });
+    expect(connectionStatus({ kind: "unpaired" }, config)).toEqual({ kind: "unpaired" });
+    expect(connectionStatus({ kind: "rejected", pairing }, config)).toEqual({ kind: "rejected" });
+  }
+});
+
+test("afterRejection: a local page loses its session, a pairing is rejected", () => {
+  // Only `gitui --lan` turns a local page away; other local pages never get a 401.
+  expect(afterRejection({ kind: "local" })).toEqual({ kind: "noSession" });
+  expect(afterRejection(paired)).toEqual({ kind: "rejected", pairing });
+  for (const settled of [
+    { kind: "noSession" },
+    { kind: "unpaired" },
+    { kind: "rejected", pairing },
+  ]) {
+    const connection = settled as Connection;
+    expect(afterRejection(connection)).toBe(connection);
+  }
 });
 
 test("the gate keeps retrying an unreachable CLI without going back to connecting", async () => {
@@ -200,7 +220,7 @@ describe("the connection store in the hosted app", () => {
     answer(Response.json({ error: "Unauthorized" }, { status: 401 }));
     expect(await failure(stale)).toMatchObject({ kind: "unauthorized" });
     expect(getConnection()).toBe(repaired);
-    rejectPairing(paired);
+    rejectConnection(paired);
     expect(getConnection()).toBe(repaired);
   });
 

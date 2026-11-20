@@ -11,11 +11,14 @@ import { useSyncExternalStore } from "react";
 /**
  * Where API requests go. A page served by gitui itself (the CLI, or the Vite dev server with its
  * `/api` proxy) carries the `LOCAL_UI_META` tag and is `local`: it calls its own origin, whatever
- * its host. Any other page is the hosted app, which calls the CLI on 127.0.0.1 once it is paired
- * with it, until the CLI rejects the pairing's token.
+ * its host, until the CLI turns it away. Only `gitui --lan` does, when the page has no session
+ * (it wasn't opened through the pairing link, or gitui restarted since): then it is `noSession`.
+ * Any other page is the hosted app, which calls the CLI on 127.0.0.1 once it is paired with it,
+ * until the CLI rejects the pairing's token.
  */
 export type Connection =
   | { kind: "local" }
+  | { kind: "noSession" }
   | { kind: "unpaired" }
   | { kind: "paired"; pairing: Pairing }
   | { kind: "rejected"; pairing: Pairing };
@@ -57,6 +60,7 @@ export function apiTarget(connection: Connection): {
         base: `http://127.0.0.1:${connection.pairing.port}`,
         headers: { [CLIENT_HEADER]: "1", authorization: `Bearer ${connection.pairing.token}` },
       };
+    case "noSession":
     case "unpaired":
     case "rejected":
       throw new ApiError("Not paired with gitui", "unauthorized");
@@ -70,6 +74,7 @@ export const retryWhileUnreachable = {
 };
 
 export type ConnectionStatus =
+  | { kind: "noSession" }
   | { kind: "unpaired" }
   | { kind: "rejected" }
   | { kind: "connecting"; port: number }
@@ -88,6 +93,7 @@ export function connectionStatus(
   switch (connection.kind) {
     case "local":
       return { kind: "connected" };
+    case "noSession":
     case "unpaired":
     case "rejected":
       return { kind: connection.kind };
@@ -144,14 +150,27 @@ export function setPairing(pairing: Pairing | null) {
   update(pairing ? { kind: "paired", pairing } : { kind: "unpaired" });
 }
 
-/**
- * Record that the CLI rejected the token of `used`, the connection a request went out with.
- * Ignored once the app has moved on from it, so a stale request can't undo a new pairing.
- */
-export function rejectPairing(used: Connection) {
-  if (used.kind === "paired" && used === getConnection()) {
-    update({ kind: "rejected", pairing: used.pairing });
+/** The connection once the CLI has turned away (401) a request that went out over `used`. */
+export function afterRejection(used: Connection): Connection {
+  switch (used.kind) {
+    case "local":
+      return { kind: "noSession" };
+    case "paired":
+      return { kind: "rejected", pairing: used.pairing };
+    case "noSession":
+    case "unpaired":
+    case "rejected":
+      return used;
   }
+}
+
+/**
+ * Record that the CLI turned away a request that went out over `used`. Ignored once the app has
+ * moved on from it, so a stale request can't undo a new pairing.
+ */
+export function rejectConnection(used: Connection) {
+  const next = afterRejection(used);
+  if (next !== used && used === getConnection()) update(next);
 }
 
 /**
