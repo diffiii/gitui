@@ -195,6 +195,56 @@ test("a session is bound to the socket its offer came on", async () => {
   await until(() => closed);
 });
 
+test("an offer that says it resumes prints no code until its resume fails", async () => {
+  const { log, last } = host();
+  const v4 = last(4)!;
+  welcome(v4, "h4");
+  const pc = new RTCPeerConnection({ iceServers: [] });
+  cleanup.push(() => pc.close());
+  const channel = pc.createDataChannel(DATA_CHANNEL_LABEL);
+  const received: ChannelMessage[] = [];
+  channel.onmessage = ({ data }) => received.push(JSON.parse(String(data)) as ChannelMessage);
+  pc.onicecandidate = ({ candidate }) => {
+    if (candidate) {
+      v4.receive({
+        type: "signal",
+        from: "g1",
+        data: { kind: "candidate", candidate: candidate.toJSON() },
+      });
+    }
+  };
+  await pc.setLocalDescription(await pc.createOffer());
+  const offerSdp = pc.localDescription!.sdp;
+  // As the rendezvous relays it: JSON text, parsed by the host's own reader.
+  v4.receive({ type: "signal", from: "g1", data: { kind: "offer", sdp: offerSdp, resume: true } });
+  let answerSdp = "";
+  let applied = 0;
+  const trickle = setInterval(() => {
+    for (const message of signals(v4, "g1").slice(applied)) {
+      applied++;
+      if (message.type !== "signal") continue;
+      if (message.data.kind === "answer") {
+        answerSdp = message.data.sdp;
+        void pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+      } else if (message.data.kind === "candidate") void pc.addIceCandidate(message.data.candidate);
+    }
+  }, 20);
+  cleanup.push(() => clearInterval(trickle));
+  await until(() => channel.readyState === "open");
+  await new Promise((r) => setTimeout(r, 200));
+  expect(log.filter((line) => /code \d{6}$/.test(line))).toEqual([]);
+
+  const proof = await authProof(
+    "unknown-token",
+    sdpFingerprint(offerSdp)!,
+    sdpFingerprint(answerSdp)!,
+  );
+  channel.send(JSON.stringify({ t: "resume", proof } satisfies ChannelMessage));
+  await until(() => received.length === 1);
+  expect(received).toEqual([{ t: "auth-fail", attemptsLeft: 3 }]);
+  await until(() => log.some((line) => /code \d{6}$/.test(line)));
+});
+
 test("the werift guard is on while nearby runs", async () => {
   const before = process.listenerCount("unhandledRejection");
   const { nearby } = host();

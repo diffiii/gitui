@@ -38,6 +38,21 @@ test("server messages a host handles are parsed; anything else is null", () => {
 });
 
 test("signals are checked field by field", () => {
+  expect(parseSignal({ kind: "offer", sdp: "v=0", resume: true })).toEqual({
+    kind: "offer",
+    sdp: "v=0",
+    resume: true,
+  });
+  for (const resume of [false, "true", 1]) {
+    expect(parseSignal({ kind: "offer", sdp: "v=0", resume })).toEqual({
+      kind: "offer",
+      sdp: "v=0",
+    });
+  }
+  expect(parseSignal({ kind: "answer", sdp: "v=0", resume: true })).toEqual({
+    kind: "answer",
+    sdp: "v=0",
+  });
   const candidate = { candidate: "candidate:1 1 udp 1 10.0.0.1 9 typ host", sdpMid: "0" };
   expect(parseSignal({ kind: "candidate", candidate })).toEqual({ kind: "candidate", candidate });
   expect(

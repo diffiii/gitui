@@ -71,7 +71,9 @@ export function parseSignal(value: unknown): SignalData | null {
   if (!isRecord(value)) return null;
   const { kind, sdp, candidate } = value;
   if (kind === "offer" || kind === "answer") {
-    return typeof sdp === "string" && sdp.length <= MAX_SDP ? { kind, sdp } : null;
+    if (typeof sdp !== "string" || sdp.length > MAX_SDP) return null;
+    // An offer's `resume` says the guest will resume, so the host holds back the code.
+    return kind === "offer" && value.resume === true ? { kind, sdp, resume: true } : { kind, sdp };
   }
   if (kind === "candidate" && isRecord(candidate) && typeof candidate.candidate === "string") {
     const { candidate: line, sdpMid, sdpMLineIndex } = candidate;
