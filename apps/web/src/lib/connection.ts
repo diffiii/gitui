@@ -1,14 +1,10 @@
-import {
-  CLIENT_HEADER,
-  LOCAL_UI_META,
-  pairingFragment,
-  parsePairing,
-  type Pairing,
-} from "@gitui/shared";
+import { LOCAL_UI_META, pairingFragment, parsePairing, type Pairing } from "@gitui/shared";
 import type { QueryClient } from "@tanstack/react-query";
 import { useSyncExternalStore } from "react";
-import { parseNearbyHost, type NearbyHost, type NearbyState } from "./nearby/state.ts";
-import { tokens } from "./nearby/tokens.ts";
+import { rendezvous } from "./nearby/rendezvous.ts";
+import { nearbySession, type NearbySession } from "./nearby/session.ts";
+import { parseNearbyHost, type NearbyHost } from "./nearby/state.ts";
+import { withHeaders } from "./withHeaders.ts";
 
 /**
  * Where API requests go. A page served by gitui itself (the CLI, or the Vite dev server with its
@@ -17,7 +13,8 @@ import { tokens } from "./nearby/tokens.ts";
  * (it wasn't opened through the pairing link, or gitui restarted since): then it is `noSession`.
  * Any other page is the hosted app, which calls the CLI on 127.0.0.1 once it is paired with it,
  * until the CLI rejects the pairing's token, or a `gitui --nearby` on another computer of this
- * network over WebRTC once the user picked it (`nearby`; nearby/session.ts holds that link).
+ * network over WebRTC once the user picked it (`nearby`: its session holds that link, and ends
+ * with the connection).
  */
 export type Connection =
   | { kind: "local" }
@@ -25,7 +22,7 @@ export type Connection =
   | { kind: "unpaired" }
   | { kind: "paired"; pairing: Pairing }
   | { kind: "rejected"; pairing: Pairing }
-  | { kind: "nearby"; host: NearbyHost };
+  | { kind: "nearby"; session: NearbySession };
 
 /**
  * `unreachable`: no CLI answered. `unauthorized`: there is no pairing, or the CLI rejected its
@@ -43,15 +40,14 @@ export class ApiError extends Error {
 export const isApiError = (e: unknown, kind: ApiError["kind"]) =>
   e instanceof ApiError && e.kind === kind;
 
+/** A connection to move to. A nearby host gets its session when the app moves to it. */
+export type Target = Exclude<Connection, { kind: "nearby" }> | { kind: "nearby"; host: NearbyHost };
+
 /**
  * The connection a page starts with: `local` if gitui served it (it has the `LOCAL_UI_META`
- * tag), else the saved pairing fragment's, else the saved nearby host's (JSON).
+ * tag), else the saved pairing fragment's, else the saved nearby host (JSON).
  */
-export function initialConnection(
-  servedByGitui: boolean,
-  saved: string,
-  savedNearby = "",
-): Connection {
+export function initialConnection(servedByGitui: boolean, saved: string, savedNearby = ""): Target {
   if (servedByGitui) return { kind: "local" };
   const pairing = parsePairing(saved);
   if (pairing) return { kind: "paired", pairing };
@@ -67,21 +63,27 @@ function parseSavedHost(saved: string): NearbyHost | null {
   }
 }
 
-/** Base URL and headers of API requests. Without an accepted pairing there is nowhere to send them. */
-export function apiTarget(connection: Connection): {
-  base: string;
-  headers: Record<string, string>;
-} {
+/** How API requests go out: `fetch`, for a path like `/api/config`. */
+export type Transport = (path: string, init: RequestInit) => Promise<Response>;
+
+/** Where API requests go. Without an accepted pairing there is nowhere to send them. */
+export function apiTransport(connection: Connection): Transport {
   switch (connection.kind) {
     case "local":
-    // Paths on the host; the data channel is the authentication.
-    case "nearby":
-      return { base: "", headers: { [CLIENT_HEADER]: "1" } };
-    case "paired":
-      return {
-        base: `http://127.0.0.1:${connection.pairing.port}`,
-        headers: { [CLIENT_HEADER]: "1", authorization: `Bearer ${connection.pairing.token}` },
-      };
+      return (path, init) => fetch(path, withHeaders(init));
+    case "nearby": {
+      // Over the session's data channel, which is the authentication.
+      const { session } = connection;
+      return (path, init) => session.fetch(path, withHeaders(init));
+    }
+    case "paired": {
+      const { port, token } = connection.pairing;
+      return (path, init) =>
+        fetch(
+          `http://127.0.0.1:${port}${path}`,
+          withHeaders(init, { authorization: `Bearer ${token}` }),
+        );
+    }
     case "noSession":
     case "unpaired":
     case "rejected":
@@ -102,32 +104,21 @@ export type ConnectionStatus =
   | { kind: "connecting"; port: number }
   | { kind: "unreachable"; port: number }
   | { kind: "connected" }
-  /** Opening the data channel to a nearby host, or resuming the session with it. */
-  | { kind: "nearbyConnecting"; host: string }
-  | {
-      kind: "nearbyCode";
-      host: string;
-      checking: boolean;
-      attemptsLeft?: number;
-      notice?: "expired" | "restarted";
-    }
-  /** Connected, but the nearby session dropped and is coming back; the app stays up. */
-  | { kind: "reconnecting"; host: string }
-  | { kind: "nearbyFailed"; host: string; reason: string };
+  /** A nearby host: its session's state says the rest. */
+  | { kind: "nearby"; session: NearbySession };
 
 /**
- * What the app shows, from the connection and the `["config"]` query, or for a nearby host from
- * its session. Any answer, even an error response, means gitui is up, and from then on the app
- * stays up: failed requests show their own errors, and a rejected token changes the connection.
+ * What the app shows, from the connection and the `["config"]` query. Any answer, even an error
+ * response, means gitui is up, and from then on the app stays up: failed requests show their own
+ * errors, and a rejected token changes the connection.
  */
 export function connectionStatus(
   connection: Connection,
   config: { dataUpdatedAt: number; errorUpdatedAt: number; failureReason: Error | null },
-  nearby: NearbyState = { kind: "off" },
 ): ConnectionStatus {
   switch (connection.kind) {
     case "nearby":
-      return nearbyStatus(connection.host, nearby);
+      return connection;
     case "local":
       return { kind: "connected" };
     case "noSession":
@@ -144,40 +135,14 @@ export function connectionStatus(
   }
 }
 
-/** The status of a nearby connection to `host`, from the session's state. */
-export function nearbyStatus(host: NearbyHost, nearby: NearbyState): ConnectionStatus {
-  // The session catches up with the connection synchronously; until it has, it's connecting.
-  if (nearby.kind === "off" || nearby.host.key !== host.key) {
-    return { kind: "nearbyConnecting", host: host.name };
-  }
-  const name = nearby.host.name;
-  switch (nearby.kind) {
-    case "connecting":
-      return { kind: "nearbyConnecting", host: name };
-    case "code": {
-      const { checking, attemptsLeft, notice } = nearby;
-      return {
-        kind: "nearbyCode",
-        host: name,
-        checking,
-        ...(attemptsLeft !== undefined && { attemptsLeft }),
-        ...(notice && { notice }),
-      };
-    }
-    case "connected":
-      return { kind: "connected" };
-    case "reconnecting":
-      return { kind: "reconnecting", host: name };
-    case "failed":
-      return { kind: "nearbyFailed", host: name, reason: nearby.reason };
-  }
-}
-
-// The store reads the document and localStorage on first use, so importing it is safe anywhere.
+// Importing the store has no effects: initConnection reads the page's connection, and until
+// then it is `unpaired`.
 const KEY = "gitui-pairing";
 const NEARBY_KEY = "gitui-nearby-host";
-let connection: Connection | undefined;
+let connection: Connection = { kind: "unpaired" };
 const listeners = new Set<() => void>();
+/** Opens a session with a nearby host (tests pass initConnection another). */
+let openSession: (host: NearbyHost) => NearbySession = nearbySession;
 
 function saved(key: string): string {
   try {
@@ -197,23 +162,27 @@ function save(key: string, value: string | null) {
   }
 }
 
-const savedConnection = () => initialConnection(hasLocalUiMeta(), saved(KEY), saved(NEARBY_KEY));
-
 const hasLocalUiMeta = () => document.querySelector(`meta[name="${LOCAL_UI_META}"]`) !== null;
 
-export function getConnection(): Connection {
-  connection ??= savedConnection();
-  return connection;
-}
+export const getConnection = (): Connection => connection;
 
 export function subscribeConnection(cb: () => void) {
   listeners.add(cb);
   return () => listeners.delete(cb);
 }
 
-function update(next: Connection) {
-  connection = next;
+/**
+ * Move to `next`, opening a session with a nearby host; the host the app is connected to already
+ * keeps its session. A session the app moves away from ends, and forgets its token, once the app
+ * has moved on, so nothing shows it ending.
+ */
+function update(next: Target) {
+  const previous = connection;
+  if (next.kind !== "nearby") connection = next;
+  else if (previous.kind === "nearby" && previous.session.host.key === next.host.key) return;
+  else connection = { kind: "nearby", session: openSession(next.host) };
   listeners.forEach((l) => l());
+  if (previous.kind === "nearby") previous.session.stop();
 }
 
 export const useConnection = () => useSyncExternalStore(subscribeConnection, getConnection);
@@ -231,21 +200,14 @@ export function useDisconnect(): { target: string; disconnect: () => void } | nu
         disconnect: () => setPairing(null),
       };
     case "nearby":
-      return { target: connection.host.name, disconnect: () => setNearbyHost(null) };
+      return { target: connection.session.host.name, disconnect: () => setNearbyHost(null) };
     default:
       return null;
   }
 }
 
-/** Forget the nearby host's resume token, unless the app stays connected to it (`next`). */
-function forgetNearbyToken(next?: NearbyHost | null) {
-  const current = getConnection();
-  if (current.kind === "nearby" && current.host.key !== next?.key) tokens.forget(current.host.key);
-}
-
 /** Pair the hosted app with a CLI, or forget the pairing with null, and save it for next time. */
 export function setPairing(pairing: Pairing | null) {
-  forgetNearbyToken();
   save(NEARBY_KEY, null);
   save(KEY, pairing && pairingFragment(pairing));
   update(pairing ? { kind: "paired", pairing } : { kind: "unpaired" });
@@ -253,10 +215,10 @@ export function setPairing(pairing: Pairing | null) {
 
 /**
  * Connect the hosted app to a nearby host, or forget it (and its resume token) with null, and
- * save it, so a reload resumes the session with it.
+ * save it, so a reload resumes the session with it. The host it is connected to already keeps
+ * its session.
  */
 export function setNearbyHost(host: NearbyHost | null) {
-  forgetNearbyToken(host);
   save(KEY, null);
   save(NEARBY_KEY, host && JSON.stringify(host));
   update(host ? { kind: "nearby", host } : { kind: "unpaired" });
@@ -284,7 +246,8 @@ export function afterRejection(used: Connection): Connection {
  */
 export function rejectConnection(used: Connection) {
   const next = afterRejection(used);
-  if (next !== used && used === getConnection()) update(next);
+  // (A nearby connection is never rejected: `next` is `used`.)
+  if (next !== used && next.kind !== "nearby" && used === getConnection()) update(next);
 }
 
 /**
@@ -297,13 +260,15 @@ export function retrySession() {
 }
 
 /**
- * Startup wiring. Reads the page's connection, drops everything fetched over a connection when it
- * changes, and then: a local page retries a lost session whenever it is shown again (a phone
+ * Startup wiring. Reads the page's connection (opening the session with a saved nearby host),
+ * drops everything fetched over a connection when it changes, and then: a local page retries a lost session whenever it is shown again (a phone
  * opens a scanned pairing link in a new tab, and the user comes back to this one); the hosted app
- * adopts pairing links opened in this tab.
+ * adopts pairing links opened in this tab, and has a nearby session check its channel when the
+ * page is shown again (iOS may have killed it meanwhile).
  */
-export function initConnection(queryClient: QueryClient) {
-  connection = savedConnection();
+export function initConnection(queryClient: QueryClient, open = nearbySession) {
+  openSession = open;
+  update(initialConnection(hasLocalUiMeta(), saved(KEY), saved(NEARBY_KEY)));
   subscribeConnection(() => queryClient.clear());
 
   if (connection.kind === "local") {
@@ -323,4 +288,16 @@ export function initConnection(queryClient: QueryClient) {
   };
   adoptHash();
   addEventListener("hashchange", adoptHash);
+
+  const wake = () => {
+    const current = getConnection();
+    if (current.kind === "nearby") current.session.wake();
+    else rendezvous().wake();
+  };
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") wake();
+  });
+  addEventListener("pageshow", (event) => {
+    if ((event as PageTransitionEvent).persisted) wake();
+  });
 }

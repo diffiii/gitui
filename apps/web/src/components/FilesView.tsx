@@ -99,7 +99,7 @@ function FileContents({ path }: { path: string }) {
   const { repo, api } = useRepo();
   const { data, error } = useQuery({
     queryKey: [repo, "file", path],
-    queryFn: () => api.file(path),
+    queryFn: (c) => api.file(path, c),
     refetchInterval: 3000,
   });
 

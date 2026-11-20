@@ -14,7 +14,12 @@ import {
   type HostMessage,
   type SignalData,
 } from "@gitui/shared";
-import { createChannelClient, decodeIncoming, type ChannelTransport } from "./channelFetch.ts";
+import {
+  createChannelClient,
+  decodeIncoming,
+  type ChannelTransport,
+  type FetchProgress,
+} from "./channelFetch.ts";
 import type { Rendezvous } from "./rendezvous.ts";
 
 // The guest's WebRTC connection to a host: it makes the offer, trickles ICE candidates through
@@ -36,6 +41,31 @@ export class HostUnverifiedError extends NearbyError {
   override name = "HostUnverifiedError";
 }
 
+/**
+ * The host refused the offer (`refused`): too many guests proving themselves at once, or too
+ * many offers lately. Trying again at once would only add to them.
+ */
+export class RefusedError extends NearbyError {
+  override name = "RefusedError";
+}
+
+type RefusedReason = Extract<SignalData, { kind: "refused" }>["reason"];
+
+/**
+ * Why a host refused an offer, for each reason it gives. A reason this page doesn't know (a newer
+ * CLI's) gets the generic message.
+ */
+const REFUSALS: Record<RefusedReason, (host: string) => string> = {
+  busy: (host) => `${host} is busy with other devices connecting. Try again in a moment.`,
+  "rate-limited": (host) => `${host} got too many connection requests. Try again in a minute.`,
+};
+
+/** What to say when `host` refuses an offer for `reason`. */
+export const refusalMessage = (host: string, reason: string) =>
+  Object.hasOwn(REFUSALS, reason)
+    ? REFUSALS[reason as RefusedReason](host)
+    : `${host} turned the connection down. Try again later.`;
+
 export type AuthResult = { ok: true } | { ok: false; attemptsLeft: number };
 
 export interface GuestPeer {
@@ -56,7 +86,7 @@ export interface GuestPeer {
   /** False once the channel closed or the connection failed, even if no event said so yet. */
   isOpen(): boolean;
   /** `fetch` for paths on the host, once authenticated. */
-  fetch(path: string, init?: RequestInit): Promise<Response>;
+  fetch(path: string, init?: RequestInit, progress?: FetchProgress): Promise<Response>;
   /** Called once when the connection ends, with why; not after close(). */
   onClose(listener: (reason: string) => void): void;
   close(): void;
@@ -119,13 +149,7 @@ export async function connectToHost(
     if (data.offerId !== offerId) return;
     try {
       if (data.kind === "refused") {
-        failSetup(
-          new NearbyError(
-            data.reason === "busy"
-              ? `${host.name} is busy with other devices connecting. Try again in a moment.`
-              : `${host.name} got too many connection requests. Try again in a minute.`,
-          ),
-        );
+        failSetup(new RefusedError(refusalMessage(host.name, data.reason)));
       } else if (data.kind === "answer" && !answered) {
         answered = true;
         remoteFingerprint = sdpFingerprint(data.sdp);
@@ -345,9 +369,9 @@ function openPeer(
       channel.readyState === "open" &&
       pc.connectionState !== "failed" &&
       pc.connectionState !== "closed",
-    fetch: (path, init) =>
+    fetch: (path, init, progress) =>
       authenticated
-        ? client.fetch(path, init)
+        ? client.fetch(path, init, progress)
         : Promise.reject(new NearbyError("Enter the code before sending requests.")),
     onClose: (listener) => void closeListeners.push(listener),
     close: () => end("Disconnected.", false),

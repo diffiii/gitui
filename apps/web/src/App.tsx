@@ -1,4 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
+import { LoaderCircle } from "lucide-react";
+import { useState } from "react";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { getConfig } from "@/lib/api";
@@ -30,19 +32,19 @@ export default function App() {
       <title>{repo ? `${repo.split("/").pop()} · gitui` : "gitui"}</title>
       {repo ? (
         <RepoProvider key={repo} repo={repo}>
-          <OpenedRepo>
-            {/* viewport-fit=cover (index.html) lays the page under iOS's notch and home indicator. */}
-            <div className="flex h-svh flex-col bg-background pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)] md:pb-[env(safe-area-inset-bottom)]">
-              <AppHeader view={view} onView={onView} onOpenRepo={openRepo} />
-              <main className="min-h-0 flex-1">
+          {/* viewport-fit=cover (index.html) lays the page under iOS's notch and home indicator. */}
+          <div className="flex h-svh flex-col bg-background pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)] md:pb-[env(safe-area-inset-bottom)]">
+            <AppHeader view={view} onView={onView} onOpenRepo={openRepo} />
+            <main className="min-h-0 flex-1">
+              <OpenedRepo repo={repo}>
                 {view === "changes" && <ChangesView />}
                 {view === "history" && <HistoryView />}
                 {view === "branches" && <BranchesView />}
                 {view === "files" && <FilesView />}
-              </main>
-              <ViewTabBar view={view} onView={onView} />
-            </div>
-          </OpenedRepo>
+              </OpenedRepo>
+            </main>
+            <ViewTabBar view={view} onView={onView} />
+          </div>
         </RepoProvider>
       ) : isLoading ? null : (
         <RepoWelcome onOpen={openRepo} />
@@ -58,11 +60,39 @@ export default function App() {
 
 /**
  * The repo's views, unless this device may only use repositories opened on the computer and
- * this isn't one (a link from elsewhere): then the picker, saying so.
+ * `repo` isn't one (a link from elsewhere): then the picker, saying so. The views wait for the
+ * repo's first status, so such a repo doesn't flash their errors first; the status keeps polling,
+ * so the views come up once the repo is opened on the computer.
  */
-function OpenedRepo({ children }: { children: React.ReactNode }) {
-  const { error } = useStatus();
-  if (isApiError(error, "not-opened")) return <RepoWelcome onOpen={openRepo} notOpened />;
+function OpenedRepo({ repo, children }: { repo: string; children: React.ReactNode }) {
+  const { data, error } = useStatus();
+  // A query without data drops its error while it fetches again, so the verdict is kept until
+  // the next one (adjusting state while rendering, as React's docs describe), and the screen
+  // doesn't flash away on every poll, or for as long as a nearby session reconnects.
+  const [kept, setKept] = useState(false);
+  const notOpened = isApiError(error, "not-opened") || (kept && data === undefined && !error);
+  if (notOpened !== kept) setKept(notOpened);
+  if (notOpened) {
+    return (
+      <RepoWelcome
+        onOpen={openRepo}
+        notOpened={repo}
+        className="h-full min-h-0 overflow-y-auto p-4"
+      />
+    );
+  }
+  if (data === undefined && !error) {
+    // It fades in late, so a quick first status doesn't flash it.
+    return (
+      <div
+        role="status"
+        aria-label="Loading"
+        className="flex h-full animate-in items-center justify-center fade-in fill-mode-backwards delay-300 duration-300"
+      >
+        <LoaderCircle className="size-5 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
   return children;
 }
 
