@@ -1,6 +1,6 @@
 import { parsePairing } from "@gitui/shared";
 import { useQuery } from "@tanstack/react-query";
-import { Link2, LoaderCircle, QrCode, Terminal, Unplug } from "lucide-react";
+import { Link2, LoaderCircle, QrCode, RotateCw, Terminal, Unplug } from "lucide-react";
 import { useState } from "react";
 import { CenteredScreen } from "@/components/CenteredScreen";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { getConfig } from "@/lib/api";
 import {
   connectionStatus,
+  retrySession,
   retryWhileUnreachable,
   setPairing,
   useConnection,
@@ -103,10 +104,16 @@ function NoSessionScreen() {
       title="Pair this device with gitui"
       description="Scan the QR code or open the link gitui printed in your terminal."
     >
-      <p className="px-1 text-center text-xs text-muted-foreground">
-        gitui prints a new link each time it starts, so links and bookmarks from an earlier run stop
-        working.
-      </p>
+      <div className="flex flex-col items-center gap-4">
+        <Button variant="outline" onClick={retrySession}>
+          <RotateCw />
+          Try again
+        </Button>
+        <p className="px-1 text-center text-xs text-muted-foreground">
+          Opened the link in another tab? Come back here and this page picks it up. gitui prints a
+          new link each time it starts, so links and bookmarks from an earlier run stop working.
+        </p>
+      </div>
     </CenteredScreen>
   );
 }

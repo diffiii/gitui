@@ -11,6 +11,7 @@ import {
   initConnection,
   initialConnection,
   rejectConnection,
+  retrySession,
   retryWhileUnreachable,
   setPairing,
   type Connection,
@@ -137,6 +138,24 @@ test("the gate stays connected after an error response, across refetches", async
   gate.stop();
 });
 
+const saved: [string, PropertyDescriptor | undefined][] = [];
+
+/** Replaces the global `name` until `restoreGlobals`. */
+function stub(name: string, value: unknown) {
+  saved.push([name, Object.getOwnPropertyDescriptor(globalThis, name)]);
+  Object.defineProperty(globalThis, name, { value, configurable: true, writable: true });
+}
+
+function restoreGlobals() {
+  for (const [name, d] of saved.reverse()) {
+    if (d) Object.defineProperty(globalThis, name, d);
+    else delete (globalThis as Record<string, unknown>)[name];
+  }
+  saved.length = 0;
+}
+
+const status401 = () => Promise.resolve(Response.json({ error: "Unauthorized" }, { status: 401 }));
+
 // A hosted copy on a loopback host (e.g. `vp preview`): without the marker it pairs all the same.
 describe("the connection store in the hosted app", () => {
   const url = new URL("http://localhost:4173/?repo=%2Fr&view=history#port=4778&token=s3cret");
@@ -144,11 +163,6 @@ describe("the connection store in the hosted app", () => {
   const events: Record<string, () => void> = {};
   let respond: () => Promise<Response> = () => Promise.reject(new TypeError("Failed to fetch"));
   const queryClient = new QueryClient();
-  const saved: [string, PropertyDescriptor | undefined][] = [];
-  const stub = (name: string, value: unknown) => {
-    saved.push([name, Object.getOwnPropertyDescriptor(globalThis, name)]);
-    Object.defineProperty(globalThis, name, { value, configurable: true, writable: true });
-  };
 
   beforeAll(() => {
     stub("location", url);
@@ -167,15 +181,7 @@ describe("the connection store in the hosted app", () => {
     stub("fetch", () => respond());
     initConnection(queryClient);
   });
-  afterAll(() => {
-    for (const [name, d] of saved.reverse()) {
-      if (d) Object.defineProperty(globalThis, name, d);
-      else delete (globalThis as Record<string, unknown>)[name];
-    }
-  });
-
-  const status401 = () =>
-    Promise.resolve(Response.json({ error: "Unauthorized" }, { status: 401 }));
+  afterAll(restoreGlobals);
 
   test("adopts the pairing link it was opened with and strips it from the address", () => {
     expect(getConnection()).toEqual(paired);
@@ -228,5 +234,88 @@ describe("the connection store in the hosted app", () => {
     setPairing(null);
     expect(getConnection()).toEqual({ kind: "unpaired" });
     expect(storage.has("gitui-pairing")).toBe(false);
+  });
+});
+
+// A page `gitui --lan` serves: it has the marker, and its requests need the session cookie.
+describe("the connection store in a page gitui served", () => {
+  const queryClient = new QueryClient();
+  const page = { visibilityState: "visible", listeners: {} as Record<string, () => void> };
+  let calls = 0;
+  let respond: () => Promise<Response> = status401;
+
+  beforeAll(() => {
+    stub("location", new URL("http://192.168.1.5:4777/"));
+    stub("document", {
+      querySelector: () => ({}), // the LOCAL_UI_META tag
+      addEventListener: (type: string, fn: () => void) => (page.listeners[type] = fn),
+      get visibilityState() {
+        return page.visibilityState;
+      },
+    });
+    stub("fetch", () => (++calls, respond()));
+    initConnection(queryClient);
+  });
+  afterAll(restoreGlobals);
+
+  /**
+   * Mounts what the gate renders once connected, the app's `["config"]` query, until it has data
+   * or the session is lost (which drops the query, and the gate unmounts the app).
+   */
+  async function mountApp() {
+    const observer = new QueryObserver(queryClient, { queryKey: ["config"], queryFn: getConfig });
+    const stop = observer.subscribe(() => {});
+    while (!observer.getCurrentResult().isSuccess && getConnection().kind === "local") {
+      await new Promise((r) => setTimeout(r, 1));
+    }
+    stop();
+    return observer.getCurrentResult();
+  }
+
+  const show = (state: "visible" | "hidden") => {
+    page.visibilityState = state;
+    page.listeners.visibilitychange!();
+  };
+
+  test("starts local", () => {
+    expect(getConnection()).toEqual({ kind: "local" });
+  });
+
+  test("a 401 loses the session and drops what was fetched", async () => {
+    queryClient.setQueryData(["/r", "status"], {});
+    await mountApp();
+    expect(getConnection()).toEqual({ kind: "noSession" });
+    expect(queryClient.getQueryData(["/r", "status"])).toBeUndefined();
+  });
+
+  test("being hidden doesn't retry, being shown again does", () => {
+    show("hidden");
+    expect(getConnection()).toEqual({ kind: "noSession" });
+    show("visible");
+    expect(getConnection()).toEqual({ kind: "local" });
+  });
+
+  test("a retry without a session lands back in noSession, once", async () => {
+    calls = 0;
+    await mountApp();
+    expect(calls).toBe(1);
+    expect(getConnection()).toEqual({ kind: "noSession" });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(calls).toBe(1);
+  });
+
+  test("trying again once paired elsewhere brings the app back, refetching its config", async () => {
+    const config = { initialRepo: null, recent: ["/r"], home: "/home/u" };
+    respond = () => Promise.resolve(Response.json(config));
+    retrySession();
+    expect(getConnection()).toEqual({ kind: "local" });
+    expect((await mountApp()).data).toEqual(config);
+  });
+
+  test("retrying is a no-op unless the session was lost", () => {
+    const before = getConnection();
+    retrySession();
+    show("visible");
+    expect(getConnection()).toBe(before);
   });
 });

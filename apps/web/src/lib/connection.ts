@@ -174,11 +174,30 @@ export function rejectConnection(used: Connection) {
 }
 
 /**
- * Startup wiring of the hosted app; a local page needs none. Adopts pairing links opened in this
- * tab and drops everything fetched over a pairing when the connection changes.
+ * Let a page that lost its session (`noSession`) call its `/api` again, e.g. once its pairing link
+ * was opened in another tab, which sets the cookie for this one too. A 401 sends it back to
+ * `noSession`; only the user or the page becoming visible again retries, so it can't loop.
+ */
+export function retrySession() {
+  if (getConnection().kind === "noSession") update({ kind: "local" });
+}
+
+/**
+ * Startup wiring. Reads the page's connection, drops everything fetched over a connection when it
+ * changes, and then: a local page retries a lost session whenever it is shown again (a phone
+ * opens a scanned pairing link in a new tab, and the user comes back to this one); the hosted app
+ * adopts pairing links opened in this tab.
  */
 export function initConnection(queryClient: QueryClient) {
-  if (getConnection().kind === "local") return;
+  connection = initialConnection(hasLocalUiMeta(), savedPairing());
+  subscribe(() => queryClient.clear());
+
+  if (connection.kind === "local") {
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") retrySession();
+    });
+    return;
+  }
 
   // Take the pairing out of the address bar and history, keeping the query string the app keeps
   // its state in.
@@ -190,5 +209,4 @@ export function initConnection(queryClient: QueryClient) {
   };
   adoptHash();
   addEventListener("hashchange", adoptHash);
-  subscribe(() => queryClient.clear());
 }
