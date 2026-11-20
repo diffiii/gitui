@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { LoaderCircle } from "lucide-react";
+import { useState } from "react";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { getConfig } from "@/lib/api";
@@ -65,7 +66,13 @@ export default function App() {
  */
 function OpenedRepo({ repo, children }: { repo: string; children: React.ReactNode }) {
   const { data, error } = useStatus();
-  if (isApiError(error, "not-opened")) {
+  // A query without data drops its error while it fetches again, so the verdict is kept until
+  // the next one (adjusting state while rendering, as React's docs describe), and the screen
+  // doesn't flash away on every poll, or for as long as a nearby session reconnects.
+  const [kept, setKept] = useState(false);
+  const notOpened = isApiError(error, "not-opened") || (kept && data === undefined && !error);
+  if (notOpened !== kept) setKept(notOpened);
+  if (notOpened) {
     return (
       <RepoWelcome
         onOpen={openRepo}
