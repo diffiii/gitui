@@ -19,7 +19,10 @@ function ScrollArea({
       <ScrollAreaPrimitive.Viewport
         ref={viewportRef}
         data-slot="scroll-area-viewport"
-        className="size-full rounded-[inherit] transition-[color,box-shadow] outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1"
+        // Radix wraps children in a `display: table` div, which grows to its content's width and
+        // defeats truncation. Below lg that pushes rows and diffs past the screen, so make it a
+        // block there. (Wider screens keep it as it was.)
+        className="size-full rounded-[inherit] transition-[color,box-shadow] outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1 max-lg:[&>div]:block!"
       >
         {children}
       </ScrollAreaPrimitive.Viewport>

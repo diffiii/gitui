@@ -6,6 +6,20 @@
 @import "./palettes.css";
 
 @custom-variant dark (&:is(.dark *));
+/* Touch screens: nothing hovers, so hover-only affordances must show (NO_HOVER in lib/media.ts). */
+@custom-variant hover-none (@media (hover: none));
+
+/* Grows a small control's tap area to 40px under a finger without changing its layout. */
+@utility touch-target {
+  @media (pointer: coarse) {
+    position: relative;
+    &::after {
+      content: "";
+      position: absolute;
+      inset: min(0px, calc((100% - 2.5rem) / 2));
+    }
+  }
+}
 
 @theme inline {
   --font-heading: var(--font-sans);
@@ -67,6 +81,18 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+  /* The phone tab bar (ViewTabBar in AppHeader.tsx), over the home indicator's inset. */
+  --tab-bar-height: calc(3.5rem + env(safe-area-inset-bottom));
+  /* Bottom edge of toasts (App.tsx): sonner's defaults, raised above the tab bar on phones. */
+  --toaster-bottom: 24px;
+  --toaster-mobile-bottom: 16px;
+}
+
+@media (width < 48rem) {
+  :root {
+    --toaster-bottom: calc(var(--tab-bar-height) + 16px);
+    --toaster-mobile-bottom: calc(var(--tab-bar-height) + 16px);
+  }
 }
 
 .dark {
