@@ -61,3 +61,71 @@ bunx wrangler login
 openssl rand -base64 32 | bunx wrangler secret put NETWORK_KEY_SECRET
 bun run deploy
 ```
+
+## First test on a phone
+
+Try nearby on a real iPhone with a separate copy of the web app at `https://gitui-test.diffiii.dev`
+(the `nearby-test` env in `apps/web/wrangler.jsonc`), so `gitui.diffiii.dev` stays as it is until
+the test passes. The rendezvous allows that origin through `ALLOWED_ORIGINS` in `wrangler.jsonc`.
+Both custom domains need the `diffiii.dev` zone in the same Cloudflare account.
+
+1. Deploy the rendezvous and give it its secret (from the repo root, on this branch):
+
+   ```sh
+   bun install --frozen-lockfile
+   cd apps/rendezvous
+   bunx wrangler login
+   bunx wrangler deploy                                              # rendezvous.gitui.diffiii.dev
+   openssl rand -base64 32 | bunx wrangler secret put NETWORK_KEY_SECRET   # once; applies at once
+   curl -si https://rendezvous.gitui.diffiii.dev/v1/connect | head -1   # 426: it's up, secret or not
+   ```
+
+   Until the secret is set, every WebSocket gets a 500.
+
+2. Build the web app and deploy the test copy. The default build talks to
+   `wss://rendezvous.gitui.diffiii.dev`, so it needs no `VITE_GITUI_RENDEZVOUS_URL`:
+
+   ```sh
+   cd ../..
+   bun run build
+   cd apps/web
+   bunx wrangler deploy --env nearby-test                            # gitui-test.diffiii.dev
+   curl -sI https://gitui-test.diffiii.dev | grep -i content-security  # connect-src lists the rendezvous
+   ```
+
+3. On the Mac, from the repo root, run the CLI from this branch with a repository:
+
+   ```sh
+   node apps/cli/dist/gitui.js ~/code/some-repo --nearby          # or: bun apps/cli/bin/gitui.ts …
+   ```
+
+   It prints `Nearby: visible as '<name>' (IPv4, IPv6) on this network`. It says to open
+   gitui.diffiii.dev, but for this test open the test copy instead. Put the Mac and the iPhone on
+   the same Wi-Fi network, with VPNs off. iCloud Private Relay sends Safari's traffic from another
+   address, which puts the phone on another network, so turn it off for the test (Settings →
+   your name → iCloud → Private Relay).
+
+4. On the iPhone, open `https://gitui-test.diffiii.dev` in Safari and check:
+
+   - The Mac is listed. Tap it: the terminal prints a code. Enter it: the app opens on the
+     repository.
+   - Changes, History (open a commit), Branches and Files (open a file) all load. Stage a file.
+   - Reload the page: it reconnects with no new code (`Nearby: a device reconnected`).
+   - Lock the phone for a minute, or switch to another app and back: it reconnects, with no code.
+   - In the repository switcher, type the path of a repository you haven't opened on the Mac:
+     the picker says it wasn't opened on the computer, and `~/.config/gitui/recent.json` is
+     unchanged.
+   - Enter a wrong code 3 times on a new connection (Disconnect from the ⋮ menu, then tap the
+     Mac again): gitui hangs up and the terminal says so. Try again with the right code.
+   - Stop and restart gitui: the phone says gitui restarted and asks for the new code.
+   - Disconnect from the ⋮ menu: the list comes back, and the terminal says
+     `Nearby: device disconnected`.
+
+5. Once it passes and nearby ships on `gitui.diffiii.dev` (`cd apps/web && bun run deploy`), remove
+   the test copy and its origin:
+
+   ```sh
+   cd apps/web && bunx wrangler delete --env nearby-test
+   # drop the "vars" block from apps/rendezvous/wrangler.jsonc, then:
+   cd ../rendezvous && bunx wrangler deploy
+   ```
