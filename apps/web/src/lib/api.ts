@@ -7,6 +7,7 @@ import type {
   WorkingFile,
   WorkingFiles,
 } from "@gitui/shared";
+import { REPO_NOT_OPENED } from "@gitui/shared";
 import { ApiError, apiTarget, getConnection, rejectConnection } from "./connection.ts";
 import { nearbyFetch } from "./nearby/session.ts";
 
@@ -31,6 +32,9 @@ async function request<T>(method: "GET" | "POST", path: string, body?: unknown):
   if (res.status === 401) {
     rejectConnection(connection);
     throw new ApiError(data.error ?? res.statusText, "unauthorized");
+  }
+  if (res.status === 403 && data.code === REPO_NOT_OPENED) {
+    throw new ApiError(data.error, "not-opened");
   }
   if (!res.ok) throw new ApiError(data.error ?? res.statusText, "http");
   return data as T;

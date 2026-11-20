@@ -29,17 +29,19 @@ export type Connection =
 
 /**
  * `unreachable`: no CLI answered. `unauthorized`: there is no pairing, or the CLI rejected its
- * token. `http`: any other error response.
+ * token. `not-opened`: this device may only use repositories opened on the computer running
+ * gitui, and this isn't one (REPO_NOT_OPENED). `http`: any other error response.
  */
 export class ApiError extends Error {
-  readonly kind: "unreachable" | "unauthorized" | "http";
+  readonly kind: "unreachable" | "unauthorized" | "not-opened" | "http";
   constructor(message: string, kind: ApiError["kind"]) {
     super(message);
     this.kind = kind;
   }
 }
 
-const isApiError = (e: unknown, kind: ApiError["kind"]) => e instanceof ApiError && e.kind === kind;
+export const isApiError = (e: unknown, kind: ApiError["kind"]) =>
+  e instanceof ApiError && e.kind === kind;
 
 /**
  * The connection a page starts with: `local` if gitui served it (it has the `LOCAL_UI_META`

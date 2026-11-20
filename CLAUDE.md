@@ -81,6 +81,12 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   `/pair?key=<per-run secret>` sets. `nearby`: requests from an authenticated data channel,
   through `nearby/bridge.ts`, which gives them the Host `NEARBY_HOST`. Don't add checks in
   routes or `main.ts`.
+- Each listener also has a `repoScope`: `loopback` is `any`; `lan` and `nearby` (other devices)
+  are `opened`, i.e. only the `initialRepo` and the recent list, compared as realpaths, read per
+  request. Every repo path a request names goes through the `repoGate` (`access.ts`): the `repo`
+  middleware and `/open`, which only records repos in the recent list for `any`. A refusal is a
+  403 `{ error, code: REPO_NOT_OPENED }`. New routes that take a repo path must use the gate.
+  Server tests pass `configDir` to `createApp` so they never touch the real recent list.
 - Frontend data goes through TanStack Query with keys that start with the repo:
   `[repo, "status"]`, `[repo, "log", ...]`. Repo mutations use `useGitMutation` from
   `apps/web/src/lib/repo.tsx`, which invalidates `[repo]` when it settles and toasts errors.

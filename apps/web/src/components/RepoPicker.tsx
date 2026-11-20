@@ -15,16 +15,28 @@ import {
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { getConfig, openRepo } from "@/lib/api";
+import { isApiError } from "@/lib/connection";
 
 const basename = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
 
+/**
+ * Opens a repository. A phone or another computer may only open those opened on the computer
+ * running gitui; that refusal shows in the picker (`notOpened`) rather than as a toast.
+ */
 function useOpenRepo(onOpen: (root: string) => void) {
-  return useMutation({
+  const open = useMutation({
     mutationFn: openRepo,
     onSuccess: (r) => onOpen(r.root),
-    onError: (e) => toast.error(e.message),
+    onError: (e) => {
+      if (!isApiError(e, "not-opened")) toast.error(e.message);
+    },
   });
+  return { ...open, notOpened: isApiError(open.error, "not-opened") };
 }
+
+/** Why a path typed on another device can't be opened, and what to do instead. */
+const NOT_OPENED =
+  "This repository wasn't opened on the computer running gitui. From this device you can open the recent repositories, or run gitui with its path on the computer.";
 
 function tildify(p: string, home?: string) {
   return home && p.startsWith(home) ? `~${p.slice(home.length)}` : p;
@@ -60,6 +72,11 @@ export function RepoWelcome({ onOpen }: { onOpen: (root: string) => void }) {
           Open
         </Button>
       </form>
+      {open.notOpened && (
+        <p role="alert" className="mt-3 px-1 text-sm text-destructive">
+          {NOT_OPENED}
+        </p>
+      )}
       {!!config?.recent.length && (
         <div className="mt-8">
           <h2 className="mb-2 px-1 text-xs font-medium tracking-wide text-muted-foreground uppercase">
@@ -122,6 +139,11 @@ export function RepoSwitcher({ repo, onOpen }: { repo: string; onOpen: (root: st
             placeholder="Search recent or type a path…"
           />
           <CommandList>
+            {open.notOpened && (
+              <p role="alert" className="px-3 py-2 text-xs text-destructive">
+                {NOT_OPENED}
+              </p>
+            )}
             <CommandEmpty>
               {looksLikePath ? "Press enter to open this path" : "No recent repositories"}
             </CommandEmpty>
