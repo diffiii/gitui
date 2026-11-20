@@ -37,7 +37,15 @@ export async function workingFiles(repo: string, limit = 50_000): Promise<Workin
     if (tag === "R" || tag === "S") missing.add(p);
     else if (!p.endsWith("/")) listed.add(p);
   }
-  const paths = [...listed].filter((p) => !missing.has(p));
+  // A tracked path whose folder is now a symlink is still listed, next to the symlink: git's
+  // `--deleted` check follows it. Such a path isn't there, and reading it is refused.
+  const behindFile = (p: string) => {
+    for (let i = p.indexOf("/"); i !== -1; i = p.indexOf("/", i + 1)) {
+      if (listed.has(p.slice(0, i))) return true;
+    }
+    return false;
+  };
+  const paths = [...listed].filter((p) => !missing.has(p) && !behindFile(p));
   return { paths: paths.slice(0, limit), truncated: truncated || paths.length > limit };
 }
 

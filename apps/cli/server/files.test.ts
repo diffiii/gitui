@@ -161,6 +161,8 @@ test("refuses a tracked path whose directory is now a symlink to .git", async ()
   fs.symlinkSync(".git", path.join(repo, "x"));
 
   expect(await readFile(repo, "x/config")).toEqual(refused("Behind a symbolic link: x/config"));
+  // Listed as the symlink it now is, not as a folder too, which the tree can't show.
+  expect((await listFiles(repo)).body.paths).toEqual(["x"]);
 });
 
 test("refuses a symlinked directory even when it points inside the repo", async () => {
