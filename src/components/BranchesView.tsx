@@ -56,10 +56,7 @@ export function BranchesView() {
   const remote = visible.filter((b) => b.remote);
   // Keyed by full refname: a tag can share a branch's short name, and git prefers the tag.
   const active =
-    branches.find((b) => b.ref === selected) ??
-    branches.find((b) => b.current) ??
-    branches[0] ??
-    null;
+    branches.find((b) => b.ref === selected) ?? branches.find((b) => b.current) ?? branches[0];
 
   const checkout = useGitMutation(
     (api, b: Branch) => api.checkout(b.name, b.remote),
