@@ -2,14 +2,7 @@ import { spawn } from "node:child_process";
 import { stat } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import type {
-  HeadInfo,
-  FileStatus,
-  Status,
-  Commit,
-  CommitDetail,
-  Branch,
-} from "../shared/types.ts";
+import type { HeadInfo, FileStatus, Status, Commit, CommitDetail, Branch } from "@gitui/shared";
 
 export type { HeadInfo, FileStatus, Status, Commit, CommitDetail, Branch };
 

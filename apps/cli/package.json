@@ -1,0 +1,20 @@
+{
+  "name": "@gitui/cli",
+  "version": "0.0.0",
+  "private": true,
+  "bin": {
+    "gitui": "./bin/gitui.ts"
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch server/main.ts"
+  },
+  "dependencies": {
+    "@gitui/shared": "workspace:*",
+    "@gitui/web": "workspace:*",
+    "hono": "^4.13.19"
+  },
+  "devDependencies": {
+    "@pierre/diffs": "^1.6.4"
+  }
+}

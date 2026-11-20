@@ -1,15 +1,13 @@
-import path from "node:path";
-import tailwindcss from "@tailwindcss/vite";
-import react from "@vitejs/plugin-react";
-import { defineConfig, lazyPlugins } from "vite-plus";
+import { defineConfig } from "vite-plus";
 
-const API_PORT = Number(process.env.GITUI_PORT ?? 4777);
-
+// Workspace-wide format, lint and type check settings. The app's Vite config lives in
+// apps/web/vite.config.ts; bare `vp dev` / `vp build` at the root target it.
 export default defineConfig({
+  defaultPackage: "./apps/web",
   fmt: {},
   lint: {
     plugins: ["react", "typescript", "oxc"],
-    ignorePatterns: ["dist/**"],
+    ignorePatterns: ["**/dist/**"],
     rules: {
       "react/rules-of-hooks": "error",
       "react/only-export-components": ["warn", { allowConstantExport: true }],
@@ -18,11 +16,4 @@ export default defineConfig({
     options: { typeAware: true, typeCheck: true },
     jsPlugins: [{ name: "vite-plus", specifier: "vite-plus/oxlint-plugin" }],
   },
-  resolve: {
-    alias: { "@": path.resolve(import.meta.dirname, "src") },
-  },
-  server: {
-    proxy: { "/api": `http://127.0.0.1:${API_PORT}` },
-  },
-  plugins: lazyPlugins(() => [react(), tailwindcss()]),
 });
