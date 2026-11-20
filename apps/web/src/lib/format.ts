@@ -16,6 +16,21 @@ export function relativeTime(unixSeconds: number) {
   return "just now";
 }
 
+/** How long ago, in the fewest characters (`5m`, `3h`, `2mo`), for narrow columns. */
+export function shortAge(unixSeconds: number, now = Date.now() / 1000) {
+  const age = Math.max(0, now - unixSeconds);
+  const units: [string, number][] = [
+    ["y", 31536000],
+    ["mo", 2592000],
+    ["w", 604800],
+    ["d", 86400],
+    ["h", 3600],
+    ["m", 60],
+  ];
+  for (const [unit, secs] of units) if (age >= secs) return `${Math.floor(age / secs)}${unit}`;
+  return "now";
+}
+
 export function fullDate(unixSeconds: number) {
   return new Date(unixSeconds * 1000).toLocaleString(undefined, {
     dateStyle: "medium",

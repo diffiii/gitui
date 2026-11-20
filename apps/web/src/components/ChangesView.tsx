@@ -16,16 +16,15 @@ import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/componen
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import type { FileStatus } from "@/lib/api";
+import { type FileChoice, firstChange, resolveChoice, splitChanges } from "@/lib/changes";
+import { splitPath } from "@/lib/format";
+import { NARROW, useMediaQuery } from "@/lib/media";
 import { useGitMutation, useRepo } from "@/lib/repo";
+import { DetailScreen } from "./DetailScreen";
 import { DiffView } from "./DiffView";
 import { EmptyState } from "./EmptyState";
 import { PathTree } from "./PathTree";
 import { TruncatedNotice } from "./TruncatedNotice";
-
-interface Selection {
-  path: string;
-  staged: boolean;
-}
 
 export function useStatus() {
   const { repo, api } = useRepo();
@@ -38,55 +37,71 @@ export function useStatus() {
 
 export function ChangesView() {
   const { data } = useStatus();
-  const { staged, unstaged } = useMemo(() => {
-    const files = data?.files ?? [];
-    return {
-      staged: files.filter((f) => f.x !== "." && !f.untracked && !f.conflicted),
-      unstaged: files.filter((f) => f.y !== "." || f.untracked || f.conflicted),
-    };
-  }, [data]);
-  const [choice, setSel] = useState<Selection | null>(null);
+  const { staged, unstaged } = useMemo(() => splitChanges(data?.files ?? []), [data]);
+  const [choice, setChoice] = useState<FileChoice | null>(null);
   const [discarding, setDiscarding] = useState<FileStatus[] | null>(null);
+  const narrow = useMediaQuery(NARROW);
 
-  // Keep the selection valid as files move between lists (e.g. after staging).
-  const sel = useMemo((): Selection | null => {
-    const has = (list: FileStatus[], path: string) => list.some((f) => f.path === path);
-    if (choice && has(choice.staged ? staged : unstaged, choice.path)) return choice;
-    if (choice && has(choice.staged ? unstaged : staged, choice.path))
-      return { path: choice.path, staged: !choice.staged };
-    if (unstaged[0]) return { path: unstaged[0].path, staged: false };
-    if (staged[0]) return { path: staged[0].path, staged: true };
-    return null;
-  }, [choice, staged, unstaged]);
+  // Keep the choice valid as files move between lists (e.g. after staging). Until a file is
+  // chosen, wide screens show the first one and narrow ones show the list.
+  const picked = useMemo(() => resolveChoice(choice, staged, unstaged), [choice, staged, unstaged]);
+  const sel = picked ?? (narrow ? null : firstChange(staged, unstaged));
 
   const selected = sel
     ? (sel.staged ? staged : unstaged).find((f) => f.path === sel.path)
     : undefined;
 
+  const list = (
+    <>
+      <div className="flex min-h-0 flex-1 flex-col">
+        <FileSection
+          title="Staged"
+          files={staged}
+          staged
+          selected={sel?.staged ? sel.path : null}
+          onSelect={(path) => setChoice({ path, staged: true })}
+          onDiscard={setDiscarding}
+          empty="Nothing staged"
+        />
+        <FileSection
+          title="Changes"
+          files={unstaged}
+          staged={false}
+          selected={sel && !sel.staged ? sel.path : null}
+          onSelect={(path) => setChoice({ path, staged: false })}
+          onDiscard={setDiscarding}
+          empty="Working tree clean"
+        />
+      </div>
+      <CommitBox stagedCount={staged.length} />
+    </>
+  );
+  const discardDialog = <DiscardDialog files={discarding} onClose={() => setDiscarding(null)} />;
+
+  if (narrow) {
+    return (
+      <>
+        {selected ? (
+          <DetailScreen
+            title={<FileTitle path={selected.path} />}
+            backLabel="Back to changes"
+            onBack={() => setChoice(null)}
+            actions={<FileActions file={selected} staged={sel!.staged} onDiscard={setDiscarding} />}
+          >
+            <FileDiffPane file={selected} staged={sel!.staged} />
+          </DetailScreen>
+        ) : (
+          <div className="flex h-full flex-col">{list}</div>
+        )}
+        {discardDialog}
+      </>
+    );
+  }
+
   return (
     <ResizablePanelGroup orientation="horizontal">
       <ResizablePanel defaultSize="30%" minSize="260px" className="flex flex-col">
-        <div className="flex min-h-0 flex-1 flex-col">
-          <FileSection
-            title="Staged"
-            files={staged}
-            staged
-            selected={sel?.staged ? sel.path : null}
-            onSelect={(path) => setSel({ path, staged: true })}
-            onDiscard={setDiscarding}
-            empty="Nothing staged"
-          />
-          <FileSection
-            title="Changes"
-            files={unstaged}
-            staged={false}
-            selected={sel && !sel.staged ? sel.path : null}
-            onSelect={(path) => setSel({ path, staged: false })}
-            onDiscard={setDiscarding}
-            empty="Working tree clean"
-          />
-        </div>
-        <CommitBox stagedCount={staged.length} />
+        {list}
       </ResizablePanel>
       <ResizableHandle />
       <ResizablePanel minSize="400px">
@@ -100,8 +115,58 @@ export function ChangesView() {
           />
         )}
       </ResizablePanel>
-      <DiscardDialog files={discarding} onClose={() => setDiscarding(null)} />
+      {discardDialog}
     </ResizablePanelGroup>
+  );
+}
+
+/** Stages `paths` from the unstaged list or unstages them from the staged one; all files without. */
+function useToggleStaged() {
+  const toggle = useGitMutation((api, v: { staged: boolean; paths?: string[] }) =>
+    v.staged ? api.unstage(v.paths) : api.stage(v.paths),
+  );
+  return (staged: boolean, paths?: string[]) => toggle.mutate({ staged, paths });
+}
+
+function FileTitle({ path }: { path: string }) {
+  const { dir, name } = splitPath(path);
+  return (
+    <div className="flex min-w-0 flex-col leading-tight">
+      <span className="truncate text-sm font-medium">{name}</span>
+      {dir && <span className="truncate text-xs text-muted-foreground">{dir}</span>}
+    </div>
+  );
+}
+
+/** The open file's row actions, as buttons in its detail bar on narrow screens. */
+function FileActions({
+  file,
+  staged,
+  onDiscard,
+}: {
+  file: FileStatus;
+  staged: boolean;
+  onDiscard: (files: FileStatus[]) => void;
+}) {
+  const toggle = useToggleStaged();
+  return (
+    <>
+      {!staged && (
+        <Button
+          variant="ghost"
+          size="icon-lg"
+          className="touch-target text-destructive"
+          aria-label="Discard changes"
+          onClick={() => onDiscard([file])}
+        >
+          <Undo2 />
+        </Button>
+      )}
+      <Button variant="outline" onClick={() => toggle(staged, [file.path])}>
+        {staged ? <Minus /> : <Plus />}
+        {staged ? "Unstage" : "Stage"}
+      </Button>
+    </>
   );
 }
 
@@ -131,9 +196,8 @@ function FileSection({
   onDiscard: (files: FileStatus[]) => void;
   empty: string;
 }) {
-  const stage = useGitMutation((api, paths?: string[]) => api.stage(paths));
-  const unstage = useGitMutation((api, paths?: string[]) => api.unstage(paths));
-  const toggle = (paths?: string[]) => (staged ? unstage : stage).mutate(paths);
+  const toggleStaged = useToggleStaged();
+  const toggle = (paths?: string[]) => toggleStaged(staged, paths);
   const paths = useMemo(() => files.map((f) => f.path), [files]);
   const gitStatus = useMemo(
     () => files.map((f) => ({ path: f.path, status: toGitStatus(f, staged) })),
@@ -157,7 +221,7 @@ function FileSection({
           <Button
             variant="ghost"
             size="xs"
-            className="ml-auto text-muted-foreground"
+            className="touch-target ml-auto text-muted-foreground"
             onClick={() => toggle()}
           >
             {staged ? <Minus /> : <Plus />}
@@ -217,7 +281,7 @@ function DiscardDialog({ files, onClose }: { files: FileStatus[] | null; onClose
                 {single.untracked
                   ? "This deletes the untracked file "
                   : "This reverts unstaged changes in "}
-                <code className="font-mono text-foreground">{single.path}</code>.
+                <code className="font-mono wrap-break-word text-foreground">{single.path}</code>.
               </>
             ) : (
               <>
@@ -316,14 +380,14 @@ function CommitBox({ stagedCount }: { stagedCount: number }) {
           }
         }}
         placeholder="Commit message"
-        className="min-h-20 resize-none bg-background font-mono text-sm"
+        className="min-h-20 resize-none bg-background font-mono"
       />
       <div className="flex items-center gap-2">
         <label className="flex items-center gap-2 text-xs text-muted-foreground select-none">
           <Checkbox checked={amend} onCheckedChange={(v) => toggleAmend(v === true)} />
           Amend last commit
         </label>
-        <Button className="ml-auto" size="sm" disabled={!canCommit} onClick={submit}>
+        <Button className="touch-target ml-auto" size="sm" disabled={!canCommit} onClick={submit}>
           {amend
             ? "Amend"
             : `Commit${stagedCount ? ` ${stagedCount} file${stagedCount > 1 ? "s" : ""}` : ""}`}

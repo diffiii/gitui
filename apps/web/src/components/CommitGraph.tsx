@@ -1,6 +1,8 @@
 import { LANE_COLORS, type GraphRow } from "@/lib/graph";
 
 export const ROW_H = 30;
+/** Row height under a finger, tall enough to tap. */
+export const TOUCH_ROW_H = 40;
 const LANE_W = 14;
 const R = 4;
 
@@ -17,12 +19,22 @@ export function graphWidth(lanes: number) {
   return lanes * LANE_W + 8;
 }
 
-/** Draws one row of the commit graph; rows tile vertically. */
-export function GraphCell({ row, hash, width }: { row: GraphRow; hash: string; width: number }) {
-  const mid = ROW_H / 2;
+/** Draws one row of the commit graph, `height` px tall; rows tile vertically. */
+export function GraphCell({
+  row,
+  hash,
+  width,
+  height,
+}: {
+  row: GraphRow;
+  hash: string;
+  width: number;
+  height: number;
+}) {
+  const mid = height / 2;
   const cx = x(row.col);
   return (
-    <svg width={graphWidth(width)} height={ROW_H} className="shrink-0 overflow-visible">
+    <svg width={graphWidth(width)} height={height} className="shrink-0 overflow-visible">
       {row.before.map((l, j) => {
         if (!l) return null;
         if (l.hash === hash) {
@@ -39,7 +51,7 @@ export function GraphCell({ row, hash, width }: { row: GraphRow; hash: string; w
         return (
           <path
             key={`p${j}`}
-            d={`M${x(j)} 0V${ROW_H}`}
+            d={`M${x(j)} 0V${height}`}
             stroke={color(l.color)}
             strokeWidth={2}
             fill="none"
@@ -49,7 +61,7 @@ export function GraphCell({ row, hash, width }: { row: GraphRow; hash: string; w
       {row.edges.map((e, i) => (
         <path
           key={`e${i}`}
-          d={curve(cx, mid, x(e.to), ROW_H)}
+          d={curve(cx, mid, x(e.to), height)}
           stroke={color(e.color)}
           strokeWidth={2}
           fill="none"

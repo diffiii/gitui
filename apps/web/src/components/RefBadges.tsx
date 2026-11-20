@@ -66,6 +66,8 @@ export function RefBadges({
               STYLE[r.kind],
               switchable &&
                 "cursor-pointer hover:brightness-110 hover:ring-1 hover:ring-current/40",
+              // A tap meant for the row would switch branches; touch screens switch elsewhere.
+              switchable && "hover-none:pointer-events-none",
             )}
           >
             <Icon className="size-3 shrink-0" />

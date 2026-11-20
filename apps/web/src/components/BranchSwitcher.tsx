@@ -12,9 +12,9 @@ import {
 } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import type { Branch, Status } from "@/lib/api";
-import { relativeTime } from "@/lib/format";
 import { useGitMutation } from "@/lib/repo";
 import { cn } from "@/lib/utils";
+import { Age } from "./Age";
 import { useBranches } from "./BranchesView";
 
 /** Header control showing the current branch; opens a searchable list to switch or create. */
@@ -49,7 +49,7 @@ export function BranchSwitcher({ status }: { status: Status }) {
         <Button
           variant="outline"
           size="xs"
-          className="gap-1.5 bg-muted/40 font-medium"
+          className="touch-target gap-1.5 bg-muted/40 font-medium max-md:min-w-0 max-md:shrink"
           disabled={busy}
         >
           <GitBranch className="text-muted-foreground" />
@@ -158,8 +158,8 @@ function BranchItem({ branch: b, onSelect }: { branch: Branch; onSelect: () => v
           )}
         </span>
       )}
-      <span className="w-16 shrink-0 text-right text-xs text-muted-foreground">
-        {relativeTime(b.date)}
+      <span className="w-16 shrink-0 text-right text-xs text-muted-foreground max-md:w-auto">
+        <Age date={b.date} />
       </span>
     </CommandItem>
   );
