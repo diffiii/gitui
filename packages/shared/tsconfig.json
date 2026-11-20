@@ -2,7 +2,7 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.shared.tsbuildinfo",
-    "types": []
+    "types": ["bun"]
   },
   "include": ["src"]
 }

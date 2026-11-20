@@ -1,7 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { createApp } from "./app.ts";
 import { GitError, log } from "./git.ts";
-import { git, initRepo, removeTempDirs, revParse } from "./test-repo.ts";
+import { git, initRepo, removeTempDirs, revParse, testApp } from "./test-repo.ts";
 
 afterAll(removeTempDirs);
 
@@ -61,7 +60,7 @@ describe("log", () => {
 });
 
 function getLog(params: Record<string, string>) {
-  return createApp().request(`/api/repo/log?${new URLSearchParams(params).toString()}`, {
+  return testApp().request(`/api/repo/log?${new URLSearchParams(params).toString()}`, {
     headers: { host: "localhost", "x-gitui": "1" },
   });
 }

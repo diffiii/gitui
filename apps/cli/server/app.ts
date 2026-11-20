@@ -1,32 +1,13 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Hono } from "hono";
+import { type AccessOptions, apiAccess } from "./access.ts";
+import { pushRecent, readRecent } from "./config.ts";
 import * as g from "./git.ts";
 import { withRepoLock } from "./lock.ts";
 
-export interface AppOptions {
+export interface AppOptions extends AccessOptions {
   initialRepo?: string;
-}
-
-const CONFIG_DIR = path.join(
-  process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config"),
-  "gitui",
-);
-const RECENT_FILE = path.join(CONFIG_DIR, "recent.json");
-
-async function readRecent(): Promise<string[]> {
-  try {
-    return JSON.parse(await readFile(RECENT_FILE, "utf8"));
-  } catch {
-    return [];
-  }
-}
-
-export async function pushRecent(repo: string) {
-  const list = [repo, ...(await readRecent()).filter((r) => r !== repo)].slice(0, 20);
-  await mkdir(CONFIG_DIR, { recursive: true });
-  await writeFile(RECENT_FILE, JSON.stringify(list, null, 2));
 }
 
 /** Refuse anything git could parse as an option. */
@@ -95,19 +76,11 @@ const UNLOCKED_PATHS = /\/remote\/(fetch|push)$/;
 
 type Env = { Variables: { repo: string } };
 
-export function createApp(opts: AppOptions = {}) {
+export function createApp(opts: AppOptions) {
   const app = new Hono<Env>();
   const api = new Hono<Env>();
 
-  // Only accept requests addressed to localhost (defends against DNS rebinding) and require a
-  // custom header on every request, which cross-origin pages can't send without a CORS preflight.
-  // GETs need it too: they run git in the requested directory.
-  app.use("/api/*", async (c, next) => {
-    const host = (c.req.header("host") ?? "").replace(/:\d+$/, "");
-    if (!["localhost", "127.0.0.1", "[::1]"].includes(host)) return c.text("Forbidden host", 403);
-    if (c.req.header("x-gitui") !== "1") return c.text("Forbidden", 403);
-    await next();
-  });
+  app.use("/api/*", apiAccess(opts));
 
   app.onError((err, c) => {
     const message = err instanceof g.GitError ? err.message : String(err);
