@@ -176,7 +176,7 @@ export interface IceCandidate {
  */
 type Signal<Reason extends string> =
   /** `resume`: the guest will open with `resume`, so the host needn't print a code (step 3). */
-  | { kind: "offer"; offerId: string; sdp: string; resume?: boolean }
+  | { kind: "offer"; offerId: string; sdp: string; resume?: true }
   | { kind: "answer"; offerId: string; sdp: string }
   | { kind: "candidate"; offerId: string; candidate: IceCandidate }
   /** Host to guest: it won't answer this offer, and why. */

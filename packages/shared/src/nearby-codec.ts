@@ -1,14 +1,24 @@
 // Every check on what crosses the nearby protocol's wires (nearby.ts), in one place: the
 // rendezvous Worker, the CLI (host) and the web app (guest) all read messages with these. Each
-// decoder rebuilds its value from the contract's fields only, so nothing else is relayed or
-// trusted, and throws a NearbyCodecError that says what is wrong; the parse* wrappers return
-// null instead. Pure, with nothing beyond what browsers, Node and Workers all have; it imports
-// no curve code, so the Worker's bundle doesn't either.
+// message is an Effect Schema below; decoding one keeps only the contract's fields, so nothing
+// else is relayed or trusted. The decode* functions throw a NearbyCodecError that says what is
+// wrong (each schema's `message` annotations); the parse* wrappers return null instead. A new
+// protocol field goes into its schema here, and into its type in nearby.ts, which the
+// assertions at the end of the schemas keep in step. Pure, with nothing beyond what browsers,
+// Node and Workers all have; it imports no curve code, so the Worker's bundle doesn't either.
+import * as Option from "effect/Option";
+import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
+import type * as SchemaAST from "effect/SchemaAST";
+import type * as SchemaIssue from "effect/SchemaIssue";
+import * as SchemaParser from "effect/SchemaParser";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 import { fromBase64Url } from "./bytes.ts";
 import {
   AUTH_ATTEMPTS,
   type ChannelMessage,
   type ClientMessage,
+  ERROR_CODES,
   isErrorCode,
   isRefusalReason,
   type Fingerprint,
@@ -24,6 +34,7 @@ import {
   parseChunk,
   PEER_ID,
   REASON_SLUG,
+  REFUSAL_REASONS,
   type RelayedSignal,
   RENDEZVOUS_PATH,
   type ServerMessage,
@@ -51,7 +62,55 @@ function orNull<A extends unknown[], T>(decode: (...args: A) => T): (...args: A)
   };
 }
 
-// ── Values ─────────────────────────────────────────────────────────────────────────────────
+// ── Decoding ───────────────────────────────────────────────────────────────────────────────
+
+/**
+ * What an issue says is wrong: the `message` of the deepest schema, check or missing key on the
+ * first failure that has one. Every schema below annotates each way it can fail.
+ */
+function reason(issue: SchemaIssue.Issue): string | undefined {
+  switch (issue._tag) {
+    case "Pointer":
+    case "Encoding":
+      return reason(issue.issue);
+    case "Filter":
+      return reason(issue.issue) ?? issue.filter.annotations?.message;
+    case "Composite":
+    case "AnyOf":
+      for (const inner of issue.issues) {
+        const found = reason(inner);
+        if (found !== undefined) return found;
+      }
+      return issue.ast.annotations?.message as string | undefined;
+    case "MissingKey":
+      return issue.annotations?.messageMissingKey;
+    case "InvalidType":
+    case "OneOf":
+      return issue.ast.annotations?.message as string | undefined;
+    case "InvalidValue":
+    case "Forbidden":
+      return issue.annotations?.message as string | undefined;
+    case "UnexpectedKey":
+      return undefined;
+  }
+}
+
+/**
+ * A decoder for `schema` that throws a NearbyCodecError with the issue's reason, or with
+ * `otherwise(input)` if it has none (a top-level union none of whose members' tags match).
+ */
+function decoder<S extends Schema.Decoder<unknown>>(
+  schema: S,
+  otherwise: (input: unknown) => string = () => "invalid message",
+): (input: unknown) => S["Type"] {
+  // The first failure is all a decoder reports.
+  const decode = SchemaParser.decodeUnknownResult(schema, { errors: "first" });
+  return (input) => {
+    const result = decode(input);
+    if (Result.isSuccess(result)) return result.success;
+    return fail(reason(result.failure) ?? otherwise(input));
+  };
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -69,29 +128,57 @@ function json(text: string): unknown {
   }
 }
 
-function string(value: unknown, what: string, pattern?: RegExp): string {
-  if (typeof value !== "string") return fail(`${what} isn't a string`);
-  return !pattern || pattern.test(value) ? value : fail(`invalid ${what}`);
+// ── Values ─────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * `schema`, failing with `message` when its value has the wrong type or its key is missing,
+ * and then `checks`, which carry their own messages. (Annotating a schema that has checks
+ * annotates its last check instead, hence the order.)
+ */
+function says<S extends Schema.Top>(
+  schema: S,
+  message: string,
+  ...checks: [] | [SchemaAST.Check<S["Type"]>, ...SchemaAST.Check<S["Type"]>[]]
+): S["Rebuild"] {
+  const annotated = schema.annotate({ message });
+  const checked =
+    checks.length === 0 ? annotated : annotated.check(...(checks as [SchemaAST.Check<S["Type"]>]));
+  return checked.annotateKey({ messageMissingKey: message });
 }
 
+/** A string, "`what` isn't a string" otherwise; "invalid `what`" unless it matches `pattern`. */
+const text = (what: string, pattern?: RegExp) =>
+  pattern
+    ? says(
+        Schema.String,
+        `${what} isn't a string`,
+        Schema.isPattern(pattern, { message: `invalid ${what}` }),
+      )
+    : says(Schema.String, `${what} isn't a string`);
+
+/** A whole number from `minimum` to `maximum`; `message` for anything else. */
+const integer = (minimum: number, maximum: number, message: string) =>
+  says(
+    Schema.Number,
+    message,
+    Schema.isInt({ message }),
+    Schema.isBetween({ minimum, maximum }, { message }),
+  );
+
 /** A request id: an unsigned 32-bit integer, as body frames carry it. */
-export const isId = (value: unknown): value is number =>
-  Number.isInteger(value) && (value as number) >= 0 && (value as number) <= 0xffff_ffff;
+const RequestId = integer(0, 0xffff_ffff, "no request id");
+export const isId: (value: unknown) => value is number = Schema.is(RequestId);
 
 /** HTTP headers as name/value pairs. */
-export const isHeaders = (value: unknown): value is [string, string][] =>
-  Array.isArray(value) &&
-  value.every(
-    (pair) =>
-      Array.isArray(pair) &&
-      pair.length === 2 &&
-      typeof pair[0] === "string" &&
-      typeof pair[1] === "string",
-  );
+const Headers = says(
+  Schema.mutable(Schema.Array(Schema.mutable(Schema.Tuple([Schema.String, Schema.String])))),
+  "invalid headers",
+);
+export const isHeaders: (value: unknown) => value is [string, string][] = Schema.is(Headers);
 
 // Control characters, line and paragraph separators, and the bidi controls that could make a
 // name display as another, or a remote string drive or garble a terminal.
-const UNSAFE_CHAR = /[\p{Cc}\p{Zl}\p{Zp}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/u;
+const UNSAFE_CHAR = /[\p{Cc}\p{Zl}\p{Zp}؜‎‏‪-‮⁦-⁩]/u;
 const UNSAFE_CHARS = new RegExp(UNSAFE_CHAR.source, "gu");
 
 /** The longest text `printable` returns, in code points. */
@@ -108,14 +195,33 @@ export function printable(text: string, max = MAX_PRINTABLE_LENGTH): string {
 
 /**
  * A host's display name, trimmed, if it is 1 to MAX_NAME_LENGTH code points long and has no
+ * control or bidi characters.
+ */
+const HostName = says(Schema.String, "invalid name")
+  .pipe(
+    Schema.decodeTo(
+      says(
+        Schema.String,
+        "invalid name",
+        Schema.makeFilter(
+          (name: string) => {
+            const length = Array.from(name).length; // code points
+            return length >= 1 && length <= MAX_NAME_LENGTH && !UNSAFE_CHAR.test(name);
+          },
+          { message: "invalid name" },
+        ),
+      ),
+      SchemaTransformation.trim(),
+    ),
+  )
+  .annotateKey({ messageMissingKey: "invalid name" });
+const decodeHostName = Schema.decodeUnknownOption(HostName);
+
+/**
+ * A host's display name, trimmed, if it is 1 to MAX_NAME_LENGTH code points long and has no
  * control or bidi characters; else null. The Worker, `--name` and saved hosts all use this.
  */
-export function hostName(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const name = value.trim();
-  const length = Array.from(name).length; // code points
-  return length >= 1 && length <= MAX_NAME_LENGTH && !UNSAFE_CHAR.test(name) ? name : null;
-}
+export const hostName = (value: unknown): string | null => Option.getOrNull(decodeHostName(value));
 
 /**
  * `text` made into a valid hostName if it can be: the unsafe characters dropped and the rest cut
@@ -142,112 +248,171 @@ export function rendezvousUrl(origin: string): string | null {
   return valid ? url.origin + RENDEZVOUS_PATH : null;
 }
 
+/**
+ * A string `from` decodes, as one of the `known` values, or as `unknown` if it's none of them:
+ * a newer peer's, which still decodes.
+ */
+function open<K extends string>(
+  from: Schema.Codec<string>,
+  known: readonly K[],
+  isKnown: (value: string) => value is K,
+) {
+  return from
+    .pipe(
+      Schema.decodeTo(
+        Schema.Literals([...known, "unknown" as const]),
+        SchemaTransformation.transform({
+          decode: (value: string): K | "unknown" => (isKnown(value) ? value : "unknown"),
+          encode: (value: K | "unknown"): string => value,
+        }),
+      ),
+    )
+    .annotateKey({ messageMissingKey: from.ast.context?.annotations?.messageMissingKey });
+}
+
 // ── Rendezvous messages ────────────────────────────────────────────────────────────────────
 
-function decodeCandidate(value: unknown): IceCandidate {
-  const { candidate, sdpMid, sdpMLineIndex } = record(value, "candidate");
-  if (typeof candidate !== "string") return fail("candidate line isn't a string");
-  if (sdpMid != null && typeof sdpMid !== "string") return fail("invalid sdpMid");
-  const indexOk =
-    sdpMLineIndex == null ||
-    (Number.isInteger(sdpMLineIndex) &&
-      (sdpMLineIndex as number) >= 0 &&
-      (sdpMLineIndex as number) <= 0xffff);
-  if (!indexOk) return fail("invalid sdpMLineIndex");
-  return {
-    candidate,
-    sdpMid: sdpMid as string | null | undefined,
-    sdpMLineIndex: sdpMLineIndex as number | null | undefined,
-  };
+const PeerId = text("peer id", PEER_ID);
+const OfferId = text("offerId", OFFER_ID);
+const Sdp = says(
+  Schema.String,
+  "sdp isn't a string",
+  Schema.isMaxLength(MAX_MESSAGE_LENGTH, { message: "sdp too long" }),
+);
+
+const Candidate = says(
+  Schema.Struct({
+    candidate: text("candidate line"),
+    sdpMid: Schema.optionalKey(says(Schema.NullishOr(Schema.String), "invalid sdpMid")),
+    sdpMLineIndex: Schema.optionalKey(
+      says(Schema.NullishOr(integer(0, 0xffff, "invalid sdpMLineIndex")), "invalid sdpMLineIndex"),
+    ),
+  }),
+  "candidate isn't an object",
+);
+
+/** `resume` is kept only when true; anything else means no. */
+const Resume = Schema.optionalKey(Schema.Unknown).pipe(
+  Schema.decodeTo(
+    Schema.optionalKey(Schema.Literal(true)),
+    SchemaTransformation.transformOptional<true, unknown>({
+      decode: Option.filter((resume): resume is true => resume === true),
+      encode: (resume) => resume,
+    }),
+  ),
+);
+
+/** A WebRTC signal, with `Reason` as a refusal's reason. */
+function signal<R extends Schema.Top>(Reason: R) {
+  return says(
+    Schema.Union([
+      Schema.Struct({ kind: Schema.Literal("offer"), offerId: OfferId, sdp: Sdp, resume: Resume }),
+      Schema.Struct({ kind: Schema.Literal("answer"), offerId: OfferId, sdp: Sdp }),
+      Schema.Struct({ kind: Schema.Literal("candidate"), offerId: OfferId, candidate: Candidate }),
+      Schema.Struct({ kind: Schema.Literal("refused"), offerId: OfferId, reason: Reason }),
+    ]),
+    "unknown signal kind",
+  );
 }
 
+const ReasonSlug = text("reason", REASON_SLUG);
 /** A WebRTC signal as the rendezvous relays it: a refusal's reason is any REASON_SLUG. */
-function decodeRelayedSignal(value: unknown): RelayedSignal {
-  const data = record(value, "signal");
-  const offerId = string(data.offerId, "offerId", OFFER_ID);
-  switch (data.kind) {
-    case "offer":
-    case "answer": {
-      const sdp = string(data.sdp, "sdp");
-      if (sdp.length > MAX_MESSAGE_LENGTH) return fail("sdp too long");
-      // `resume` is kept only when true; anything else means no.
-      if (data.kind === "answer") return { kind: "answer", offerId, sdp };
-      return data.resume === true
-        ? { kind: "offer", offerId, sdp, resume: true }
-        : { kind: "offer", offerId, sdp };
-    }
-    case "candidate":
-      return { kind: "candidate", offerId, candidate: decodeCandidate(data.candidate) };
-    case "refused":
-      return { kind: "refused", offerId, reason: string(data.reason, "reason", REASON_SLUG) };
-    default:
-      return fail("unknown signal kind");
-  }
-}
+export const RelayedSignalSchema = signal(ReasonSlug);
+/** A WebRTC signal as its receiver reads it: a reason this version doesn't know is `unknown`. */
+export const SignalSchema = signal(open(ReasonSlug, REFUSAL_REASONS, isRefusalReason));
+
+/** A message's `data`: a signal. */
+const SignalField = <S extends Schema.Top>(signal: S): S["Rebuild"] =>
+  signal.annotateKey({ messageMissingKey: "signal isn't an object" });
+
+/** A message a peer sends the rendezvous. RENDEZVOUS_PING isn't one. */
+export const ClientMessageSchema = Schema.Union([
+  says(
+    Schema.Union([
+      Schema.Struct({
+        type: Schema.Literal("hello"),
+        role: Schema.Literal("host"),
+        name: HostName,
+        secret: text("secret", HOST_SECRET),
+      }),
+      Schema.Struct({ type: Schema.Literal("hello"), role: Schema.Literal("guest") }),
+    ]),
+    "invalid role",
+  ),
+  Schema.Struct({
+    type: Schema.Literal("signal"),
+    to: PeerId,
+    data: SignalField(RelayedSignalSchema),
+  }),
+]);
+
+export const HostInfoSchema = says(
+  Schema.Struct({ id: PeerId, name: HostName, key: text("key", HOST_KEY) }),
+  "host isn't an object",
+);
+const parseHost = Schema.decodeUnknownOption(HostInfoSchema);
+
+/** A message from the rendezvous. Hosts that break the contract are left out. */
+export const ServerMessageSchema = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("welcome"), id: PeerId }),
+  Schema.Struct({
+    type: Schema.Literal("hosts"),
+    hosts: says(Schema.Array(Schema.Unknown), "hosts isn't an array").pipe(
+      Schema.decodeTo(
+        Schema.mutable(Schema.Array(Schema.toType(HostInfoSchema))),
+        SchemaTransformation.transform({
+          decode: (hosts) => hosts.flatMap((host) => Option.toArray(parseHost(host))),
+          encode: (hosts): readonly unknown[] => hosts,
+        }),
+      ),
+      // Key annotations don't reach through decodeTo: the outer schema needs its own.
+      Schema.annotateKey({ messageMissingKey: "hosts isn't an array" }),
+    ),
+  }),
+  Schema.Struct({ type: Schema.Literal("signal"), from: PeerId, data: SignalField(SignalSchema) }),
+  Schema.Struct({ type: Schema.Literal("gone"), id: PeerId }),
+  Schema.Struct({
+    type: Schema.Literal("error"),
+    // A code this version doesn't know is a newer rendezvous's: still an error.
+    code: open(text("error code"), ERROR_CODES, isErrorCode),
+    message: text("error message").pipe(
+      Schema.decodeTo(
+        Schema.String,
+        SchemaTransformation.transform({
+          decode: (message) => message.slice(0, 500),
+          encode: (message) => message,
+        }),
+      ),
+      Schema.annotateKey({ messageMissingKey: "error message isn't a string" }),
+    ),
+  }),
+  Schema.Struct({ type: Schema.Literal("pong") }),
+]);
+
+const decodeRelayed = decoder(RelayedSignalSchema);
+const decodeSignalData = decoder(SignalSchema);
+const decodeClient = decoder(ClientMessageSchema, () => "unknown message type");
+const decodeServer = decoder(ServerMessageSchema, () => "unknown message type");
+
+/** A WebRTC signal as the rendezvous relays it (RelayedSignal). */
+export const decodeRelayedSignal = (value: unknown): RelayedSignal =>
+  decodeRelayed(record(value, "signal"));
 
 /** A WebRTC signal as its receiver reads it (SignalData). */
-export function decodeSignal(value: unknown): SignalData {
-  const signal = decodeRelayedSignal(value);
-  if (signal.kind !== "refused") return signal;
-  // A reason this version doesn't know is a newer host's: still a refusal.
-  return { ...signal, reason: isRefusalReason(signal.reason) ? signal.reason : "unknown" };
-}
+export const decodeSignal = (value: unknown): SignalData =>
+  decodeSignalData(record(value, "signal"));
 
 /** A message a peer sends the rendezvous (ClientMessage). RENDEZVOUS_PING isn't one. */
 export function decodeClientMessage(text: string): ClientMessage {
   if (text.length > MAX_MESSAGE_LENGTH) return fail("message too long");
-  const message = record(json(text), "message");
-  if (message.type === "hello") {
-    if (message.role === "guest") return { type: "hello", role: "guest" };
-    if (message.role !== "host") return fail("invalid role");
-    const name = hostName(message.name) ?? fail("invalid name");
-    const secret = string(message.secret, "secret", HOST_SECRET);
-    return { type: "hello", role: "host", name, secret };
-  }
-  if (message.type === "signal") {
-    const to = string(message.to, "peer id", PEER_ID);
-    return { type: "signal", to, data: decodeRelayedSignal(message.data) };
-  }
-  return fail("unknown message type");
-}
-
-function decodeHost(value: unknown): HostInfo {
-  const host = record(value, "host");
-  const id = string(host.id, "peer id", PEER_ID);
-  const name = hostName(host.name) ?? fail("invalid name");
-  return { id, name, key: string(host.key, "key", HOST_KEY) };
+  return decodeClient(record(json(text), "message"));
 }
 
 /** A message from the rendezvous (ServerMessage). Hosts that break the contract are left out. */
 export function decodeServerMessage(text: string): ServerMessage {
-  const message = record(json(text), "message");
-  switch (message.type) {
-    case "welcome":
-    case "gone":
-      return { type: message.type, id: string(message.id, "peer id", PEER_ID) };
-    case "hosts":
-      if (!Array.isArray(message.hosts)) return fail("hosts isn't an array");
-      return { type: "hosts", hosts: message.hosts.flatMap((h) => parseHost(h) ?? []) };
-    case "signal":
-      return {
-        type: "signal",
-        from: string(message.from, "peer id", PEER_ID),
-        data: decodeSignal(message.data),
-      };
-    case "error": {
-      // A code this version doesn't know is a newer rendezvous's: still an error.
-      const code = string(message.code, "error code");
-      const text = string(message.message, "error message").slice(0, 500);
-      return { type: "error", code: isErrorCode(code) ? code : "unknown", message: text };
-    }
-    case "pong":
-      return { type: "pong" };
-    default:
-      return fail("unknown message type");
-  }
+  return decodeServer(record(json(text), "message"));
 }
 
-const parseHost = orNull(decodeHost);
 export const parseSignal = orNull(decodeSignal);
 export const parseClientMessage = orNull(decodeClientMessage);
 export const parseServerMessage = orNull(decodeServerMessage);
@@ -262,10 +427,18 @@ export type Incoming<M extends ChannelMessage = ChannelMessage> =
   | { kind: "invalid"; id: number | null; reason: string };
 
 /** `what`: 32 bytes in canonical base64url (CPace shares, tags, resume proofs and tokens). */
-function bytes32(value: unknown, what: string): string {
-  const text = string(value, what);
-  return fromBase64Url(text, 32) ? text : fail(`invalid ${what}`);
-}
+const bytes32 = (what: string) =>
+  says(
+    Schema.String,
+    `${what} isn't a string`,
+    Schema.makeFilter((text: string) => fromBase64Url(text, 32) !== null, {
+      message: `invalid ${what}`,
+    }),
+  );
+const Share = bytes32("share");
+const Tag = bytes32("tag");
+const Proof = bytes32("proof");
+
 /** A resume nonce: 16 to 48 bytes, base64url. */
 const NONCE = /^[\w-]{22,64}$/;
 /** An HTTP method (RFC 9110 token). */
@@ -273,8 +446,8 @@ const METHOD = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const PLACEHOLDER_ORIGIN = "http://gitui.invalid";
 
 /** A path a request may name: absolute, and naming no other host (`//host/…`, `/\host/…`). */
-function isPath(value: unknown): value is string {
-  if (typeof value !== "string" || !value.startsWith("/")) return false;
+function isPath(value: string): boolean {
+  if (!value.startsWith("/")) return false;
   try {
     return new URL(value, PLACEHOLDER_ORIGIN).origin === PLACEHOLDER_ORIGIN;
   } catch {
@@ -282,79 +455,72 @@ function isPath(value: unknown): value is string {
   }
 }
 
-function requestId(value: unknown): number {
-  return isId(value) ? value : fail("no request id");
-}
+const tagged = <const T extends string, const F extends Schema.Struct.Fields>(t: T, fields: F) =>
+  Schema.Struct({ t: Schema.Literal(t), ...fields });
 
-function decodeGuestMessage(m: Record<string, unknown>): GuestMessage {
-  switch (m.t) {
-    case "pake":
-      return { t: "pake", y: bytes32(m.y, "share") };
-    case "pake-confirm":
-      return { t: "pake-confirm", confirm: bytes32(m.confirm, "tag") };
-    case "pake-fail":
-      return { t: "pake-fail" };
-    case "resume":
-      return {
-        t: "resume",
-        nonce: string(m.nonce, "nonce", NONCE),
-        proof: bytes32(m.proof, "proof"),
-      };
-    case "req": {
-      const id = requestId(m.id);
-      if (typeof m.method !== "string" || !METHOD.test(m.method)) return fail("invalid method");
-      if (!isPath(m.path)) return fail("invalid path");
-      if (!isHeaders(m.headers)) return fail("invalid headers");
-      return { t: "req", id, method: m.method, path: m.path, headers: m.headers };
-    }
-    case "end":
-    case "cancel":
-      return { t: m.t, id: requestId(m.id) };
-    default:
-      return fail(`unexpected message ${JSON.stringify(m.t)}`);
-  }
-}
+/** JSON text messages the guest sends on the data channel. */
+export const GuestMessageSchema = Schema.Union([
+  tagged("pake", { y: Share }),
+  tagged("pake-confirm", { confirm: Tag }),
+  tagged("pake-fail", {}),
+  tagged("resume", { nonce: text("nonce", NONCE), proof: Proof }),
+  tagged("req", {
+    id: RequestId,
+    method: says(
+      Schema.String,
+      "invalid method",
+      Schema.isPattern(METHOD, { message: "invalid method" }),
+    ),
+    path: says(
+      Schema.String,
+      "invalid path",
+      Schema.makeFilter(isPath, { message: "invalid path" }),
+    ),
+    headers: Headers,
+  }),
+  tagged("end", { id: RequestId }),
+  tagged("cancel", { id: RequestId }),
+]);
 
-function decodeHostMessage(m: Record<string, unknown>): HostMessage {
-  switch (m.t) {
-    case "pake":
-      return {
-        t: "pake",
-        y: bytes32(m.y, "share"),
-        confirm: bytes32(m.confirm, "tag"),
-      };
-    case "resume-ok":
-      return { t: "resume-ok", proof: bytes32(m.proof, "proof") };
-    case "auth-ok":
-      return { t: "auth-ok" };
-    case "auth-fail": {
-      const left = m.attemptsLeft;
-      const ok =
-        Number.isInteger(left) && (left as number) >= 0 && (left as number) <= AUTH_ATTEMPTS;
-      if (!ok) return fail("invalid attemptsLeft");
-      return left === 0 && m.locked === true
-        ? { t: "auth-fail", attemptsLeft: 0, locked: true }
-        : { t: "auth-fail", attemptsLeft: left as number };
-    }
-    case "session":
-      return { t: "session", token: bytes32(m.token, "token") };
-    case "res": {
-      const id = requestId(m.id);
-      const { status } = m;
-      if (!Number.isInteger(status) || (status as number) < 100 || (status as number) > 599) {
-        return fail("invalid status");
-      }
-      if (!isHeaders(m.headers)) return fail("invalid headers");
-      return { t: "res", id, status: status as number, headers: m.headers };
-    }
-    case "end":
-      return { t: "end", id: requestId(m.id) };
-    case "abort":
-      return { t: "abort", id: requestId(m.id), message: string(m.message, "abort message") };
-    default:
-      return fail(`unexpected message ${JSON.stringify(m.t)}`);
-  }
-}
+const AttemptsLeft = integer(0, AUTH_ATTEMPTS, "invalid attemptsLeft");
+
+/** JSON text messages the host sends on the data channel. */
+export const HostMessageSchema = Schema.Union([
+  tagged("pake", { y: Share, confirm: Tag }),
+  tagged("resume-ok", { proof: Proof }),
+  tagged("auth-ok", {}),
+  tagged("session", { token: bytes32("token") }),
+  // `locked` is kept only as true, on a last failure (attemptsLeft 0).
+  tagged("auth-fail", {
+    attemptsLeft: AttemptsLeft,
+    locked: Schema.optionalKey(Schema.Unknown),
+  }).pipe(
+    Schema.decodeTo(
+      tagged("auth-fail", {
+        attemptsLeft: Schema.toType(AttemptsLeft),
+        locked: Schema.optionalKey(Schema.Literal(true)),
+      }),
+      SchemaTransformation.transform({
+        decode: ({ attemptsLeft, locked }) =>
+          attemptsLeft === 0 && locked === true
+            ? { t: "auth-fail" as const, attemptsLeft, locked: true as const }
+            : { t: "auth-fail" as const, attemptsLeft },
+        encode: (message) => message,
+      }),
+    ),
+  ),
+  tagged("res", {
+    id: RequestId,
+    status: integer(100, 599, "invalid status"),
+    headers: Headers,
+  }),
+  tagged("end", { id: RequestId }),
+  tagged("abort", { id: RequestId, message: text("abort message") }),
+]);
+
+const unexpected = (m: unknown) => `unexpected message ${JSON.stringify((m as { t?: unknown }).t)}`;
+const decodeGuest = decoder(GuestMessageSchema, unexpected);
+const decodeHost = decoder(HostMessageSchema, unexpected);
 
 /**
  * Reads one data channel message sent by `from`: JSON text is a message of that side's, binary
@@ -384,13 +550,34 @@ export function decodeChannelMessage(
     return { kind: "invalid", id: null, reason: (e as Error).message };
   }
   try {
-    const message = from === "guest" ? decodeGuestMessage(m) : decodeHostMessage(m);
+    const message: ChannelMessage = from === "guest" ? decodeGuest(m) : decodeHost(m);
     return { kind: "message", message };
   } catch (e) {
     if (!(e instanceof NearbyCodecError)) throw e;
     return { kind: "invalid", id: isId(m.id) ? m.id : null, reason: e.message };
   }
 }
+
+// ── Types ──────────────────────────────────────────────────────────────────────────────────
+// The types in nearby.ts are the contract's documentation; these keep each schema's type and
+// its type there the same (readonly aside), so a field in one and not the other doesn't compile.
+
+type Mutable<T> = T extends object ? { -readonly [K in keyof T]: Mutable<T[K]> } : T;
+type Equals<A, B> =
+  (<X>() => X extends Mutable<A> ? 1 : 2) extends <X>() => X extends Mutable<B> ? 1 : 2
+    ? true
+    : false;
+type Assert<T extends true> = T;
+export type SchemasMatchContract = [
+  Assert<Equals<IceCandidate, (typeof Candidate)["Type"]>>,
+  Assert<Equals<HostInfo, (typeof HostInfoSchema)["Type"]>>,
+  Assert<Equals<RelayedSignal, (typeof RelayedSignalSchema)["Type"]>>,
+  Assert<Equals<SignalData, (typeof SignalSchema)["Type"]>>,
+  Assert<Equals<ClientMessage, (typeof ClientMessageSchema)["Type"]>>,
+  Assert<Equals<ServerMessage, (typeof ServerMessageSchema)["Type"]>>,
+  Assert<Equals<GuestMessage, (typeof GuestMessageSchema)["Type"]>>,
+  Assert<Equals<HostMessage, (typeof HostMessageSchema)["Type"]>>,
+];
 
 // ── SDP ────────────────────────────────────────────────────────────────────────────────────
 
