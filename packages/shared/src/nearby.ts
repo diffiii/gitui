@@ -9,14 +9,29 @@
 //    beyond the live sockets.
 // 2. WebRTC. The guest creates the offer; signals go through the object; the data channel
 //    (DATA_CHANNEL_LABEL, ordered and reliable) then connects the two directly.
+//    Guests keep their rendezvous socket open for the whole session: hosts end a session as soon
+//    as its guest is `gone`, which is how a closed tab is noticed at once (WebRTC alone takes
+//    ~30 s, and WebKit doesn't fire `close`).
 // 3. Auth. The host prints a short code. The guest's first channel message is an `auth` with a
 //    proof derived from the code and both DTLS fingerprints (authProof). The host answers
-//    `auth-ok` or `auth-fail` and closes after AUTH_ATTEMPTS failures.
+//    `auth-ok` (then `session`, a resume token) or `auth-fail`, and closes after AUTH_ATTEMPTS
+//    failures. A guest that already paired with this host (same HostInfo.key) may instead open
+//    with `resume`, a proof derived from the token, e.g. after iOS dropped the connection.
 // 4. HTTP. After auth the guest sends requests and the host answers them with the Hono app.
 //    Heads are JSON text messages; bodies are binary frames (frameChunk) of at most CHUNK_SIZE
-//    payload bytes; an `end` message closes each body.
+//    payload bytes; an `end` message closes each body. A guest may `cancel` a request.
+// 5. Keepalive. Hosts send WebSocket protocol pings (free, and they don't wake the object).
+//    Browsers can't, so guests send RENDEZVOUS_PING as text, which the object answers with
+//    RENDEZVOUS_PONG without waking up.
 
+/** Where the rendezvous Worker lives (apps/rendezvous). */
+export const RENDEZVOUS_ORIGIN = "wss://rendezvous.gitui.diffiii.dev";
 export const RENDEZVOUS_PATH = "/v1/connect";
+/** Text keepalive for browser guests; the object auto-responds with RENDEZVOUS_PONG. */
+export const RENDEZVOUS_PING = '{"type":"ping"}';
+export const RENDEZVOUS_PONG = '{"type":"pong"}';
+/** Longest host display name, after trimming. */
+export const MAX_NAME_LENGTH = 63;
 export const DATA_CHANNEL_LABEL = "gitui";
 export const STUN_URLS = ["stun:stun.cloudflare.com:3478"];
 /** Payload bytes per binary frame; safe for SCTP messages in every browser. */
@@ -31,7 +46,15 @@ export interface HostInfo {
   id: string;
   /** Display name, e.g. "Jan's MacBook". */
   name: string;
+  /**
+   * Random per-run id of the CLI, the same on all its sockets (it registers over IPv4 and IPv6,
+   * and reconnects). Guests use it to list a host once and to find their resume token.
+   */
+  key: string;
 }
+
+/** HostInfo.key: 16 to 64 URL-safe characters. */
+export const HOST_KEY = /^[\w-]{16,64}$/;
 
 /** WebRTC signaling payload, relayed verbatim by the rendezvous object. */
 export type SignalData =
@@ -44,7 +67,7 @@ export type SignalData =
 
 /** Messages a peer sends to the rendezvous object. */
 export type ClientMessage =
-  | { type: "hello"; role: "host"; name: string }
+  | { type: "hello"; role: "host"; name: string; key: string }
   | { type: "hello"; role: "guest" }
   | { type: "signal"; to: string; data: SignalData };
 
@@ -57,21 +80,29 @@ export type ServerMessage =
   | { type: "signal"; from: string; data: SignalData }
   /** The peer `id` disconnected (sent to peers it was signaling with, and to guests). */
   | { type: "gone"; id: string }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  /** Auto-response to RENDEZVOUS_PING. */
+  | { type: "pong" };
 
 // ── Data channel ──────────────────────────────────────────────────────────────────────────
 
 /** JSON text messages on the data channel. Binary messages are body frames (frameChunk). */
 export type ChannelMessage =
   | { t: "auth"; proof: string }
+  /** authProof(token, …) with the token from an earlier `session`, instead of a code. */
+  | { t: "resume"; proof: string }
   | { t: "auth-ok" }
+  /** Sent after `auth-ok`: a token the guest may use to `resume` while this CLI runs. */
+  | { t: "session"; token: string }
   | { t: "auth-fail"; attemptsLeft: number }
   | { t: "req"; id: number; method: string; path: string; headers: [string, string][] }
   | { t: "res"; id: number; status: number; headers: [string, string][] }
   /** Ends the body of request or response `id`. */
   | { t: "end"; id: number }
   /** The host couldn't answer request `id` (e.g. the app threw). */
-  | { t: "abort"; id: number; message: string };
+  | { t: "abort"; id: number; message: string }
+  /** The guest no longer wants request `id`; the host stops sending its response. */
+  | { t: "cancel"; id: number };
 
 /** A binary frame: a 4-byte big-endian request id, then up to CHUNK_SIZE payload bytes. */
 export function frameChunk(id: number, payload: Uint8Array): Uint8Array {
@@ -96,7 +127,7 @@ export function* chunks(body: Uint8Array): Generator<Uint8Array> {
 }
 
 /**
- * Proof that the guest knows the code the host printed, bound to this connection's DTLS
+ * Proof that the guest knows the code the host printed (or a resume token), bound to this connection's DTLS
  * fingerprints (`a=fingerprint` values from each side's SDP, as each side sees them). A
  * rendezvous server that swapped the SDP would see different fingerprints, so the proof fails.
  * Limitation: with a 6-digit code a man in the middle could brute-force the code offline from

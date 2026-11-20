@@ -1,3 +1,5 @@
+import { RENDEZVOUS_ORIGIN } from "./nearby.ts";
+
 // Security headers of the web app's pages, wherever they are served from.
 
 /**
@@ -12,9 +14,6 @@ export function uiSecurityHeaders(connectSrc: string): Record<string, string> {
     "X-Content-Type-Options": "nosniff",
   };
 }
-
-/** Origin of the nearby rendezvous Worker, which the hosted app opens a WebSocket to. */
-export const RENDEZVOUS_ORIGIN = "wss://rendezvous.gitui.diffiii.dev";
 
 /**
  * The hosted app's `_headers` file (Cloudflare's format: a path pattern, then its headers
