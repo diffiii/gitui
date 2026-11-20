@@ -38,6 +38,12 @@ export function familiesFor(url: string): Family[] {
   return family === 4 || family === 6 ? [family] : [4, 6];
 }
 
+/**
+ * The service's refusals for want of room (MAX_HOSTS and MAX_SOCKETS_PER_KEY in
+ * apps/rendezvous/src/network.ts). The socket closes after one and is retried with backoff.
+ */
+const NO_ROOM = /^Too many (hosts on this network|sockets for this host)$/;
+
 /** `text` without control characters, which would let a remote string drive the terminal. */
 const printable = (text: string) => text.replace(/\p{Cc}/gu, "");
 
@@ -93,6 +99,8 @@ export function startNearby(options: NearbyOptions) {
   };
   const statusTimer = setTimeout(announce, options.statusDelay ?? STATUS_DELAY);
   let everVisible = false;
+  /** Whether the service's lack of room was said since the last welcome. */
+  let noRoomSaid = false;
 
   const clients = families.map((family) => {
     const client: RendezvousClient = new RendezvousClient({
@@ -112,6 +120,7 @@ export function startNearby(options: NearbyOptions) {
           }
           lost = false;
           everVisible = true;
+          noRoomSaid = false;
         },
         down() {
           // Guests still signaling on this socket can't reach this host any more: the service
@@ -139,6 +148,13 @@ export function startNearby(options: NearbyOptions) {
           sessions.get(sessionKey(family, id))?.close();
         },
         error(message) {
+          if (NO_ROOM.test(message)) {
+            if (!noRoomSaid) {
+              log("Nearby: too many computers on this network use gitui nearby already, retrying");
+            }
+            noRoomSaid = true;
+            return;
+          }
           log(`Nearby: the rendezvous service reported: ${printable(message)}`);
         },
       },

@@ -125,6 +125,30 @@ test("an unreachable service is said once", async () => {
   expect(log.at(-1)).toContain("visible as 'Desk' (IPv4)");
 });
 
+test("a refusal for want of room is said once, not on every retry", async () => {
+  const { log, last, sockets } = host();
+  const refuse = (family: 4 | 6, message: string) => {
+    const socket = last(family)!;
+    socket.open();
+    socket.receive({ type: "error", message });
+    socket.fail();
+  };
+  welcome(last(6)!, "b");
+  for (let n = 3; n <= 6; n++) {
+    refuse(4, n % 2 ? "Too many hosts on this network" : "Too many sockets for this host");
+    await until(() => sockets.length === n);
+  }
+  const noRoom = "Nearby: too many computers on this network use gitui nearby already, retrying";
+  expect(log.filter((line) => line === noRoom)).toHaveLength(1);
+  expect(log.filter((line) => line.includes("reported"))).toEqual([]);
+  // After a welcome, a new refusal is said again.
+  welcome(last(4)!, "a");
+  last(4)!.fail();
+  await until(() => sockets.length === 7);
+  refuse(4, "Too many hosts on this network");
+  expect(log.filter((line) => line === noRoom)).toHaveLength(2);
+});
+
 test("a session is bound to the socket its offer came on", async () => {
   const { log, last } = host();
   const v4 = last(4)!;
