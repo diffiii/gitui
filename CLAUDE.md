@@ -11,18 +11,24 @@ bun run dev [repo-path]     # API on :4777 (bun --watch) + Vite+ dev server with
 bun test                    # bun:test; server tests run against real temp repos
 ./node_modules/.bin/tsc -b  # type check every tsconfig project
 vp check                    # format, lint (type-aware), type check
-vp build                    # build apps/web into apps/web/dist (`bun run build` adds tsc -b)
+bun run build               # tsc -b, build apps/web, bundle the CLI into apps/cli/dist (+ dist/web)
 cd apps/web && bun run deploy  # build and deploy the hosted UI to Cloudflare (needs wrangler login)
+scripts/smoke.sh            # run the built CLI with node (hosted and --local) and probe it
 ```
 
 ## Layout
 
 Bun workspaces monorepo (`apps/*`, `packages/*`).
 
-- `apps/cli/` (`@gitui/cli`): the `gitui` bin (`bin/gitui.ts`) and the Hono API in `server/`.
-  `app.ts` holds the routes, `git.ts` wraps the git CLI and parses its output, `main.ts` starts
-  the server and serves `apps/web/dist` in production. Tests live next to the code
-  (`server/*.test.ts`).
+- `apps/cli/` (`@diffiii/gitui`, published to npm): the `gitui` bin (`bin/gitui.ts`) and the
+  Hono API in `server/`. `app.ts` holds the routes, `git.ts` wraps the git CLI and parses its
+  output, `main.ts` starts the server (`@hono/node-server`), serving the UI directory it's given
+  (`bin/gitui.ts` passes `dist/web` only with `--local`; by default the hosted app is the UI),
+  `dev.ts` is the dev API entry. `bun run build` (`scripts/build.ts`) bundles `bin/gitui.ts` for
+  Node into `dist/gitui.js`, copies `apps/web/dist` to `dist/web` and the root `LICENSE` into
+  the package; with `README.md` that is all the package ships, with no runtime dependencies.
+  Code in `bin/` and `server/` must run on Node too: no `Bun.*` APIs outside tests, `dev.ts`
+  and `test-repo.ts` (a lint rule enforces it). Tests live next to the code (`server/*.test.ts`).
 - `apps/web/` (`@gitui/web`): React app. `src/lib/` holds the API client, graph layout and
   prefs, `src/components/` the views, and `src/components/ui/` the shadcn components. Unit
   tests sit next to their module (`src/**/*.test.ts`, type-checked by `tsconfig.test.json`).
@@ -34,9 +40,11 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
 - `packages/shared/` (`@gitui/shared`): API types and the connection contract (default port,
   client header, hosted origin, loopback hosts, pairing links) used by both sides, imported as
   `@gitui/shared`.
-- Root: `scripts/dev.ts` (runs both apps), `vite.config.ts` (workspace fmt/lint/type check
-  config, `defaultPackage` points `vp dev`/`vp build` at `apps/web`), `tsconfig.json`
-  (project references to every package).
+- Root: `scripts/dev.ts` (runs both apps), `scripts/smoke.sh` (runs the built bundle with node
+  in both modes and checks what it serves; CI and release run it), `vite.config.ts` (workspace
+  fmt/lint/type check config, `defaultPackage` points `vp dev`/`vp build` at `apps/web`),
+  `tsconfig.json` (project references to every package), `.github/workflows/release.yml`
+  (publishes the CLI to npm on `v*` tags matching its version, via trusted publishing).
 
 ## Conventions
 
@@ -52,8 +60,8 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   `apps/web/src/lib/repo.tsx`, which invalidates `[repo]` when it settles and toasts errors.
 - Prefs (`apps/web/src/lib/prefs.ts`) and URL state (`apps/web/src/App.tsx`) are external
   stores read with `useSyncExternalStore`. Don't use effects to sync or derive state.
-- Put each dependency in the package that uses it; shared tooling (typescript, vite-plus,
-  @types/bun) stays at the root.
+- Put each dependency in the package that uses it (in `apps/cli` as devDependencies, since
+  they're bundled); shared tooling (typescript, vite-plus, @types/bun) stays at the root.
 - Add shadcn components under `apps/web/src/components/ui` (run `shadcn` from `apps/web`).
 - Tests: don't import `apps/web/src/lib/prefs.ts`, because it touches `window` at import time.
   Server tests build repos with the helpers in `apps/cli/server/test-repo.ts`, which isolate

@@ -25,4 +25,10 @@ jobs:
       - name: Test
         run: bun test
       - name: Build
-        run: bunx vp build
+        run: bun run --cwd apps/cli build
+      # After the build: the tooling (vite-plus) needs a newer Node than the package's floor.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22.1.0 # the engines floor of the published package
+      - name: Smoke test the bundle under Node
+        run: scripts/smoke.sh

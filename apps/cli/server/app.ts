@@ -206,17 +206,13 @@ export function createApp(opts: AppOptions) {
     const action = c.req.param("action");
     if (action !== "fetch" && action !== "pull" && action !== "push")
       return c.json({ error: "Bad action" }, 400);
-    // Pushes and fetches can outlast Bun's idleTimeout; disable it for this request only.
-    // c.env is the Bun Server under Bun.serve, and undefined under app.request() in tests.
-    (c.env as { timeout?(req: Request, seconds: number): void } | undefined)?.timeout?.(
-      c.req.raw,
-      0,
-    );
     const output = await g.remoteAction(c.var.repo, action);
     return c.json({ ok: true, output });
   });
 
   api.route("/repo", repo);
+  // Unknown API routes get a JSON 404 rather than falling through to the UI's index.html.
+  api.all("*", (c) => c.json({ error: "Not found" }, 404));
   app.route("/api", api);
   return app;
 }

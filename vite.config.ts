@@ -13,6 +13,23 @@ export default defineConfig({
       "react/only-export-components": ["warn", { allowConstantExport: true }],
       "vite-plus/prefer-vite-plus-imports": "error",
     },
+    overrides: [
+      {
+        // The CLI ships as a Node bundle, so its runtime code can't use Bun's APIs.
+        files: ["apps/cli/bin/**", "apps/cli/server/**"],
+        rules: {
+          "no-restricted-globals": [
+            "error",
+            { name: "Bun", message: "The CLI runs on Node too; use node: APIs." },
+          ],
+        },
+      },
+      {
+        // Tests, their fixtures and the dev server only ever run under Bun.
+        files: ["apps/cli/**/*.test.ts", "apps/cli/server/test-repo.ts", "apps/cli/server/dev.ts"],
+        rules: { "no-restricted-globals": "off" },
+      },
+    ],
     options: { typeAware: true, typeCheck: true },
     jsPlugins: [{ name: "vite-plus", specifier: "vite-plus/oxlint-plugin" }],
   },

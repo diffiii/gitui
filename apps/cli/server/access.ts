@@ -4,7 +4,7 @@
 // the server's own) need nothing else. Allowed cross-origin pages, like the hosted web app, get
 // CORS headers and must also send the pairing token. Any other origin is refused.
 import { timingSafeEqual } from "node:crypto";
-import { CLIENT_HEADER } from "@gitui/shared";
+import { CLIENT_HEADER, isLoopbackHost } from "@gitui/shared";
 import { createMiddleware } from "hono/factory";
 
 export interface AccessOptions {
@@ -19,8 +19,6 @@ export function parseOrigin(value: string | undefined): string | null {
   return value && URL.parse(value)?.origin === value ? value : null;
 }
 
-const LOCAL_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
-
 export function apiAccess({ allowedOrigins, token }: AccessOptions) {
   const expected = Buffer.from(`Bearer ${token}`);
   const authorized = (header = "") => {
@@ -30,7 +28,7 @@ export function apiAccess({ allowedOrigins, token }: AccessOptions) {
 
   return createMiddleware(async (c, next) => {
     const host = c.req.header("host") ?? "";
-    if (!LOCAL_HOSTS.includes(host.replace(/:\d+$/, ""))) return c.text("Forbidden host", 403);
+    if (!isLoopbackHost(host.replace(/:\d+$/, ""))) return c.text("Forbidden host", 403);
 
     const origin = c.req.header("origin");
     const crossOrigin = origin !== undefined && origin !== `http://${host}`;
