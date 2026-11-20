@@ -29,7 +29,7 @@ vp check                  # format, lint, type check
 
 ## How it works
 
-- `server/`: a [Hono](https://hono.dev) API that shells out to the `git` CLI (`server/git.ts`). It listens on 127.0.0.1 only, rejects requests whose `Host` isn't localhost, and requires an `x-gitui` header on mutations, so other websites can't drive it.
+- `server/`: a [Hono](https://hono.dev) API that shells out to the `git` CLI (`server/git.ts`). It listens on 127.0.0.1 only, rejects requests whose `Host` isn't localhost, and requires an `x-gitui` header on every API request, so other websites can't drive it.
 - `src/`: React, Tailwind v4, shadcn/ui and TanStack Query. Status polls every 3s, and every mutation refreshes the repo's queries.
 - `shared/types.ts`: API types used by both sides.
 - Recent repositories are stored in `~/.config/gitui/recent.json`.
