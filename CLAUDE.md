@@ -26,7 +26,11 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   output, `main.ts` starts the server (`@hono/node-server`), serving the UI directory it's given
   with `uiSecurityHeaders` (`bin/gitui.ts` passes `dist/web` only with `--local` and `--lan`;
   by default the hosted app is the UI), `bin/args.ts` parses the command line, `dev.ts` is the
-  dev API entry, `lan.ts` picks the `--lan` address. `bun run build`
+  dev API entry, `lan.ts` picks the `--lan` address. `server/nearby/` is `--nearby`, the host
+  side of `@gitui/shared`'s nearby protocol: `rendezvous.ts` (the WebSocket client), `peer.ts`
+  (one guest: answer, trickle, code check from `auth.ts`), `bridge.ts` (HTTP over the data
+  channel, pure and unit-tested), `host.ts` (wires them up) and `webrtc.ts`, the only file that
+  imports werift. `bun run build`
   (`scripts/build.ts`) bundles `bin/gitui.ts` for Node into `dist/gitui.js`, copies
   `apps/web/dist` to `dist/web` (`scripts/local-ui.ts` adds the `LOCAL_UI_META` tag to that copy
   only, never to `apps/web/dist`, which is the hosted app, and leaves `_headers` out) and the root `LICENSE` into the package; with `README.md` that is all the package ships, with no runtime dependencies.
@@ -67,7 +71,8 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   `allowedOrigins`, with CORS headers and the pairing token (`loadToken` in `server/config.ts`)
   as a bearer token. `lan` (`--lan`): `Host` names the listen address (hostnames only, ports
   aren't checked), no cross-origin callers, and the per-run session cookie that
-  `/pair?key=<per-run secret>` sets. Don't add checks in
+  `/pair?key=<per-run secret>` sets. `nearby`: requests from an authenticated data channel,
+  through `nearby/bridge.ts`, which gives them the Host `NEARBY_HOST`. Don't add checks in
   routes or `main.ts`.
 - Frontend data goes through TanStack Query with keys that start with the repo:
   `[repo, "status"]`, `[repo, "log", ...]`. Repo mutations use `useGitMutation` from
