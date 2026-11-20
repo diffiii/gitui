@@ -282,6 +282,14 @@ test("decodeChannelMessage reads each side's messages only", () => {
   });
   expect(host({ t: "pake", y: b43, confirm: b43 })).toMatchObject({ kind: "message" });
   expect(host({ t: "auth-fail", attemptsLeft: AUTH_ATTEMPTS })).toMatchObject({ kind: "message" });
+  // `locked` is kept only as true, on a last failure.
+  const fail = (value: object) => ({ kind: "message", message: { t: "auth-fail", ...value } });
+  const locked = { attemptsLeft: 0, locked: true };
+  expect(host({ t: "auth-fail", ...locked })).toEqual(fail(locked));
+  expect(host({ t: "auth-fail", attemptsLeft: 1, locked: true })).toEqual(
+    fail({ attemptsLeft: 1 }),
+  );
+  expect(host({ t: "auth-fail", attemptsLeft: 0, locked: 1 })).toEqual(fail({ attemptsLeft: 0 }));
   expect(host({ t: "res", id: 1, status: 200, headers: [] })).toMatchObject({ kind: "message" });
   // Each side's messages, from the other side, are invalid.
   expect(host(req)).toMatchObject({ kind: "invalid", id: 1 });

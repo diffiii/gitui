@@ -65,7 +65,7 @@ test("the lockout line says until when, why, and that paired devices still conne
   const until = new Date(2026, 10, 20, 9, 5).getTime();
   expect(lockoutLine(until)).toBe(
     "Nearby: too many pairing attempts in the last 10 minutes, so someone may be guessing " +
-      "codes. New devices can't pair until 09:05; paired devices can still reconnect",
+      "codes. New devices can't pair until 09:05 at the earliest; paired devices can still reconnect",
   );
 });
 

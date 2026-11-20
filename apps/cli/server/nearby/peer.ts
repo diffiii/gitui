@@ -273,7 +273,12 @@ export class GuestSession {
         this.#send(channel, { t: "auth-fail", attemptsLeft: outcome.attemptsLeft });
         return this.#showCode();
       case "refuse":
-        this.#send(channel, { t: "auth-fail", attemptsLeft: 0 });
+        this.#send(
+          channel,
+          outcome.why === "budget"
+            ? { t: "auth-fail", attemptsLeft: 0, locked: true }
+            : { t: "auth-fail", attemptsLeft: 0 },
+        );
         // Out of budget, the budget's own line said why (host.ts).
         return this.#refuse(
           channel,

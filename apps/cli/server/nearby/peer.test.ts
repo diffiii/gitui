@@ -359,7 +359,7 @@ test("the pairing budget spans sessions; once out, a pake is refused unanswered"
   // Even the right code gets no answer now.
   first.send(guestStart(first.code(), first.prints()).message);
   await until(() => first.ended && first.closed);
-  expect(first.received.at(-1)).toEqual({ t: "auth-fail", attemptsLeft: 0 });
+  expect(first.received.at(-1)).toEqual({ t: "auth-fail", attemptsLeft: 0, locked: true });
   expect(first.received.filter((m) => !(m instanceof Uint8Array) && m.t === "pake")).toHaveLength(
     1,
   );
@@ -374,7 +374,7 @@ test("with the budget out, a failed first resume is refused without showing the 
   await guest.opened();
   guest.send(resumeStart(newToken(), guest.prints()));
   await until(() => guest.ended && guest.closed);
-  expect(guest.received).toEqual([{ t: "auth-fail", attemptsLeft: 0 }]);
+  expect(guest.received).toEqual([{ t: "auth-fail", attemptsLeft: 0, locked: true }]);
   expect(guest.code()).toBe("");
 });
 

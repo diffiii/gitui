@@ -26,7 +26,8 @@
 //      host → guest  { t: "pake", y, confirm }   the host's key-confirmation tag
 //      guest → host  { t: "pake-confirm", confirm } once the host's tag checked out, or
 //                    { t: "pake-fail" } if it didn't (a wrong code, or not the real host)
-//      host → guest  `auth-ok` then `session` (a resume token), or `auth-fail`
+//      host → guest  `auth-ok` then `session` (a resume token), or `auth-fail` (`locked` when
+//                    the host's pairing budget, not the channel's attempts, ran out)
 //    The host proves it knows the code first, so a guest never confirms to a host that doesn't.
 //    Each `pake` the host answers spends one of AUTH_ATTEMPTS attempts; after the last one fails
 //    the host closes the channel. A guest that paired with this host before (same HostInfo.key)
@@ -305,7 +306,11 @@ export type HostMessage =
   | { t: "auth-ok" }
   /** Sent after `auth-ok`: a token the guest may use to `resume` while this CLI runs. */
   | { t: "session"; token: string }
-  | { t: "auth-fail"; attemptsLeft: number }
+  /**
+   * `locked`: the host's pairing budget ran out (not this channel's attempts), so it takes no
+   * code for a while; sent with `attemptsLeft: 0`. Guests that don't know it see a last failure.
+   */
+  | { t: "auth-fail"; attemptsLeft: number; locked?: true }
   | { t: "res"; id: number; status: number; headers: [string, string][] }
   /** Ends the body of response `id`. */
   | { t: "end"; id: number }

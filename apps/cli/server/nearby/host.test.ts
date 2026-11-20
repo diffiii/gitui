@@ -515,7 +515,7 @@ test("during a lockout, an offer that says it resumes but sends a pake is refuse
   // It sends a pake instead of resuming: refused unanswered, and the channel closes.
   guest.send(guestStart("000000", guest.prints()).message);
   await until(() => guest.closed);
-  expect(guest.received).toEqual([{ t: "auth-fail", attemptsLeft: 0 }]);
+  expect(guest.received).toEqual([{ t: "auth-fail", attemptsLeft: 0, locked: true }]);
   expect(codes()).toHaveLength(1);
   expect(log.filter((line) => line.includes("guessing codes"))).toHaveLength(1);
 });

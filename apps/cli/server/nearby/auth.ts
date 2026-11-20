@@ -62,11 +62,14 @@ export const PAIRING_WINDOW = 10 * 60_000;
 /** "HH:MM" of `time`, in local time. */
 const clock = (time: number) => new Date(time).toTimeString().slice(0, 5);
 
-/** The line printed when the pairing budget runs out, until `until`. */
+/**
+ * The line printed when the pairing budget runs out. `until`: when its first attempt frees up,
+ * which further attempts can push back, so it is only the earliest.
+ */
 export const lockoutLine = (until: number) =>
   `Nearby: too many pairing attempts in the last ${PAIRING_WINDOW / 60_000} minutes, so ` +
-  `someone may be guessing codes. New devices can't pair until ${clock(until)}; paired ` +
-  "devices can still reconnect";
+  `someone may be guessing codes. New devices can't pair until ${clock(until)} at the ` +
+  "earliest; paired devices can still reconnect";
 
 export interface PairingBudgetOptions {
   /**

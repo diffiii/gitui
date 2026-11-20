@@ -319,7 +319,10 @@ function decodeHostMessage(m: Record<string, unknown>): HostMessage {
       const left = m.attemptsLeft;
       const ok =
         Number.isInteger(left) && (left as number) >= 0 && (left as number) <= AUTH_ATTEMPTS;
-      return ok ? { t: "auth-fail", attemptsLeft: left as number } : fail("invalid attemptsLeft");
+      if (!ok) return fail("invalid attemptsLeft");
+      return left === 0 && m.locked === true
+        ? { t: "auth-fail", attemptsLeft: 0, locked: true }
+        : { t: "auth-fail", attemptsLeft: left as number };
     }
     case "session":
       return { t: "session", token: bytes32(m.token, "token") };
