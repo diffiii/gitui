@@ -1,28 +1,14 @@
-import { afterEach, expect, test } from "bun:test";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
+import { afterAll, expect, test } from "bun:test";
 import { createApp } from "./app.ts";
 import * as g from "./git.ts";
 import { withRepoLock } from "./lock.ts";
+import { commitFile, git, initRepo, removeTempDirs, write } from "./test-repo.ts";
 
-const dirs: string[] = [];
+afterAll(removeTempDirs);
 
-afterEach(() => {
-  for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
-});
-
-async function makeRepo(commit = true) {
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "gitui-")));
-  dirs.push(dir);
-  await g.git(dir, ["init", "-q", "-b", "main"]);
-  await g.git(dir, ["config", "user.name", "Test"]);
-  await g.git(dir, ["config", "user.email", "test@example.com"]);
-  if (commit) {
-    fs.writeFileSync(path.join(dir, "old.txt"), "hello\n");
-    await g.git(dir, ["add", "old.txt"]);
-    await g.git(dir, ["commit", "-q", "-m", "init"]);
-  }
+function makeRepo(commit = true) {
+  const dir = initRepo();
+  if (commit) commitFile(dir, "old.txt", "hello\n", "init");
   return dir;
 }
 
@@ -47,24 +33,24 @@ async function post(dir: string, route: string, body: unknown) {
 }
 
 test("stage([]) and unstage([]) throw instead of touching the whole tree", async () => {
-  const dir = await makeRepo();
-  fs.writeFileSync(path.join(dir, "a.txt"), "a\n");
+  const dir = makeRepo();
+  write(dir, "a.txt", "a\n");
   expect(await rejection(g.stage(dir, []))).toBeInstanceOf(g.GitError);
   expect(await rejection(g.unstage(dir, []))).toBeInstanceOf(g.GitError);
   expect(await porcelain(dir)).toEqual(["?? a.txt"]);
 });
 
 test("POST /stage with an empty path list is a 400 and stages nothing", async () => {
-  const dir = await makeRepo();
-  fs.writeFileSync(path.join(dir, "a.txt"), "a\n");
-  fs.writeFileSync(path.join(dir, "old.txt"), "changed\n");
+  const dir = makeRepo();
+  write(dir, "a.txt", "a\n");
+  write(dir, "old.txt", "changed\n");
   const res = await post(dir, "/stage", { paths: [] });
   expect(res.status).toBe(400);
   expect(await porcelain(dir)).toEqual([" M old.txt", "?? a.txt"]);
 });
 
 test("POST bodies are validated", async () => {
-  const dir = await makeRepo();
+  const dir = makeRepo();
   const cases: [string, unknown][] = [
     ["/commit", {}],
     ["/commit", { message: 42 }],
@@ -94,24 +80,24 @@ test("POST bodies are validated", async () => {
 });
 
 test("valid bodies still work", async () => {
-  const dir = await makeRepo();
-  fs.writeFileSync(path.join(dir, "a.txt"), "a\n");
+  const dir = makeRepo();
+  write(dir, "a.txt", "a\n");
   expect((await post(dir, "/stage", { paths: ["a.txt"] })).status).toBe(200);
   expect((await post(dir, "/commit", { message: "add a", amend: false })).status).toBe(200);
   expect((await post(dir, "/branch", { name: "feat", checkout: false })).status).toBe(200);
   expect((await post(dir, "/branch/delete", { name: "feat" })).status).toBe(200);
-  fs.writeFileSync(path.join(dir, "a.txt"), "changed\n");
+  write(dir, "a.txt", "changed\n");
   const file = { path: "a.txt", x: ".", y: "M" };
   expect((await post(dir, "/discard", { file })).status).toBe(200);
-  fs.writeFileSync(path.join(dir, "b.txt"), "b\n");
+  write(dir, "b.txt", "b\n");
   const untracked = { path: "b.txt", x: ".", y: "?", untracked: true };
   expect((await post(dir, "/discard", { file: untracked })).status).toBe(200);
   expect(await porcelain(dir)).toEqual([]);
 });
 
 test("unstaging the new side of a staged rename unstages the whole rename", async () => {
-  const dir = await makeRepo();
-  await g.git(dir, ["mv", "old.txt", "new.txt"]);
+  const dir = makeRepo();
+  git(dir, "mv", "old.txt", "new.txt");
   expect(await porcelain(dir)).toEqual(["R  old.txt -> new.txt"]);
   const res = await post(dir, "/unstage", { paths: ["new.txt"] });
   expect(res.status).toBe(200);
@@ -119,17 +105,17 @@ test("unstaging the new side of a staged rename unstages the whole rename", asyn
 });
 
 test("unstaging an unrelated path leaves a staged rename alone", async () => {
-  const dir = await makeRepo();
-  await g.git(dir, ["mv", "old.txt", "new.txt"]);
-  fs.writeFileSync(path.join(dir, "a.txt"), "a\n");
+  const dir = makeRepo();
+  git(dir, "mv", "old.txt", "new.txt");
+  write(dir, "a.txt", "a\n");
   await g.stage(dir, ["a.txt"]);
   expect((await post(dir, "/unstage", { paths: ["a.txt"] })).status).toBe(200);
   expect(await porcelain(dir)).toEqual(["?? a.txt", "R  old.txt -> new.txt"]);
 });
 
 test("unstage with no paths works on an unborn repo", async () => {
-  const dir = await makeRepo(false);
-  fs.writeFileSync(path.join(dir, "a.txt"), "a\n");
+  const dir = makeRepo(false);
+  write(dir, "a.txt", "a\n");
   await g.stage(dir);
   expect(await porcelain(dir)).toEqual(["A  a.txt"]);
   await g.unstage(dir);
@@ -137,9 +123,9 @@ test("unstage with no paths works on an unborn repo", async () => {
 });
 
 test("concurrent stage requests are serialized per repo", async () => {
-  const dir = await makeRepo();
+  const dir = makeRepo();
   const names = Array.from({ length: 10 }, (_, i) => `f${i}.txt`);
-  for (const n of names) fs.writeFileSync(path.join(dir, n), `${n}\n`);
+  for (const n of names) write(dir, n, `${n}\n`);
   const responses = await Promise.all(names.map((n) => post(dir, "/stage", { paths: [n] })));
   const bodies = await Promise.all(responses.map((r) => r.json()));
   expect(responses.map((r) => r.status)).toEqual(names.map(() => 200));

@@ -1,15 +1,14 @@
 import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
 import { execFileSync } from "node:child_process";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import { parsePatchFiles } from "@pierre/diffs";
 import { fileDiff, git, GitError, showCommit } from "./git.ts";
+import { git as sh, initRepo, removeTempDirs, revParse, write } from "./test-repo.ts";
+
+afterAll(removeTempDirs);
 
 let repo: string;
 let head: string;
 
-const sh = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" });
 const lines = (prefix: string, n: number) =>
   Array.from({ length: n }, (_, i) => `${prefix} line ${i}`).join("\n") + "\n";
 
@@ -18,19 +17,14 @@ const parseStrict = (patch: string) =>
   parsePatchFiles(patch, { throwOnError: true }).flatMap((p) => p.files);
 
 beforeAll(() => {
-  repo = fs.mkdtempSync(path.join(os.tmpdir(), "gitui-"));
-  sh("init", "-q", "-b", "main");
-  sh("config", "user.name", "Test");
-  sh("config", "user.email", "test@example.com");
-  sh("config", "alias.hang", "!sleep 37.0421");
-  for (let i = 0; i < 6; i++) fs.writeFileSync(path.join(repo, `f${i}.txt`), lines(`f${i}`, 100));
-  sh("add", ".");
-  sh("commit", "-q", "-m", "six files");
-  head = sh("rev-parse", "HEAD").trim();
-  fs.writeFileSync(path.join(repo, "big.txt"), lines("big", 2000));
+  repo = initRepo();
+  sh(repo, "config", "alias.hang", "!sleep 37.0421");
+  for (let i = 0; i < 6; i++) write(repo, `f${i}.txt`, lines(`f${i}`, 100));
+  sh(repo, "add", ".");
+  sh(repo, "commit", "-q", "-m", "six files");
+  head = revParse(repo);
+  write(repo, "big.txt", lines("big", 2000));
 });
-
-afterAll(() => fs.rmSync(repo, { recursive: true, force: true }));
 
 test("showCommit: small patch is not truncated", async () => {
   const c = await showCommit(repo, head);
