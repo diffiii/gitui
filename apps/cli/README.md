@@ -7,7 +7,7 @@ npx @diffiii/gitui@latest       # Node
 bunx @diffiii/gitui@latest      # Bun
 ```
 
-`gitui` starts a local API on 127.0.0.1 that runs your `git`, then opens the web app at https://gitui.diffiii.workers.dev through a pairing link it prints. The link carries the port and a pairing token, so only that app (and nothing else on the web) can call the API, and the browser stays paired across restarts. Your repositories never leave your machine: the hosted page talks to the CLI straight from the browser.
+`gitui` starts a local API on 127.0.0.1 that runs your `git`, then opens the web app at https://gitui.diffiii.dev through a pairing link it prints. The link carries the port and a pairing token, so only that app (and nothing else on the web) can call the API, and the browser stays paired across restarts. Your repositories never leave your machine: the hosted page talks to the CLI straight from the browser.
 
 ```sh
 gitui                     # open the repository picker
