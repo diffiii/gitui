@@ -40,6 +40,8 @@ export interface CommitDetail extends Commit {
   committerDate: number;
   body: string;
   patch: string;
+  /** The patch exceeded the server's output cap and was cut short. */
+  truncated: boolean;
 }
 
 export interface Branch {

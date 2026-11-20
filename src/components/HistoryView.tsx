@@ -303,11 +303,20 @@ function CommitDetail({ hash, onSelect }: { hash: string; onSelect: (hash: strin
           </div>
         </header>
 
+        {data.truncated && (
+          <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+            {files.length > 0
+              ? "Diff is larger than 8 MB — showing only the first part"
+              : "Diff is larger than 8 MB and can't be shown"}
+          </div>
+        )}
+
         {files.length > 0 && (
           <section className="rounded-lg border">
             <div className="flex h-8 items-center gap-2 border-b px-3 text-xs">
               <span className="font-medium">
-                {files.length} file{files.length > 1 ? "s" : ""} changed
+                {files.length}
+                {data.truncated && "+"} file{files.length > 1 || data.truncated ? "s" : ""} changed
               </span>
               <span className="text-emerald-600 dark:text-emerald-400">+{additions}</span>
               <span className="text-rose-600 dark:text-rose-400">−{deletions}</span>

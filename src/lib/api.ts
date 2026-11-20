@@ -37,7 +37,7 @@ export function repoApi(repo: string) {
   return {
     status: () => request<Status>("GET", u("/status")),
     diff: (f: { path: string; origPath?: string; staged: boolean; untracked?: boolean }) =>
-      request<{ diff: string }>(
+      request<{ diff: string; truncated: boolean }>(
         "GET",
         u("/diff", {
           path: f.path,

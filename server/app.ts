@@ -150,13 +150,13 @@ export function createApp(opts: AppOptions = {}) {
 
   repo.get("/diff", async (c) => {
     const q = c.req.query();
-    const diff = await g.fileDiff(c.var.repo, {
+    const { diff, truncated } = await g.fileDiff(c.var.repo, {
       path: q.path,
       origPath: q.origPath || undefined,
       staged: q.staged === "1",
       untracked: q.untracked === "1",
     });
-    return c.json({ diff });
+    return c.json({ diff, truncated });
   });
 
   repo.post("/stage", async (c) => {
@@ -233,6 +233,12 @@ export function createApp(opts: AppOptions = {}) {
     const action = c.req.param("action");
     if (action !== "fetch" && action !== "pull" && action !== "push")
       return c.json({ error: "Bad action" }, 400);
+    // Pushes and fetches can outlast Bun's idleTimeout; disable it for this request only.
+    // c.env is the Bun Server under Bun.serve, and undefined under app.request() in tests.
+    (c.env as { timeout?(req: Request, seconds: number): void } | undefined)?.timeout?.(
+      c.req.raw,
+      0,
+    );
     const output = await g.remoteAction(c.var.repo, action);
     return c.json({ ok: true, output });
   });
