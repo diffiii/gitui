@@ -1,11 +1,7 @@
 import {
   CHANNEL_LOW_WATER,
   DATA_CHANNEL_LABEL,
-  guestFinish,
-  guestStart,
   newOfferId,
-  resumeStart,
-  resumeVerify,
   sdpFingerprint,
   STUN_URLS,
   type Fingerprint,
@@ -49,6 +45,9 @@ export class HostUnverifiedError extends NearbyError {
 export class RefusedError extends NearbyError {
   override name = "RefusedError";
 }
+
+/** CPace and its curve arithmetic, loaded only once this page pairs or resumes. */
+const loadPake = () => import("@gitui/shared/nearby-pake");
 
 type RefusedReason = Extract<SignalData, { kind: "refused" }>["reason"];
 
@@ -326,6 +325,7 @@ function openPeer(
 
   const authenticate = async (code: string): Promise<AuthResult> => {
     if (authenticated) return { ok: true };
+    const { guestFinish, guestStart } = await loadPake();
     const start = guestStart(code, prints);
     const answer = next();
     send(start.message);
@@ -346,6 +346,7 @@ function openPeer(
 
   const resume = async (token: string): Promise<AuthResult> => {
     if (authenticated) return { ok: true };
+    const { resumeStart, resumeVerify } = await loadPake();
     const message = resumeStart(token, prints);
     const answer = next();
     send(message);
