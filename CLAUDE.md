@@ -95,7 +95,7 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   routes or `main.ts`.
 - Each listener also has a `repoScope`: `loopback` is `any`; `lan` and `nearby` (other devices)
   are `opened`, i.e. only the `initialRepo` and the recent list, compared as realpaths, read per
-  request. Every repo path a request names goes through the `repoGate` (`access.ts`): the `repo`
+  request. Every repo path a request names goes through `repoGate` (`server/repo-scope.ts`): the `repo`
   middleware and `/open`, which only records repos in the recent list for `any`. A refusal is a
   403 `{ error, code: REPO_NOT_OPENED }`. New routes that take a repo path must use the gate.
   Server tests pass `configDir` to `createApp` so they never touch the real recent list.
