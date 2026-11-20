@@ -45,19 +45,37 @@ bounds what one client can make it do (`src/network.ts`):
 - A network holds at most `MAX_SOCKETS` (50) sockets; one more gets a 503. Each connection
   first closes the sockets that haven't said hello within `HELLO_TIMEOUT` (10 s), so silent
   sockets can't hold the slots.
-- At most `MAX_HOSTS` (10) of them may be hosts; another host's hello is refused with 1013, so
-  hosts can't take the slots from guests.
-- Each socket may send `RATE_LIMIT` (50) messages per `RATE_WINDOW` (10 s), and the network's
-  sockets together `NETWORK_RATE_LIMIT` (200). Over either, the sending socket is closed (1008,
-  or 1013 for the network's). Pairing takes about 10 to 30 messages per side (hello, the offer or
-  answer, and trickled ICE candidates), so a host can pair with a few guests at once.
-- A socket gets `MAX_ERRORS` (20) `Unknown peer` errors, then it's closed with 1008.
+- At most `MAX_HOSTS` (10) hosts, counted by key, so hosts can't take the slots from guests:
+  another key's hello is refused with 1013. A key already here always gets in, up to
+  `MAX_SOCKETS_PER_KEY` (3) sockets, so a CLI that reconnects while its old socket lingers
+  isn't counted twice. The CLI says once that there's no room, and keeps retrying.
+- Messages are counted per `RATE_WINDOW` (10 s). A host's socket may send `HOST_RATE_LIMIT`
+  (200): the CLI pairs with up to 4 guests at once (`MAX_PENDING`), each with an answer and up
+  to about 32 trickled candidates, 133 messages in all. Any other socket may send
+  `GUEST_RATE_LIMIT` (50), enough for a guest's hello, offer and candidates. Over its limit, a
+  socket is closed with 1008.
+- Everyone on a network shares `NETWORK_RATE_LIMIT` (200) per window: the guests and the
+  sockets that haven't said hello, together, so filling the network with sockets doesn't
+  multiply the per-socket limit. Hosts don't count (`MAX_HOSTS` times their own limit bounds
+  them). Over it, the socket that sent the most in its window is closed with 1013, whoever sent
+  the last message, and its messages stop counting.
 - Binary messages close the socket with 1003, messages over `MAX_MESSAGE_LENGTH` with 1009,
-  and invalid ones with 1008.
+  and invalid ones with 1008. A signal to an unknown peer gets an `Unknown peer` error, which
+  the per-socket limit bounds like any other answer.
 
 The counters live in memory, so hibernation resets them; a client has to keep the object awake
-to keep counting, and then the limits apply. Reconnecting starts a socket's budget over, which
-the WAF rule in [Deploy](#deploy) bounds.
+to keep counting, and then the limits apply. Reconnecting starts a socket's budget over, but
+not the network's.
+
+What these limits don't stop: anyone on the same network, which is to say behind the same
+public IPv4 address or in the same IPv6 /64, can deny nearby to the others there. The WAF rule
+in [Deploy](#deploy) counts per address, so over IPv6, where a /64 holds 2^64 of them, it bounds
+nothing; only the network's budget bounds reconnect floods, and the flooder's own sockets are
+the ones it closes. And a client that says hello as a guest and then only sends the text
+keepalive, which never reaches the object, can hold all `MAX_SOCKETS` slots, so everyone else
+on the network gets a 503 until it lets go. Sockets already open keep working, and devices
+already paired don't need the rendezvous at all; nothing else is at risk, since it only
+introduces peers.
 
 ## Privacy
 
@@ -82,7 +100,9 @@ bun run deploy     # wrangler deploy to rendezvous.gitui.diffiii.dev (needs wran
 
 `bun run dev` passes a dev-only `NETWORK_KEY_SECRET` with `--var`. To use your own, put
 `NETWORK_KEY_SECRET=…` in `.dev.vars` (gitignored) and run
-`bunx wrangler dev --var ALLOWED_ORIGINS:http://localhost:5173` instead.
+`bunx wrangler dev --var ALLOWED_ORIGINS:http://localhost:5173` instead. `bun run e2e` passes
+wrangler an empty `--env-file`, so it never loads `.dev.vars` and can check the 500 without a
+secret.
 
 ## Deploy
 
@@ -94,8 +114,9 @@ openssl rand -base64 32 | bunx wrangler secret put NETWORK_KEY_SECRET
 bun run deploy
 ```
 
-Then, once, in the Cloudflare dashboard: a rate limiting rule that bounds reconnect floods (each
-new socket starts a fresh budget). The free plan has one rule; this is it.
+Then, once, in the Cloudflare dashboard: a rate limiting rule that bounds reconnect floods from
+one address (each new socket starts a fresh budget of its own). The free plan has one rule;
+this is it.
 
 1. The `diffiii.dev` zone → Security → WAF → Rate limiting rules → Create rule.
 2. If incoming requests match: Hostname equals `rendezvous.gitui.diffiii.dev` and URI Path equals
@@ -106,7 +127,8 @@ new socket starts a fresh budget). The free plan has one rule; this is it.
 
 A CLI opens two sockets and a browser tab one, and both reconnect with backoff, so 30 upgrades in
 10 s from one address is far above what the people behind it need. Messages on an open socket
-aren't requests to the WAF; the object's limits above cover those.
+aren't requests to the WAF; the object's limits above cover those. It counts IPv4 addresses
+and single IPv6 addresses, so it does little over IPv6 (see [Limits](#limits)).
 
 ## First test on a phone
 
@@ -128,9 +150,11 @@ custom domains need the `diffiii.dev` zone in the same Cloudflare account.
 
    Until the secret is set, every WebSocket gets a 500. Add the WAF rule from [Deploy](#deploy).
 
-2. Build the web app and deploy the test copy. `deploy:nearby-test` builds first, with
-   `VITE_GITUI_RENDEZVOUS_URL` cleared, so the copy talks to `wss://rendezvous.gitui.diffiii.dev`
-   and its CSP allows it, whatever your environment or `dist/` held before:
+2. Build the web app and deploy the test copy. Wrangler builds first (`build` in the wrangler
+   configs), with `VITE_GITUI_RENDEZVOUS_URL` cleared, so the copy talks to
+   `wss://rendezvous.gitui.diffiii.dev` and its CSP allows it, whatever your environment or
+   `dist/` held before. The same goes for any `wrangler deploy` in `apps/web`, run anywhere in
+   the repo:
 
    ```sh
    cd ../web
@@ -139,10 +163,7 @@ custom domains need the `diffiii.dev` zone in the same Cloudflare account.
    ```
 
    It deploys with `-c wrangler.nearby-test.jsonc`, a separate Worker (`gitui-nearby-test`) on
-   its own domain, so it can't touch `gitui.diffiii.dev`. The other way round, never deploy
-   production with a bare `wrangler deploy` after building for anything else: use
-   `bun run deploy`, which builds again (the order is build, deploy the test copy, test, then
-   build again for production).
+   its own domain, so it can't touch `gitui.diffiii.dev`.
 
 3. On the Mac, from the repo root, run the CLI from this branch with a repository:
 
@@ -172,8 +193,8 @@ custom domains need the `diffiii.dev` zone in the same Cloudflare account.
    - Disconnect from the ⋮ menu: the list comes back, and the terminal says
      `Nearby: device disconnected`.
 
-5. Once it passes and nearby ships on `gitui.diffiii.dev` (`cd apps/web && bun run deploy`, which
-   builds production again), remove the test copy and its origin:
+5. Once it passes and nearby ships on `gitui.diffiii.dev` (`cd apps/web && bun run deploy`),
+   remove the test copy and its origin:
 
    ```sh
    cd apps/web && bunx wrangler delete -c wrangler.nearby-test.jsonc   # the gitui-nearby-test Worker
