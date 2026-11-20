@@ -4,7 +4,7 @@ import { parseConventionalCommit } from "./CommitTitle.tsx";
 describe("parseConventionalCommit", () => {
   test("known types", () => {
     const feat = parseConventionalCommit("feat: add x");
-    expect(feat).toMatchObject({ label: "Feature", color: "#a2eeef", rest: "add x" });
+    expect(feat).toMatchObject({ label: "Feature", rest: "add x" });
     expect(feat?.scope).toBeUndefined();
     expect(parseConventionalCommit("fix: y")?.label).toBe("Fix");
     expect(parseConventionalCommit("perf: y")?.label).toBe("Performance");

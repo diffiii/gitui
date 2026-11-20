@@ -6,7 +6,7 @@ out to the `git` CLI; a React 19 + TanStack Query + shadcn/ui frontend talks to 
 ## Commands
 
 ```sh
-bun install                 # install (CI: bun install --frozen-lockfile)
+bun install                 # install (--frozen-lockfile to match bun.lock exactly)
 bun run dev [repo-path]     # API on :4777 (bun --watch) + Vite+ dev server with /api proxy
 bun test                    # bun:test; server tests run against real temp repos
 ./node_modules/.bin/tsc -b  # type check every tsconfig project
@@ -31,14 +31,14 @@ vp build                    # build the frontend into dist/ (`bun run build` = t
 - Validate ref-like request inputs (branch names, hashes, refs) with `ref()` in
   `server/app.ts`, which rejects anything git could parse as an option.
 - Frontend data goes through TanStack Query with keys that start with the repo:
-  `[repo, "status"]`, `[repo, "log", ...]`. Mutations use `useGitMutation` from
+  `[repo, "status"]`, `[repo, "log", ...]`. Repo mutations use `useGitMutation` from
   `src/lib/repo.tsx`, which invalidates `[repo]` when it settles and toasts errors.
 - Prefs (`src/lib/prefs.ts`) and URL state (`src/App.tsx`) are external stores read with
   `useSyncExternalStore`. Don't use effects to sync or derive state.
 - Add shadcn components under `src/components/ui`.
 - Tests: don't import `src/lib/prefs.ts`, because it touches `window` at import time. Server
-  tests create repos with `fs.mkdtempSync` and set `user.name`/`user.email` per repo, never
-  globally.
+  tests build repos with the helpers in `server/test-repo.ts`, which isolate git from the
+  global and system config, set the identity per repo and delete the temp dirs on exit.
 
 ## Commits
 
