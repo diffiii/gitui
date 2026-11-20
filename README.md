@@ -25,6 +25,7 @@ gitui ~/code/x -p 5000 --no-open
 ```sh
 bun run dev [repo-path]   # API on :4777 (bun --watch) + Vite+ dev server with /api proxy
 vp check                  # format, lint, type check
+bun test                  # run the tests
 ```
 
 ## How it works
