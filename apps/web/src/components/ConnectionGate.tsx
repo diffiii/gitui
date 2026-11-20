@@ -347,8 +347,16 @@ function UnreachableScreen({
           it.
         </li>
         <li>
-          Safari may block connections to localhost. If it never connects, add <Code>--local</Code>{" "}
-          and use the page it opens instead.
+          Safari may block connections to localhost. If it never connects, run{" "}
+          <Code>npx @diffiii/gitui@latest --nearby</Code> instead and{" "}
+          <button
+            type="button"
+            className="text-foreground underline underline-offset-4"
+            onClick={() => setPairing(null)}
+          >
+            pick this computer from the list
+          </button>
+          .
         </li>
       </ul>
       <div className="mt-4 flex items-center justify-between gap-2 px-1 text-xs text-muted-foreground">
