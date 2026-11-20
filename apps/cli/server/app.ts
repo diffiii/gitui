@@ -7,7 +7,7 @@ import { CONFIG_DIR, readRecent } from "./config.ts";
 import { untrackedDiff, workingFile, workingFiles } from "./files.ts";
 import * as g from "./git.ts";
 import { withRepoLock } from "./lock.ts";
-import { RepoGate, RepoNotOpenedError } from "./repo-scope.ts";
+import { RepoNotOpenedError, repoGate } from "./repo-scope.ts";
 
 export interface AppOptions extends AccessOptions {
   initialRepo?: string;
@@ -95,7 +95,7 @@ export function createApp(opts: AppOptions) {
 
   const { repoScope } = installAccess(app, opts);
   const configDir = opts.configDir ?? CONFIG_DIR;
-  const repos = RepoGate.for(repoScope, { initialRepo: opts.initialRepo, configDir });
+  const repos = repoGate(repoScope, { initialRepo: opts.initialRepo, configDir });
 
   app.onError((err, c) => {
     // REPO_NOT_OPENED lets the UI tell this case apart.
@@ -119,7 +119,8 @@ export function createApp(opts: AppOptions) {
     return c.json({ root, name: path.basename(root) });
   });
 
-  // Everything below operates on ?repo=<absolute path>, through the gate.
+  // Everything below operates on ?repo=<absolute path>, through the gate. A repository path
+  // that comes any other way (a body field) must go through `repos.resolve` as well.
   const repo = new Hono<Env>();
   repo.use("*", async (c, next) => {
     const r = c.req.query("repo");
