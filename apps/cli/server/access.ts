@@ -13,6 +13,11 @@
 //   HTTP, so it is not the pairing token and can't pair the hosted app. Cookies ignore ports:
 //   every other web service on this address gets the session cookie too, so LAN mode trusts
 //   whatever else runs on this machine.
+// - nearby (`--nearby`): requests that a guest sends over a WebRTC data channel, which binds no
+//   socket. The channel is the authentication: nearby/peer.ts hands it to the bridge only after
+//   the guest proved it knows the code gitui printed (nearby/auth.ts). The bridge gives every
+//   request the Host NEARBY_HOST, so this app refuses anything that reaches it any other way, and
+//   it has no cross-origin callers.
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { CLIENT_HEADER, isLoopbackHost } from "@gitui/shared";
 import type { Context, Env, Hono } from "hono";
@@ -39,7 +44,15 @@ export interface LanListener {
   cookie: string;
 }
 
-export type Listener = LoopbackListener | LanListener;
+/** Takes the requests of authenticated nearby data channels, through nearby/bridge.ts. */
+export interface NearbyListener {
+  kind: "nearby";
+}
+
+/** The listeners that bind a socket. */
+export type SocketListener = LoopbackListener | LanListener;
+
+export type Listener = SocketListener | NearbyListener;
 
 export interface AccessOptions {
   listener: Listener;
@@ -70,8 +83,11 @@ export const lanListener = (address: string): LanListener => ({
   cookie: `${SESSION_COOKIE_PREFIX}${randomBytes(4).toString("hex")}`,
 });
 
+/** The Host of every request the nearby bridge makes; a reserved name, so no socket gets it. */
+export const NEARBY_HOST = "nearby.invalid";
+
 /** The address to bind for `listener`. */
-export const listenAddress = (listener: Listener) =>
+export const listenAddress = (listener: SocketListener) =>
   listener.kind === "lan" ? listener.address : "127.0.0.1";
 
 /** The link that pairs a browser with a LAN listener: it opens the UI with a session. */
@@ -85,7 +101,7 @@ export function parseOrigin(value: string | undefined): string | null {
 }
 
 /** Constant-time string comparison. */
-function safeEqual(actual: string, expected: string) {
+export function safeEqual(actual: string, expected: string) {
   const a = Buffer.from(actual);
   const b = Buffer.from(expected);
   return a.length === b.length && timingSafeEqual(a, b);
@@ -151,10 +167,27 @@ function lanRules(listener: LanListener): Rules {
   };
 }
 
+/** The channel already authenticated the guest; the Host shows the request came through it. */
+const nearbyRules = (): Rules => ({
+  hostAllowed: (host) => host === NEARBY_HOST,
+  allowedOrigins: [],
+  authError: () => null,
+});
+
+function rules(listener: Listener): Rules {
+  switch (listener.kind) {
+    case "loopback":
+      return loopbackRules(listener);
+    case "lan":
+      return lanRules(listener);
+    case "nearby":
+      return nearbyRules();
+  }
+}
+
 /** Adds the access checks to `/api/*`, and the listener's own routes. */
 export function installAccess<E extends Env>(app: Hono<E>, { listener }: AccessOptions) {
-  const { hostAllowed, allowedOrigins, authError, routes } =
-    listener.kind === "loopback" ? loopbackRules(listener) : lanRules(listener);
+  const { hostAllowed, allowedOrigins, authError, routes } = rules(listener);
   routes?.(app);
 
   app.use("/api/*", async (c, next) => {

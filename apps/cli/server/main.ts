@@ -3,7 +3,7 @@ import path from "node:path";
 import { createAdaptorServer } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { uiSecurityHeaders } from "@gitui/shared";
-import { listenAddress } from "./access.ts";
+import { type SocketListener, listenAddress } from "./access.ts";
 import { type AppOptions, createApp } from "./app.ts";
 
 export interface StartOptions extends AppOptions {
@@ -11,6 +11,7 @@ export interface StartOptions extends AppOptions {
   port: number;
   /** Directory of the built UI to serve at `/`. Omitted, only the API is served. */
   ui?: string;
+  listener: SocketListener;
 }
 
 /** Headers of the UI's responses: the hosted app's, except that this UI only calls its origin. */

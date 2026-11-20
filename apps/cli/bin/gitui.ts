@@ -5,7 +5,7 @@ import path from "node:path";
 import { HOSTED_ORIGIN, pairingUrl } from "@gitui/shared";
 import { renderUnicodeCompact } from "uqr";
 import {
-  type Listener,
+  type SocketListener,
   lanListener,
   lanPairingUrl,
   listenAddress,
@@ -56,7 +56,7 @@ function bundledUi() {
 }
 
 /** Starts the server and returns the bound port, or exits with why it couldn't. */
-const listen = (listener: Listener, ui?: string) =>
+const listen = (listener: SocketListener, ui?: string) =>
   start({ port, initialRepo: repo, ui, listener }).catch((e: Error) =>
     fail(`Can't listen on ${listenAddress(listener)}: ${e.message}`),
   );
