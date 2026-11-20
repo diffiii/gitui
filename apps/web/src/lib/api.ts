@@ -9,7 +9,6 @@ import type {
 } from "@gitui/shared";
 import { REPO_NOT_OPENED } from "@gitui/shared";
 import { ApiError, apiTransport, getConnection, rejectConnection } from "./connection.ts";
-import { ChannelRequestError } from "./nearby/channelFetch.ts";
 
 export type { Branch, Commit, CommitDetail, FileStatus, Status, WorkingFile, WorkingFiles };
 
@@ -30,10 +29,8 @@ async function request<T>(
     headers: body !== undefined ? { "content-type": "application/json" } : {},
     body: body !== undefined ? JSON.stringify(body) : undefined,
     signal,
-  }).catch((e: unknown) => {
+  }).catch(() => {
     if (signal?.aborted) throw signal.reason;
-    // The host answered, but not with a response this page takes (e.g. one too large).
-    if (e instanceof ChannelRequestError) throw new ApiError(e.message, "http");
     throw new ApiError("Can't reach gitui", "unreachable");
   });
   const data = await res.json().catch(() => ({ error: res.statusText }));

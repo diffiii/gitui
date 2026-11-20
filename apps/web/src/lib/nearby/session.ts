@@ -1,4 +1,6 @@
-import { CLIENT_HEADER, type HostInfo } from "@gitui/shared";
+import type { HostInfo } from "@gitui/shared";
+import { withHeaders } from "../withHeaders.ts";
+import { ChannelRequestError } from "./channelFetch.ts";
 import {
   CONNECT_TIMEOUT,
   connectToHost,
@@ -16,22 +18,27 @@ import { tokens, type TokenStore } from "./tokens.ts";
 // stop(). It is an external store of NearbyState, and the transport the API client sends that
 // host's requests through (fetch). It finds the host on the rendezvous by key, opens a data
 // channel, and resumes with the saved token or asks for the code. When a connected session drops
-// (the channel closes, the rendezvous socket drops, so the host drops us, or a check after the
-// page was shown again gets no answer) it reconnects in the background: a new socket if needed, a
-// new offer, and `resume`. lost() decides what every lost channel leads to.
+// (the channel closes, the rendezvous socket drops, so the host drops us, or a check of the
+// channel gets no answer) it reconnects in the background: a new socket if needed, a new offer,
+// and `resume`. lost() decides what every lost channel leads to.
 //
 // Requests while it (re)connects, or checks its channel, wait for it. A GET that was in flight
 // when the channel died goes out again on the next one; anything else fails, since the host may
-// have run it. Once a dropped session is back, `onReconnected` refetches what failed meanwhile.
+// have run it. A request whose response doesn't start within HEAD_TIMEOUT has the channel
+// checked, since a channel can die without a word.
 
 /** How long connecting, or reconnecting, keeps trying before it gives up. */
 export const RETRY_WINDOW = 20_000;
 /** How long the host may take to answer a code or a resume token. */
 export const PROOF_TIMEOUT = 15_000;
-/** How long the channel may take to answer the check made when the page is shown again. */
+/** How long the channel may take to answer a check that it still works. */
 export const PROBE_TIMEOUT = 4000;
 /** How long an open rendezvous may go without listing the host before it counts as gone. */
 export const MISSING_GRACE = 3000;
+/** How long a request may wait for its response to start before the channel is checked. */
+export const HEAD_TIMEOUT = 8000;
+/** The pause before another offer to a host that refused one while the session reconnects. */
+export const REFUSED_PAUSE = 5000;
 
 /** The rendezvous doesn't list the host's key. */
 class HostGoneError extends NearbyError {}
@@ -47,8 +54,6 @@ export interface SessionDeps {
   now(): number;
   setTimeout(callback: () => void, ms: number): unknown;
   clearTimeout(timer: unknown): void;
-  /** The session is back after a drop: refetch what failed meanwhile. */
-  onReconnected(): void;
 }
 
 /** Members are arrow-typed: they don't use `this`, so they can be passed around on their own. */
@@ -56,13 +61,20 @@ export interface NearbySession {
   readonly host: NearbyHost;
   getState: () => NearbyState;
   subscribe: (listener: () => void) => () => void;
-  /** `fetch` for API paths on the host. Waits while the session (re)connects. */
+  /**
+   * `fetch` for API paths on the host. Waits while the session (re)connects. A response the host
+   * started but this page can't take (it aborted it, or it's too large) is a 502 with `{error}`.
+   */
   fetch: (path: string, init?: RequestInit) => Promise<Response>;
   /** Send the code the host printed. */
   submitCode: (code: string) => Promise<void>;
   /** Try again after a failure. */
   retry: () => void;
-  /** The page is shown again: check that the channel still works before requests use it. */
+  /**
+   * The page is shown again: check that the channel still works before requests use it, and
+   * start (re)connecting over with a fresh RETRY_WINDOW, since a suspended page's attempts are
+   * stale, and so is a failure that only ran out of time.
+   */
   wake: () => void;
   /** End the session and forget its resume token: the user disconnected, or chose another host. */
   stop: () => void;
@@ -80,23 +92,19 @@ export function createSession(host: NearbyHost, deps: SessionDeps): NearbySessio
   let peer: GuestPeer | null = null;
   /** Aborts the step in progress: finding the host, connecting, a pause between attempts. */
   let attempt = new AbortController();
-  /** Ends the pause between attempts early. */
-  let kick: (() => void) | null = null;
-  /** Whether it was connected before, so coming back refetches what failed meanwhile. */
-  let wasConnected = false;
-  /** Checking the channel after the page was shown again; requests wait for it. */
-  let probing = false;
+  /** Starts the current establish() over, with a fresh deadline. */
+  let restart = () => {};
   /**
    * The host turned the saved token away in this session. The token stays (only a new `session`
    * replaces it: whatever turned it away may not be the real host), but isn't offered again.
    */
   let tokenRefused = false;
 
-  const notify = () => listeners.forEach((l) => l());
   const set = (next: NearbyState) => {
     state = next;
-    notify();
+    listeners.forEach((l) => l());
   };
+  const fail = (why: string, timedOut: boolean) => set({ kind: "failed", reason: why, timedOut });
 
   const closePeer = () => {
     const p = peer;
@@ -109,12 +117,10 @@ export function createSession(host: NearbyHost, deps: SessionDeps): NearbySessio
       const done = () => {
         deps.clearTimeout(timer);
         signal.removeEventListener("abort", done);
-        kick = null;
         resolve();
       };
       const timer = deps.setTimeout(done, ms);
       signal.addEventListener("abort", done, { once: true });
-      kick = done;
     });
 
   /** `promise`, or a NearbyError once `ms` pass. */
@@ -124,40 +130,46 @@ export function createSession(host: NearbyHost, deps: SessionDeps): NearbySessio
       promise.then(resolve, reject).finally(() => deps.clearTimeout(timer));
     });
 
-  const proof = (step: Promise<AuthResult>) =>
-    within(step, PROOF_TIMEOUT, `${host.name} didn't answer in time. Try again.`);
+  const proof = (step: Promise<AuthResult>, ms = PROOF_TIMEOUT) =>
+    within(step, ms, `${host.name} didn't answer in time. Try again.`);
 
   /**
-   * Open a session with the host, trying again until RETRY_WINDOW is up. `connecting` blocks the
-   * app; `reconnecting` keeps it up. `notice` tells the code screen why it asks again.
+   * Open a session with the host, trying again until RETRY_WINDOW is up, which bounds every step.
+   * `connecting` blocks the app; `reconnecting` keeps it up. `notice` tells the code screen why
+   * it asks again.
    */
   async function establish(mode: "connecting" | "reconnecting", notice?: "expired") {
     attempt.abort();
     const { signal } = (attempt = new AbortController());
+    restart = () => void establish(mode, notice);
     closePeer();
     set({ kind: mode });
     const deadline = deps.now() + RETRY_WINDOW;
+    const left = () => deadline - deps.now();
     for (let failures = 0; ; failures++) {
       try {
         const listed = await locate(deadline, signal);
-        const timeout = Math.max(2000, Math.min(CONNECT_TIMEOUT, deadline - deps.now()));
+        const timeout = Math.min(CONNECT_TIMEOUT, left());
         const token = tokenRefused ? null : deps.tokens.load(host.key);
         const p = await deps.connect(listed, { signal, timeout, resume: token !== null });
         if (signal.aborted) return p.close();
-        return await authenticate(p, signal, token, notice);
+        return await authenticate(p, signal, token, deadline, notice);
       } catch (e) {
         if (signal.aborted) return;
         closePeer();
         // Something answered for the host without proving it holds our token (don't ask it for
-        // the code; the token stays, for the real host), or the host refused the offer (more
-        // offers would only add to its load or limit): the user decides when to try again.
-        if (e instanceof HostUnverifiedError || e instanceof RefusedError) {
-          return set({ kind: "failed", reason: e.message });
-        }
+        // the code; the token stays, for the real host): the user decides what to do.
+        if (e instanceof HostUnverifiedError) return fail(e.message, false);
         if (e instanceof HostGoneError) return set({ kind: "gone" });
-        if (deps.now() >= deadline) return set({ kind: "failed", reason: reason(e) });
-        await sleep(Math.min(4000, 500 * 2 ** failures), signal);
+        // The host refused the offer (more offers at once would only add to its load or limit).
+        // Connecting, the user decides when to try again; reconnecting, the app is up, so wait
+        // longer between offers until the window is up.
+        const refused = e instanceof RefusedError;
+        if (refused && mode === "connecting") return fail(e.message, false);
+        const pause = refused ? REFUSED_PAUSE : Math.min(4000, 500 * 2 ** failures);
+        if (left() > 0) await sleep(Math.min(pause, left()), signal);
         if (signal.aborted) return;
+        if (left() <= 0) return fail(reason(e), !refused);
       }
     }
   }
@@ -186,7 +198,7 @@ export function createSession(host: NearbyHost, deps: SessionDeps): NearbySessio
           grace = null;
           return;
         }
-        const found = hosts.findLast((h) => h.key === host.key);
+        const found = hosts.find((h) => h.key === host.key);
         if (found) return finish(() => resolve(found));
         grace ??= deps.setTimeout(
           () =>
@@ -213,11 +225,12 @@ export function createSession(host: NearbyHost, deps: SessionDeps): NearbySessio
     });
   }
 
-  /** Resume on a new channel with `token`, or ask for the code. */
+  /** Resume on a new channel with `token` (by `deadline`), or ask for the code. */
   async function authenticate(
     p: GuestPeer,
     signal: AbortSignal,
     token: string | null,
+    deadline: number,
     notice?: "expired",
   ) {
     peer = p;
@@ -227,8 +240,10 @@ export function createSession(host: NearbyHost, deps: SessionDeps): NearbySessio
     });
     p.onClose(() => lost(p));
     if (token === null) return set({ kind: "code", checking: false, notice });
-    const result = await proof(p.resume(token));
-    if (signal.aborted || peer !== p) return;
+    const result = await proof(p.resume(token), Math.min(PROOF_TIMEOUT, deadline - deps.now()));
+    // Stopped, started over or lost meanwhile: establish() returns, or tries again.
+    if (signal.aborted || peer !== p)
+      throw new NearbyError(`The connection to ${host.name} dropped.`);
     if (result.ok) return connected();
     tokenRefused = true;
     // A refused first `resume` leaves every attempt: ask for the code on this channel.
@@ -236,11 +251,7 @@ export function createSession(host: NearbyHost, deps: SessionDeps): NearbySessio
     void establish("connecting", "expired");
   }
 
-  function connected() {
-    set({ kind: "connected" });
-    if (wasConnected) deps.onReconnected();
-    wasConnected = true;
-  }
+  const connected = () => set({ kind: "connected", checking: false });
 
   /** The channel `p` is gone (or doesn't answer): what happens next, whatever the state. */
   function lost(p: GuestPeer) {
@@ -263,36 +274,36 @@ export function createSession(host: NearbyHost, deps: SessionDeps): NearbySessio
   }
 
   /**
-   * Check that the connected channel works. After a suspension, or once its host quit, a channel
-   * can still look open while its other end is long gone (WebKit fires no close for it, and ICE
-   * takes ~30 s to give up). Requests wait for the check, and one request tells.
+   * Check that the connected channel `p` works. After a suspension, or once its host quit, a
+   * channel can still look open while its other end is long gone (WebKit fires no close for it,
+   * and ICE takes ~30 s to give up). Requests wait for the check, and one request tells.
    */
   function probe(p: GuestPeer) {
-    if (probing || state.kind !== "connected") return;
-    probing = true;
-    notify();
+    if (p !== peer || state.kind !== "connected" || state.checking) return;
+    set({ kind: "connected", checking: true });
     const controller = new AbortController();
     const timer = deps.setTimeout(
       () => controller.abort(new NearbyError("No answer.")),
       PROBE_TIMEOUT,
     );
     void p
-      .fetch("/api/config", { headers: { [CLIENT_HEADER]: "1" }, signal: controller.signal })
+      .fetch("/api/config", withHeaders({ signal: controller.signal }))
       .then(
         () => true,
         () => false,
       )
       .then((alive) => {
         deps.clearTimeout(timer);
-        probing = false;
-        if (!alive) lost(p);
-        notify();
+        // Stopped or lost meanwhile: whatever did that has set the state.
+        if (p !== peer) return;
+        if (alive) connected();
+        else lost(p);
       });
   }
 
   /** The channel once the session is connected and checked; waits while it gets there. */
   function ready(signal?: AbortSignal | null): Promise<GuestPeer> {
-    const current = () => (state.kind === "connected" && !probing ? peer : null);
+    const current = () => (state.kind === "connected" && !state.checking ? peer : null);
     const waiting = () =>
       state.kind === "connecting" || state.kind === "reconnecting" || state.kind === "connected";
     const now = current();
@@ -314,6 +325,31 @@ export function createSession(host: NearbyHost, deps: SessionDeps): NearbySessio
       if (signal?.aborted) return onAbort();
       signal?.addEventListener("abort", onAbort, { once: true });
     });
+  }
+
+  /**
+   * `path` over `p`. A response that hasn't started within HEAD_TIMEOUT has the channel checked
+   * (it may have died without a word); one that has started may take as long as it takes.
+   */
+  async function send(p: GuestPeer, path: string, init: RequestInit) {
+    const timer = deps.setTimeout(() => probe(p), HEAD_TIMEOUT);
+    try {
+      return await p.fetch(path, init, { onHead: () => deps.clearTimeout(timer) });
+    } finally {
+      deps.clearTimeout(timer);
+    }
+  }
+
+  /** `path`, once connected; a GET whose channel died under it goes out again on the next. */
+  async function request(path: string, init: RequestInit) {
+    const p = await ready(init.signal);
+    try {
+      return await send(p, path, init);
+    } catch (e) {
+      if (p.isOpen() || init.signal?.aborted || !idempotent(init.method)) throw e;
+      lost(p);
+      return send(await ready(init.signal), path, init);
+    }
   }
 
   function subscribe(listener: () => void) {
@@ -344,17 +380,12 @@ export function createSession(host: NearbyHost, deps: SessionDeps): NearbySessio
     getState: () => state,
     subscribe,
 
-    async fetch(path, init = {}) {
-      const p = await ready(init.signal);
-      try {
-        return await p.fetch(path, init);
-      } catch (e) {
-        // The channel died under it: a GET goes out again once the session is back.
-        if (p.isOpen() || init.signal?.aborted || !idempotent(init.method)) throw e;
-        lost(p);
-        return (await ready(init.signal)).fetch(path, init);
-      }
-    },
+    fetch: (path, init = {}) =>
+      request(path, init).catch((e: unknown) => {
+        // The host answered, but not with a response this page takes.
+        if (!(e instanceof ChannelRequestError)) throw e;
+        return Response.json({ error: e.message }, { status: 502 });
+      }),
 
     async submitCode(code) {
       const p = peer;
@@ -368,7 +399,7 @@ export function createSession(host: NearbyHost, deps: SessionDeps): NearbySessio
         if (p !== peer) return;
         if (!p.isOpen()) return lost(p);
         closePeer();
-        return set({ kind: "failed", reason: reason(e) });
+        return fail(reason(e), false);
       }
       if (p !== peer) return;
       if (result.ok) return connected();
@@ -376,7 +407,7 @@ export function createSession(host: NearbyHost, deps: SessionDeps): NearbySessio
         return set({ kind: "code", checking: false, attemptsLeft: result.attemptsLeft, notice });
       }
       closePeer();
-      set({ kind: "failed", reason: "Wrong code too many times, so gitui hung up." });
+      fail("Wrong code too many times, so gitui hung up.", false);
     },
 
     retry() {
@@ -386,7 +417,11 @@ export function createSession(host: NearbyHost, deps: SessionDeps): NearbySessio
     wake() {
       if (state.kind === "off") return;
       deps.rendezvous.wake();
-      kick?.();
+      if (state.kind === "connecting" || state.kind === "reconnecting") return restart();
+      if (state.kind === "failed") {
+        if (state.timedOut) void establish("connecting");
+        return;
+      }
       const p = peer;
       if (!p) return;
       if (!p.isOpen()) return lost(p);
@@ -406,7 +441,7 @@ export function createSession(host: NearbyHost, deps: SessionDeps): NearbySessio
 }
 
 /** A session over the page's rendezvous, WebRTC, saved tokens and timers. */
-export function nearbySession(host: NearbyHost, onReconnected: () => void): NearbySession {
+export function nearbySession(host: NearbyHost): NearbySession {
   const client = rendezvous();
   return createSession(host, {
     rendezvous: client,
@@ -415,6 +450,5 @@ export function nearbySession(host: NearbyHost, onReconnected: () => void): Near
     now: Date.now,
     setTimeout: (callback, ms) => setTimeout(callback, ms),
     clearTimeout: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
-    onReconnected,
   });
 }

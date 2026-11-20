@@ -15,6 +15,7 @@ import {
   retryWhileUnreachable,
   setNearbyHost,
   setPairing,
+  subscribeConnection,
   type Connection,
   type ConnectionStatus,
 } from "./connection.ts";
@@ -55,17 +56,13 @@ function fakeSession(h: NearbyHost) {
 const session = fakeSession(host);
 const nearby: Connection = { kind: "nearby", session };
 
-test("initialConnection opens a session with the saved nearby host", () => {
+test("initialConnection returns the saved nearby host, without opening anything", () => {
   const savedHost = JSON.stringify(host);
-  const open = (h: NearbyHost) => ({ ...session, host: h });
-  expect(initialConnection(false, "", savedHost, open)).toEqual({
-    kind: "nearby",
-    session: { ...session, host },
-  });
-  expect(initialConnection(true, "", savedHost, open)).toEqual({ kind: "local" });
-  expect(initialConnection(false, pairingFragment(pairing), savedHost, open)).toEqual(paired);
-  expect(initialConnection(false, "", "{bad json", open)).toEqual({ kind: "unpaired" });
-  expect(initialConnection(false, "", '{"key":"short","name":"x"}', open)).toEqual({
+  expect(initialConnection(false, "", savedHost)).toEqual({ kind: "nearby", host });
+  expect(initialConnection(true, "", savedHost)).toEqual({ kind: "local" });
+  expect(initialConnection(false, pairingFragment(pairing), savedHost)).toEqual(paired);
+  expect(initialConnection(false, "", "{bad json")).toEqual({ kind: "unpaired" });
+  expect(initialConnection(false, "", '{"key":"short","name":"x"}')).toEqual({
     kind: "unpaired",
   });
 });
@@ -345,9 +342,13 @@ describe("the connection store in the hosted app", () => {
     expect(sessions.at(-1)!.woken).toBe(2);
   });
 
-  test("another host stops the session, which forgets its token", () => {
+  test("another host stops the session, which forgets its token, once the app moved on", () => {
     const first = sessions.at(-1)!;
+    const stoppedWhenNotified: number[] = [];
+    const unsubscribe = subscribeConnection(() => stoppedWhenNotified.push(first.stopped));
     setNearbyHost({ key: "n".repeat(16), name: host.name });
+    unsubscribe();
+    expect(stoppedWhenNotified).toEqual([0]);
     expect(first.stopped).toBe(1);
     expect(sessions.at(-1)!.stopped).toBe(0);
   });
@@ -449,5 +450,37 @@ describe("the connection store in a page gitui served", () => {
     retrySession();
     show("visible");
     expect(getConnection()).toBe(before);
+  });
+});
+
+// A reload of the hosted app connected to a nearby host: initConnection opens its session.
+describe("the connection store in the hosted app with a saved nearby host", () => {
+  const sessions: ReturnType<typeof fakeSession>[] = [];
+
+  beforeAll(() => {
+    stub("location", new URL("http://localhost:4173/"));
+    stub("document", { querySelector: () => null, addEventListener: () => {} });
+    stub("history", { state: null, replaceState: () => {} });
+    stub("localStorage", {
+      getItem: (k: string) => (k === "gitui-nearby-host" ? JSON.stringify(host) : null),
+      setItem: () => {},
+      removeItem: () => {},
+    });
+    stub("addEventListener", () => {});
+  });
+  afterAll(restoreGlobals);
+
+  test("opens one session with it, and only on initConnection", () => {
+    expect(sessions).toHaveLength(0);
+    initConnection(new QueryClient(), (h) => {
+      const s = fakeSession(h);
+      sessions.push(s);
+      return s;
+    });
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]!.host).toEqual(host);
+    expect(getConnection()).toEqual({ kind: "nearby", session: sessions[0]! });
+    setNearbyHost(null);
+    expect(sessions[0]!.stopped).toBe(1);
   });
 });

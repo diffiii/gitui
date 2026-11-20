@@ -1,5 +1,6 @@
 import { CLIENT_HEADER, type HostInfo } from "@gitui/shared";
 import { expect, test } from "bun:test";
+import { ChannelRequestError, type FetchProgress } from "./channelFetch.ts";
 import {
   HostUnverifiedError,
   NearbyError,
@@ -10,9 +11,11 @@ import {
 import type { RendezvousState } from "./rendezvous.ts";
 import {
   createSession,
+  HEAD_TIMEOUT,
   MISSING_GRACE,
   PROBE_TIMEOUT,
   PROOF_TIMEOUT,
+  REFUSED_PAUSE,
   RETRY_WINDOW,
 } from "./session.ts";
 import { tokenStore } from "./tokens.ts";
@@ -33,18 +36,31 @@ function deferred<T>(): Deferred<T> {
   return { promise, resolve, reject };
 }
 
-/** A data channel the test answers for: resume and code checks wait until it says. */
+interface Hung {
+  path: string;
+  response: Deferred<Response>;
+  progress?: FetchProgress;
+}
+
+/**
+ * A data channel the test answers for: resume and code checks wait until it says. Requests are
+ * answered at once with their path, unless the channel is `dead`, or the path is `slow`.
+ */
 class FakePeer implements GuestPeer {
   readonly host = listed;
   open = true;
   /** A channel that looks open but never answers (what iOS leaves after a suspension). */
   dead = false;
+  /** Paths whose requests wait for start() and finish(). */
+  readonly slow = new Set<string>();
+  /** Paths the host answers with `abort`. */
+  readonly aborts = new Set<string>();
   closed = 0;
   readonly resumed: string[] = [];
   readonly codes: string[] = [];
   readonly requests: string[] = [];
   #proof: Deferred<AuthResult> | null = null;
-  #hung: Deferred<Response>[] = [];
+  #hung: Hung[] = [];
   #onClose: ((reason: string) => void)[] = [];
   #onSession: ((token: string) => void)[] = [];
 
@@ -76,20 +92,34 @@ class FakePeer implements GuestPeer {
   isOpen() {
     return this.open;
   }
-  fetch(path: string, init: RequestInit = {}) {
+  fetch(path: string, init: RequestInit = {}, progress?: FetchProgress) {
     this.requests.push(path);
     if (!this.open) return Promise.reject(new NearbyError("closed"));
-    if (!this.dead) return Promise.resolve(Response.json({ path }));
-    const hung = deferred<Response>();
-    this.#hung.push(hung);
-    init.signal?.addEventListener("abort", () => hung.reject(init.signal!.reason));
-    return hung.promise;
+    if (this.aborts.has(path)) return Promise.reject(new ChannelRequestError("the app threw"));
+    if (!this.dead && !this.slow.has(path)) {
+      progress?.onHead?.();
+      return Promise.resolve(Response.json({ path }));
+    }
+    const response = deferred<Response>();
+    this.#hung.push({ path, response, progress });
+    init.signal?.addEventListener("abort", () => response.reject(init.signal!.reason));
+    return response.promise;
+  }
+  /** The response head of the slow request for `path` arrives. */
+  start(path: string) {
+    this.#hung.find((h) => h.path === path)!.progress?.onHead?.();
+  }
+  /** The slow request for `path` gets the rest of its response. */
+  finish(path: string) {
+    const hung = this.#hung.find((h) => h.path === path)!;
+    this.#hung.splice(this.#hung.indexOf(hung), 1);
+    hung.response.resolve(Response.json({ path }));
   }
   #end() {
     this.open = false;
     this.#proof?.reject(new NearbyError("The connection is closed."));
     this.#proof = null;
-    for (const hung of this.#hung.splice(0)) hung.reject(new NearbyError("closed"));
+    for (const hung of this.#hung.splice(0)) hung.response.reject(new NearbyError("closed"));
   }
   /** The channel closes by itself. */
   drop() {
@@ -111,10 +141,12 @@ function harness({ token, hosts = [listed] }: { token?: string; hosts?: HostInfo
   const rendezvousListeners = new Set<() => void>();
   const peers: FakePeer[] = [];
   const connects: { resume: boolean }[] = [];
+  /** The time each connect was given. */
+  const timeouts: number[] = [];
   let refuse: Error | null = null;
   const tokens = tokenStore(() => undefined);
   if (token) tokens.save(host.key, token);
-  const counts = { reconnected: 0, woken: 0 };
+  const counts = { woken: 0 };
 
   const session = createSession(host, {
     rendezvous: {
@@ -125,8 +157,9 @@ function harness({ token, hosts = [listed] }: { token?: string; hosts?: HostInfo
       },
       wake: () => void counts.woken++,
     },
-    connect: async (_listed, { resume }) => {
+    connect: async (_listed, { resume, timeout }) => {
       connects.push({ resume });
+      timeouts.push(timeout);
       if (refuse) throw refuse;
       const peer = new FakePeer();
       peers.push(peer);
@@ -139,7 +172,6 @@ function harness({ token, hosts = [listed] }: { token?: string; hosts?: HostInfo
       return nextTimer++;
     },
     clearTimeout: (timer) => void timers.delete(timer as number),
-    onReconnected: () => void counts.reconnected++,
   });
 
   return {
@@ -147,6 +179,7 @@ function harness({ token, hosts = [listed] }: { token?: string; hosts?: HostInfo
     tokens,
     peers,
     connects,
+    timeouts,
     counts,
     peer: () => peers.at(-1)!,
     state: () => session.getState(),
@@ -155,6 +188,10 @@ function harness({ token, hosts = [listed] }: { token?: string; hosts?: HostInfo
     setRendezvous(next: RendezvousState) {
       rendezvous = next;
       rendezvousListeners.forEach((l) => l());
+    },
+    /** The page is suspended for `ms`: time passes, but timers wait until it resumes. */
+    suspend(ms: number) {
+      clock += ms;
     },
     /** Run the timers due in the next `ms`, letting promises settle after each. */
     async advance(ms: number) {
@@ -183,7 +220,7 @@ async function connected() {
   await flush();
   h.peer().answer({ ok: true });
   await flush();
-  expect(h.state()).toEqual({ kind: "connected" });
+  expect(h.state()).toEqual({ kind: "connected", checking: false });
   return h;
 }
 
@@ -205,10 +242,9 @@ test("first pairing: asks for the code, connects with it and saves the token", a
   h.peer().answer({ ok: true });
   await flush();
   h.peer().session("new-token");
-  expect(h.state()).toEqual({ kind: "connected" });
+  expect(h.state()).toEqual({ kind: "connected", checking: false });
   expect(h.tokens.load(host.key)).toBe("new-token");
   expect(h.peer().codes).toEqual(["123456"]);
-  expect(h.counts.reconnected).toBe(0);
 });
 
 test("a wrong code says how many attempts are left, and the right one connects", async () => {
@@ -221,7 +257,7 @@ test("a wrong code says how many attempts are left, and the right one connects",
   void h.session.submitCode("123456");
   h.peer().answer({ ok: true });
   await flush();
-  expect(h.state()).toEqual({ kind: "connected" });
+  expect(h.state()).toEqual({ kind: "connected", checking: false });
   expect(h.peers).toHaveLength(1);
 });
 
@@ -236,6 +272,7 @@ test("the last wrong code fails the session, and the old token stays", async () 
   expect(h.state()).toEqual({
     kind: "failed",
     reason: "Wrong code too many times, so gitui hung up.",
+    timedOut: false,
   });
   expect(h.peer().closed).toBe(1);
   expect(h.tokens.load(host.key)).toBe("old");
@@ -248,7 +285,7 @@ test("resume: a saved token connects without the code", async () => {
   expect(h.peer().resumed).toEqual(["tok"]);
   h.peer().answer({ ok: true });
   await flush();
-  expect(h.state()).toEqual({ kind: "connected" });
+  expect(h.state()).toEqual({ kind: "connected", checking: false });
 });
 
 test("a refused resume asks for the code on the same channel, keeping the token", async () => {
@@ -263,7 +300,7 @@ test("a refused resume asks for the code on the same channel, keeping the token"
   h.peer().answer({ ok: true });
   await flush();
   h.peer().session("new");
-  expect(h.state()).toEqual({ kind: "connected" });
+  expect(h.state()).toEqual({ kind: "connected", checking: false });
   expect(h.tokens.load(host.key)).toBe("new");
   expect(h.peers).toHaveLength(1);
 });
@@ -273,7 +310,13 @@ test("an unverified host fails the session without retrying, keeping the token",
   await flush();
   h.peer().answer(new HostUnverifiedError("Couldn't verify that this is MacBook."));
   await flush();
-  expect(h.state()).toEqual({ kind: "failed", reason: "Couldn't verify that this is MacBook." });
+  expect(h.state()).toEqual({
+    kind: "failed",
+    reason: "Couldn't verify that this is MacBook.",
+    timedOut: false,
+  });
+  await h.advance(RETRY_WINDOW);
+  h.session.wake();
   await h.advance(RETRY_WINDOW);
   expect(h.connects).toHaveLength(1);
   expect(h.tokens.load(host.key)).toBe("tok");
@@ -298,6 +341,7 @@ test("a code check the host never answers times out into a retryable failure", a
   expect(h.state()).toEqual({
     kind: "failed",
     reason: "MacBook didn't answer in time. Try again.",
+    timedOut: false,
   });
   expect(h.peer().closed).toBe(1);
   h.session.retry();
@@ -315,7 +359,7 @@ test("a resume the host never answers is tried again on a new channel", async ()
   expect(h.peers).toHaveLength(2);
   h.peer().answer({ ok: true });
   await flush();
-  expect(h.state()).toEqual({ kind: "connected" });
+  expect(h.state()).toEqual({ kind: "connected", checking: false });
 });
 
 test("waking with a dead channel holds requests, reconnects and sends them on the new one", async () => {
@@ -328,7 +372,7 @@ test("waking with a dead channel holds requests, reconnects and sends them on th
   const held = h.session.fetch("/api/repo/status", { headers: { [CLIENT_HEADER]: "1" } });
   await flush();
   expect(first.requests).toEqual(["/api/config"]);
-  expect(h.state()).toEqual({ kind: "connected" }); // no flash while it checks
+  expect(h.state()).toEqual({ kind: "connected", checking: true }); // the app stays up
 
   await h.advance(PROBE_TIMEOUT);
   expect(first.closed).toBe(1);
@@ -336,17 +380,24 @@ test("waking with a dead channel holds requests, reconnects and sends them on th
   expect(h.peers).toHaveLength(2);
   h.peer().answer({ ok: true });
   await flush();
-  expect(h.state()).toEqual({ kind: "connected" });
+  expect(h.state()).toEqual({ kind: "connected", checking: false });
   expect(await (await held).json()).toEqual({ path: "/api/repo/status" });
   expect(h.peer().requests).toEqual(["/api/repo/status"]);
-  expect(h.counts.reconnected).toBe(1);
 });
 
-test("waking with a live channel lets held requests through once it answers", async () => {
+test("waking with a live channel holds requests until it answers, then lets them through", async () => {
   const h = await connected();
+  const peer = h.peer();
+  peer.slow.add("/api/config");
   h.session.wake();
+  expect(h.state()).toEqual({ kind: "connected", checking: true });
   const held = h.session.fetch("/api/repo/log");
+  await flush();
+  expect(peer.requests).toEqual(["/api/config"]);
+  peer.finish("/api/config");
   expect(await (await held).json()).toEqual({ path: "/api/repo/log" });
+  expect(peer.requests).toEqual(["/api/config", "/api/repo/log"]);
+  expect(h.state()).toEqual({ kind: "connected", checking: false });
   expect(h.peers).toHaveLength(1);
 });
 
@@ -373,11 +424,13 @@ test("a cancelled request stops waiting for the session", async () => {
 });
 
 for (const reason of ["busy", "rate-limited"]) {
-  test(`a host that refuses the offer (${reason}) fails the session until the user retries`, async () => {
+  test(`a host that refuses the first offer (${reason}) fails the session until the user retries`, async () => {
     const h = harness();
     h.refuse(new RefusedError(`MacBook is ${reason}.`));
     await h.advance(RETRY_WINDOW);
-    expect(h.state()).toEqual({ kind: "failed", reason: `MacBook is ${reason}.` });
+    expect(h.state()).toEqual({ kind: "failed", reason: `MacBook is ${reason}.`, timedOut: false });
+    h.session.wake();
+    await h.advance(RETRY_WINDOW);
     expect(h.connects).toHaveLength(1);
     h.refuse(null);
     h.session.retry();
@@ -410,7 +463,7 @@ test("losing the rendezvous drops a connected session, which reconnects", async 
   await flush();
   h.peer().answer({ ok: true });
   await flush();
-  expect(h.state()).toEqual({ kind: "connected" });
+  expect(h.state()).toEqual({ kind: "connected", checking: false });
 });
 
 test("stop ends the session, forgets its token and fails waiting requests", async () => {
@@ -425,4 +478,203 @@ test("stop ends the session, forgets its token and fails waiting requests", asyn
   expect(await waiting).toBeInstanceOf(NearbyError);
   await h.advance(RETRY_WINDOW);
   expect(h.connects).toHaveLength(1);
+});
+
+test("a resume answered as its channel drops tries again rather than staying connecting", async () => {
+  const h = harness({ token: "tok" });
+  await flush();
+  h.peer().answer({ ok: true });
+  h.peer().drop(); // before the session hears the answer
+  await flush();
+  expect(h.state()).toEqual({ kind: "connecting" });
+  await h.advance(500);
+  expect(h.peers).toHaveLength(2);
+  h.peer().answer({ ok: true });
+  await flush();
+  expect(h.state()).toEqual({ kind: "connected", checking: false });
+});
+
+test("a channel lost during a resume is replaced by a new one", async () => {
+  const h = harness({ token: "tok" });
+  await flush();
+  h.peer().drop();
+  await flush();
+  expect(h.state()).toEqual({ kind: "connecting" });
+  await h.advance(500);
+  expect(h.connects).toEqual([{ resume: true }, { resume: true }]);
+  h.peer().answer({ ok: true });
+  await flush();
+  expect(h.state()).toEqual({ kind: "connected", checking: false });
+});
+
+test("a resume refused with no attempts left reopens without the token, asking for the code", async () => {
+  const h = harness({ token: "tok" });
+  await flush();
+  h.peer().answer({ ok: false, attemptsLeft: 0 });
+  await flush();
+  expect(h.peers[0]!.closed).toBe(1);
+  expect(h.connects).toEqual([{ resume: true }, { resume: false }]);
+  expect(h.state()).toEqual({ kind: "code", checking: false, notice: "expired" });
+  expect(h.tokens.load(host.key)).toBe("tok");
+});
+
+test("stop during a resume ends it for good", async () => {
+  const h = harness({ token: "tok" });
+  await flush();
+  h.session.stop();
+  expect(h.peer().closed).toBe(1);
+  await h.advance(RETRY_WINDOW);
+  expect(h.state()).toEqual({ kind: "off" });
+  expect(h.connects).toHaveLength(1);
+});
+
+test("stop during a check of the channel ends it for good", async () => {
+  const h = await connected();
+  h.peer().dead = true;
+  h.session.wake();
+  expect(h.state()).toEqual({ kind: "connected", checking: true });
+  h.session.stop();
+  await h.advance(PROBE_TIMEOUT + RETRY_WINDOW);
+  expect(h.state()).toEqual({ kind: "off" });
+  expect(h.connects).toHaveLength(1);
+});
+
+test("held requests fail when a reconnect gives up", async () => {
+  const h = await connected();
+  h.refuse(new NearbyError("MacBook didn't answer."));
+  h.peer().drop();
+  const held = failure(h.session.fetch("/api/repo/status"));
+  await h.advance(RETRY_WINDOW);
+  expect(h.state()).toEqual({ kind: "failed", reason: "MacBook didn't answer.", timedOut: true });
+  expect(await held).toEqual(new NearbyError("Not connected."));
+});
+
+test("waking mid-reconnect after a suspension starts over with a fresh window", async () => {
+  const h = await connected();
+  h.setRendezvous({ status: "retrying", hosts: [] });
+  expect(h.state()).toEqual({ kind: "reconnecting" });
+  h.suspend(RETRY_WINDOW + 5000); // its timers are long overdue
+  h.session.wake();
+  await h.advance(0);
+  expect(h.state()).toEqual({ kind: "reconnecting" });
+  h.setRendezvous({ status: "open", hosts: [listed] });
+  await flush();
+  h.peer().answer({ ok: true });
+  await flush();
+  expect(h.state()).toEqual({ kind: "connected", checking: false });
+});
+
+test("a connection that ran out of time tries again when the page is shown", async () => {
+  const h = harness({ token: "tok" });
+  h.refuse(new NearbyError("MacBook didn't answer."));
+  await h.advance(RETRY_WINDOW);
+  expect(h.state()).toEqual({ kind: "failed", reason: "MacBook didn't answer.", timedOut: true });
+  h.refuse(null);
+  h.session.wake();
+  expect(h.state()).toEqual({ kind: "connecting" });
+  await flush();
+  h.peer().answer({ ok: true });
+  await flush();
+  expect(h.state()).toEqual({ kind: "connected", checking: false });
+});
+
+test("a refusal while reconnecting waits longer and tries again, keeping the app up", async () => {
+  const h = await connected();
+  h.refuse(new RefusedError("MacBook is busy."));
+  h.peer().drop();
+  await flush();
+  expect(h.state()).toEqual({ kind: "reconnecting" });
+  expect(h.connects).toHaveLength(2);
+  await h.advance(REFUSED_PAUSE - 1);
+  expect(h.connects).toHaveLength(2);
+  h.refuse(null);
+  await h.advance(1);
+  expect(h.connects).toHaveLength(3);
+  h.peer().answer({ ok: true });
+  await flush();
+  expect(h.state()).toEqual({ kind: "connected", checking: false });
+});
+
+test("refusals until the reconnect window is up fail it, for the user to retry", async () => {
+  const h = await connected();
+  h.refuse(new RefusedError("MacBook is busy."));
+  h.peer().drop();
+  await h.advance(RETRY_WINDOW - 1);
+  expect(h.state()).toEqual({ kind: "reconnecting" });
+  await h.advance(1);
+  expect(h.state()).toEqual({ kind: "failed", reason: "MacBook is busy.", timedOut: false });
+  const connects = h.connects.length;
+  h.session.wake();
+  await h.advance(RETRY_WINDOW);
+  expect(h.connects).toHaveLength(connects);
+});
+
+test("the retry window bounds the last attempt", async () => {
+  const h = harness({ token: "tok" });
+  h.refuse(new NearbyError("MacBook didn't answer."));
+  await h.advance(RETRY_WINDOW - 1);
+  expect(h.state()).toEqual({ kind: "connecting" });
+  // Attempts at 0, 0.5, 1.5, 3.5, 7.5, 11.5, 15.5 and 19.5 s: the last one gets what is left.
+  expect(h.timeouts).toEqual([20_000, 19_500, 18_500, 16_500, 12_500, 8500, 4500, 500]);
+  await h.advance(1);
+  expect(h.state()).toMatchObject({ kind: "failed", timedOut: true });
+});
+
+test("a request whose response doesn't start in time has the channel checked", async () => {
+  const h = await connected();
+  const first = h.peer();
+  first.dead = true;
+  const get = h.session.fetch("/api/repo/status");
+  await h.advance(HEAD_TIMEOUT - 1);
+  expect(h.state()).toEqual({ kind: "connected", checking: false });
+  await h.advance(1);
+  expect(h.state()).toEqual({ kind: "connected", checking: true });
+  expect(first.requests).toEqual(["/api/repo/status", "/api/config"]);
+  await h.advance(PROBE_TIMEOUT);
+  expect(h.state()).toEqual({ kind: "reconnecting" });
+  h.peer().answer({ ok: true });
+  expect(await (await get).json()).toEqual({ path: "/api/repo/status" });
+});
+
+test("a slow request on a live channel isn't cut off, whether its response started or not", async () => {
+  const h = await connected();
+  const peer = h.peer();
+  peer.slow.add("/api/repo/remote/push").add("/api/repo/remote/fetch");
+  const push = h.session.fetch("/api/repo/remote/push", { method: "POST" });
+  const fetch = h.session.fetch("/api/repo/remote/fetch", { method: "POST" });
+  await flush();
+  peer.start("/api/repo/remote/push");
+  await h.advance(HEAD_TIMEOUT);
+  // Only the one without a response yet has the channel checked, which answers.
+  expect(peer.requests.filter((p) => p === "/api/config")).toHaveLength(1);
+  expect(h.state()).toEqual({ kind: "connected", checking: false });
+  await h.advance(HEAD_TIMEOUT * 4);
+  peer.finish("/api/repo/remote/push");
+  peer.finish("/api/repo/remote/fetch");
+  expect((await push).status).toBe(200);
+  expect((await fetch).status).toBe(200);
+  expect(h.peers).toHaveLength(1);
+});
+
+test("a host that leaves the list has the channel checked, and is gone if it doesn't answer", async () => {
+  const h = await connected();
+  h.setRendezvous({ status: "open", hosts: [] });
+  expect(h.state()).toEqual({ kind: "connected", checking: true });
+  await flush();
+  expect(h.state()).toEqual({ kind: "connected", checking: false }); // it answered
+  h.setRendezvous({ status: "open", hosts: [listed] });
+  h.peer().dead = true;
+  h.setRendezvous({ status: "open", hosts: [] });
+  await h.advance(PROBE_TIMEOUT);
+  expect(h.state()).toEqual({ kind: "reconnecting" });
+  await h.advance(MISSING_GRACE);
+  expect(h.state()).toEqual({ kind: "gone" });
+});
+
+test("a response the host aborts comes back as a 502 with the error", async () => {
+  const h = await connected();
+  h.peer().aborts.add("/api/repo/status");
+  const res = await h.session.fetch("/api/repo/status");
+  expect(res.status).toBe(502);
+  expect(await res.json()).toEqual({ error: "the app threw" });
 });

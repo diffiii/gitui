@@ -55,8 +55,9 @@ export function ConnectionGate({ children }: { children: React.ReactNode }) {
     case "noSession":
       return <NoSessionScreen />;
     case "unpaired":
+      return <ConnectScreen />;
     case "rejected":
-      return <ConnectScreen rejected={status.kind === "rejected"} />;
+      return <ConnectScreen notice="gitui didn't accept the saved pairing." />;
     case "connecting":
     case "unreachable":
       return <UnreachableScreen status={status} />;
@@ -80,8 +81,10 @@ function NearbyGate({ session, children }: { session: NearbySession; children: R
           {children}
         </>
       );
-    case "connecting":
+    // The app moves to another connection before it stops this session.
     case "off":
+      return null;
+    case "connecting":
       return (
         <CenteredScreen icon={Laptop} title={name} description="Connecting…">
           <div className="flex flex-col items-center gap-4">
@@ -93,7 +96,11 @@ function NearbyGate({ session, children }: { session: NearbySession; children: R
     case "code":
       return <CodeScreen session={session} state={state} />;
     case "gone":
-      return <ConnectScreen gone={name} />;
+      return (
+        <ConnectScreen
+          notice={`${name} isn't on this network any more. If gitui restarted there, pick it again and enter its new code.`}
+        />
+      );
     case "failed":
       return (
         <CenteredScreen icon={CircleAlert} title={name} description={state.reason}>
@@ -122,18 +129,16 @@ const ChooseAnotherButton = () => (
 
 /**
  * How to connect the hosted app: a computer nearby, or the pairing link of gitui on this one.
- * `gone`: the name of the nearby host the app was connected to, which left the network.
+ * `notice`: why the app is back here (the last connection ended), said first.
  */
-function ConnectScreen({ rejected = false, gone }: { rejected?: boolean; gone?: string }) {
+function ConnectScreen({ notice }: { notice?: React.ReactNode }) {
   return (
     <CenteredScreen
       icon={Radar}
       title="Connect to gitui"
       description={
         <>
-          {rejected && "gitui didn't accept the saved pairing. "}
-          {gone &&
-            `${gone} isn't on this network any more. If gitui restarted there, pick it again and enter its new code. `}
+          {notice && <>{notice} </>}
           Computers on this network running <Code>gitui --nearby</Code> show up here.
         </>
       }
