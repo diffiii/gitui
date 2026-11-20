@@ -48,8 +48,8 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   startup wiring), and `ConnectionGate` gates the app until the CLI answers. Its `nearby` kind
   is a `gitui --nearby` found through the rendezvous: `src/lib/nearby/` holds the guest
   (`session.ts` runs the session the connection names, `initNearby` wires it, and `api.ts` sends
-  its requests over the data channel; `state.ts` and `tokens.ts` are its pure parts). `wrangler.jsonc` deploys `dist/` as Cloudflare
-  Workers static assets, with the `_headers` file that a `vite.config.ts` plugin writes into the
+  its requests over the data channel; `state.ts` and `tokens.ts` are its pure parts). `wrangler.jsonc` builds the repo (its `build` command,
+  with the production rendezvous) and deploys `dist/` as Cloudflare Workers static assets, with the `_headers` file that a `vite.config.ts` plugin writes into the
   build from `hostedHeadersFile` (its CSP follows `VITE_GITUI_RENDEZVOUS_URL`), on the custom
   domain `gitui.diffiii.dev` (`HOSTED_ORIGIN`). `wrangler.nearby-test.jsonc` (`bun run
   deploy:nearby-test`) is a test copy at `gitui-test.diffiii.dev` for trying nearby on a phone

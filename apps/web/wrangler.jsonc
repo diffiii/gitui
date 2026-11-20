@@ -7,6 +7,12 @@
   "routes": [{ "pattern": "gitui.diffiii.dev", "custom_domain": true }],
   "workers_dev": false,
   "preview_urls": false,
+  // `wrangler deploy` builds first, from the repo root and with the production rendezvous, so it
+  // never ships whatever dist/ held (say, a dev build). Wrangler runs it in its own working
+  // directory, not this file's, so it finds the root with git: run wrangler inside the repo.
+  "build": {
+    "command": "root=\"$(git rev-parse --show-toplevel)\" && cd \"$root\" && VITE_GITUI_RENDEZVOUS_URL= bun run build",
+  },
   "assets": {
     "directory": "./dist",
     "not_found_handling": "single-page-application",
