@@ -2,15 +2,21 @@
 // Usage: bun run dev [repo-path]
 import path from "node:path";
 
+const root = path.resolve(import.meta.dir, "..");
 const repo = process.argv[2] ? path.resolve(process.argv[2]) : undefined;
 const env = { ...process.env, ...(repo ? { GITUI_REPO: repo } : {}) };
 
 const procs = [
   Bun.spawn(["bun", "--watch", "server/main.ts"], {
+    cwd: path.join(root, "apps/cli"),
     stdio: ["inherit", "inherit", "inherit"],
     env,
   }),
-  Bun.spawn(["vp", "dev"], { stdio: ["inherit", "inherit", "inherit"], env }),
+  Bun.spawn(["vp", "dev"], {
+    cwd: path.join(root, "apps/web"),
+    stdio: ["inherit", "inherit", "inherit"],
+    env,
+  }),
 ];
 
 const stop = () => {

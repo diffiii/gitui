@@ -1,4 +1,4 @@
-import type { Branch, Commit, CommitDetail, FileStatus, Status } from "../../shared/types.ts";
+import type { Branch, Commit, CommitDetail, FileStatus, Status } from "@gitui/shared";
 
 export type { Branch, Commit, CommitDetail, FileStatus, Status };
 

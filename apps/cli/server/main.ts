@@ -2,12 +2,12 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { createApp } from "./app.ts";
 
-const DIST = path.resolve(import.meta.dir, "../dist");
+const DIST = path.resolve(import.meta.dir, "../../web/dist");
 
 export interface StartOptions {
   port: number;
   initialRepo?: string;
-  /** Serve the built frontend from dist/ (production). In dev, Vite serves it. */
+  /** Serve the built frontend from apps/web/dist (production). In dev, Vite serves it. */
   serveStatic: boolean;
 }
 
@@ -16,7 +16,7 @@ export function start(opts: StartOptions) {
 
   if (opts.serveStatic) {
     if (!existsSync(DIST)) {
-      console.error("dist/ not found — run `vp build` first (or use `bun run dev`).");
+      console.error("apps/web/dist not found — run `vp build` first (or use `bun run dev`).");
       process.exit(1);
     }
     app.get("*", async (c) => {

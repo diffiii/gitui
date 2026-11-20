@@ -11,34 +11,45 @@ bun run dev [repo-path]     # API on :4777 (bun --watch) + Vite+ dev server with
 bun test                    # bun:test; server tests run against real temp repos
 ./node_modules/.bin/tsc -b  # type check every tsconfig project
 vp check                    # format, lint (type-aware), type check
-vp build                    # build the frontend into dist/ (`bun run build` = tsc -b && vp build)
+vp build                    # build apps/web into apps/web/dist (`bun run build` adds tsc -b)
 ```
 
 ## Layout
 
-- `server/`: Hono API. `app.ts` holds the routes, `git.ts` wraps the git CLI and parses its
-  output, `main.ts` starts the server. Tests live next to the code (`server/*.test.ts`).
-- `src/`: React app. `lib/` holds the API client, graph layout and prefs, `components/` the
-  views, and `components/ui/` the shadcn components. Unit tests sit next to their module
-  (`src/**/*.test.ts`, type-checked by `tsconfig.test.json`).
-- `shared/types.ts`: API types used by both sides.
-- `bin/gitui.ts`: the `gitui` CLI entry point.
+Bun workspaces monorepo (`apps/*`, `packages/*`).
+
+- `apps/cli/` (`@gitui/cli`): the `gitui` bin (`bin/gitui.ts`) and the Hono API in `server/`.
+  `app.ts` holds the routes, `git.ts` wraps the git CLI and parses its output, `main.ts` starts
+  the server and serves `apps/web/dist` in production. Tests live next to the code
+  (`server/*.test.ts`).
+- `apps/web/` (`@gitui/web`): React app. `src/lib/` holds the API client, graph layout and
+  prefs, `src/components/` the views, and `src/components/ui/` the shadcn components. Unit
+  tests sit next to their module (`src/**/*.test.ts`, type-checked by `tsconfig.test.json`).
+  `@/` maps to `apps/web/src`.
+- `packages/shared/` (`@gitui/shared`): API types used by both sides, imported as
+  `@gitui/shared`.
+- Root: `scripts/dev.ts` (runs both apps), `vite.config.ts` (workspace fmt/lint/type check
+  config, `defaultPackage` points `vp dev`/`vp build` at `apps/web`), `tsconfig.json`
+  (project references to every package).
 
 ## Conventions
 
-- Run git only through `git()` in `server/git.ts`, with argument arrays and never shell
-  strings. User-supplied paths go after `--`.
+- Run git only through `git()` in `apps/cli/server/git.ts`, with argument arrays and never
+  shell strings. User-supplied paths go after `--`.
 - Validate ref-like request inputs (branch names, hashes, refs) with `ref()` in
-  `server/app.ts`, which rejects anything git could parse as an option.
+  `apps/cli/server/app.ts`, which rejects anything git could parse as an option.
 - Frontend data goes through TanStack Query with keys that start with the repo:
   `[repo, "status"]`, `[repo, "log", ...]`. Repo mutations use `useGitMutation` from
-  `src/lib/repo.tsx`, which invalidates `[repo]` when it settles and toasts errors.
-- Prefs (`src/lib/prefs.ts`) and URL state (`src/App.tsx`) are external stores read with
-  `useSyncExternalStore`. Don't use effects to sync or derive state.
-- Add shadcn components under `src/components/ui`.
-- Tests: don't import `src/lib/prefs.ts`, because it touches `window` at import time. Server
-  tests build repos with the helpers in `server/test-repo.ts`, which isolate git from the
-  global and system config, set the identity per repo and delete the temp dirs on exit.
+  `apps/web/src/lib/repo.tsx`, which invalidates `[repo]` when it settles and toasts errors.
+- Prefs (`apps/web/src/lib/prefs.ts`) and URL state (`apps/web/src/App.tsx`) are external
+  stores read with `useSyncExternalStore`. Don't use effects to sync or derive state.
+- Put each dependency in the package that uses it; shared tooling (typescript, vite-plus,
+  @types/bun) stays at the root.
+- Add shadcn components under `apps/web/src/components/ui` (run `shadcn` from `apps/web`).
+- Tests: don't import `apps/web/src/lib/prefs.ts`, because it touches `window` at import time.
+  Server tests build repos with the helpers in `apps/cli/server/test-repo.ts`, which isolate
+  git from the global and system config, set the identity per repo and delete the temp dirs on
+  exit.
 
 ## Commits
 
