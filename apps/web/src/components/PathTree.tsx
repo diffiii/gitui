@@ -1,6 +1,7 @@
 import type { ContextMenuItem, ContextMenuOpenContext, GitStatusEntry } from "@pierre/trees";
 import { FileTree, useFileTree } from "@pierre/trees/react";
 import { useEffect, useLayoutEffect, useRef } from "react";
+import { COARSE, useMediaQuery } from "@/lib/media";
 import { useTheme } from "@/lib/prefs";
 import { cn } from "@/lib/utils";
 
@@ -22,14 +23,21 @@ interface PathTreeProps {
 }
 
 /** A Pierre file tree kept in sync with a changing list of paths. */
-export function PathTree({
+export function PathTree(props: PathTreeProps) {
+  const coarse = useMediaQuery(COARSE);
+  // The tree reads these options only when it's created, so a change makes a new one.
+  return <FileTreeView key={String(coarse)} {...props} coarse={coarse} />;
+}
+
+function FileTreeView({
   paths,
   gitStatus,
   selected,
   onSelect,
   actions,
   className,
-}: PathTreeProps) {
+  coarse,
+}: PathTreeProps & { coarse: boolean }) {
   const { resolved } = useTheme();
   const onSelectRef = useRef(onSelect);
   const files = useRef(new Set(paths));
@@ -43,10 +51,18 @@ export function PathTree({
     gitStatus,
     initialExpansion: "open",
     flattenEmptyDirectories: true,
-    density: "compact",
+    // Taller rows under a finger.
+    density: coarse ? "relaxed" : "compact",
     initialSelectedPaths: selected ? [selected] : [],
     composition: actions
-      ? { contextMenu: { enabled: true, triggerMode: "both", buttonVisibility: "when-needed" } }
+      ? {
+          contextMenu: {
+            enabled: true,
+            triggerMode: "both",
+            // The row button shows on hover; under a finger, which doesn't hover, every row has it.
+            buttonVisibility: coarse ? "always" : "when-needed",
+          },
+        }
       : undefined,
     onSelectionChange: (sel) => {
       const path = sel[sel.length - 1];
@@ -131,7 +147,7 @@ function TreeMenu({
             a.onSelect(item);
           }}
           className={cn(
-            "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent",
+            "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent pointer-coarse:py-2.5",
             a.destructive && "text-destructive",
           )}
         >

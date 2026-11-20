@@ -27,13 +27,16 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
-import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import type { Branch } from "@/lib/api";
 import { relativeTime } from "@/lib/format";
 import { useGitMutation, useRepo } from "@/lib/repo";
+import { useUrl } from "@/lib/url";
+import { useListChoice } from "@/lib/listChoice";
+import { BELOW_LG } from "@/lib/media";
 import { cn } from "@/lib/utils";
 import { HistoryPane } from "./HistoryView";
+import { ListDetail } from "./ListDetail";
 
 export function useBranches() {
   const { repo, api } = useRepo();
@@ -44,7 +47,7 @@ export function BranchesView() {
   const { data } = useBranches();
   const branches = useMemo(() => data?.branches ?? [], [data]);
   const [filter, setFilter] = useState("");
-  const [selected, setSelected] = useState<string | null>(null);
+  const url = useUrl();
   const [creating, setCreating] = useState<{ from?: string } | null>(null);
   const [deleting, setDeleting] = useState<Branch | null>(null);
 
@@ -55,8 +58,15 @@ export function BranchesView() {
   const local = visible.filter((b) => !b.remote);
   const remote = visible.filter((b) => b.remote);
   // Keyed by full refname: a tag can share a branch's short name, and git prefers the tag.
-  const active =
-    branches.find((b) => b.ref === selected) ?? branches.find((b) => b.current) ?? branches[0];
+  const chosen = branches.find((b) => b.ref === url.branch) ?? null;
+  // Below lg the branch list and the branch's history (itself two panes) don't fit side by side.
+  const choice = useListChoice({
+    param: "branch",
+    breakpoint: BELOW_LG,
+    chosen,
+    first: branches.find((b) => b.current) ?? branches[0] ?? null,
+  });
+  const { stacked, shown } = choice;
 
   const checkout = useGitMutation(
     (api, b: Branch) => api.checkout(b.name, b.remote),
@@ -67,68 +77,83 @@ export function BranchesView() {
     <BranchRow
       key={b.ref}
       branch={b}
-      active={active?.ref === b.ref}
-      onSelect={() => setSelected(b.ref)}
+      active={shown?.ref === b.ref}
+      onSelect={() => choice.choose({ branch: b.ref, commit: null })}
       onCheckout={() => checkout.mutate(b)}
       onCreate={() => setCreating({ from: b.name })}
       onDelete={() => setDeleting(b)}
     />
   );
+  const branchName = (b: Branch) => (
+    <span className="flex min-w-0 items-center gap-2">
+      <GitBranch className="size-4 shrink-0 text-muted-foreground" />
+      <span className="truncate text-sm font-medium">{b.name}</span>
+    </span>
+  );
 
   return (
-    <ResizablePanelGroup orientation="horizontal">
-      <ResizablePanel defaultSize="26%" minSize="240px" className="flex flex-col">
-        <div className="flex shrink-0 items-center gap-2 border-b p-2">
-          <div className="relative flex-1">
-            <Search className="absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              placeholder="Filter branches"
-              className="h-8 pl-8"
-            />
-          </div>
-          <Button
-            size="icon-sm"
-            variant="outline"
-            onClick={() => setCreating({})}
-            title="New branch"
-          >
-            <GitBranchPlus />
-          </Button>
-        </div>
-        <ScrollArea className="min-h-0 flex-1">
-          <div className="flex flex-col gap-4 p-2">
-            <BranchGroup title="Local" count={local.length}>
-              {local.map(row)}
-            </BranchGroup>
-            {remote.length > 0 && (
-              <BranchGroup title="Remote" count={remote.length}>
-                {remote.map(row)}
-              </BranchGroup>
-            )}
-          </div>
-        </ScrollArea>
-      </ResizablePanel>
-      <ResizableHandle />
-      <ResizablePanel minSize="680px">
-        {active && (
-          <HistoryPane
-            key={active.ref}
-            gitRef={active.ref}
-            all={false}
-            toolbar={
-              <>
-                <GitBranch className="size-4 text-muted-foreground" />
-                <span className="truncate text-sm font-medium">{active.name}</span>
-              </>
-            }
-          />
-        )}
-      </ResizablePanel>
+    <>
+      <ListDetail
+        choice={choice}
+        listPanel={{ defaultSize: "26%", minSize: "240px" }}
+        detailPanel={{ minSize: "680px" }}
+        list={
+          <>
+            <div className="flex shrink-0 items-center gap-2 border-b p-2">
+              <div className="relative flex-1">
+                <Search className="absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={filter}
+                  onChange={(e) => setFilter(e.target.value)}
+                  placeholder="Filter branches"
+                  className="h-8 pl-8 pointer-coarse:h-10"
+                />
+              </div>
+              <Button
+                size="icon-sm"
+                variant="outline"
+                onClick={() => setCreating({})}
+                title="New branch"
+                aria-label="New branch"
+                className="touch-target"
+              >
+                <GitBranchPlus />
+              </Button>
+            </div>
+            <ScrollArea className="min-h-0 flex-1">
+              <div className="flex flex-col gap-4 p-2">
+                <BranchGroup title="Local" count={local.length}>
+                  {local.map(row)}
+                </BranchGroup>
+                {remote.length > 0 && (
+                  <BranchGroup title="Remote" count={remote.length}>
+                    {remote.map(row)}
+                  </BranchGroup>
+                )}
+              </div>
+            </ScrollArea>
+          </>
+        }
+        detail={
+          shown && {
+            // Stacked, the bar above names the branch.
+            content: (
+              <HistoryPane
+                key={shown.ref}
+                gitRef={shown.ref}
+                all={false}
+                toolbar={stacked ? undefined : branchName(shown)}
+              />
+            ),
+            title: branchName(shown),
+            label: shown.name,
+            backLabel: "Back to branches",
+          }
+        }
+      />
       <CreateBranchDialog state={creating} onClose={() => setCreating(null)} />
       <DeleteBranchDialog branch={deleting} onClose={() => setDeleting(null)} />
-    </ResizablePanelGroup>
+    </>
   );
 }
 
@@ -174,7 +199,10 @@ function BranchRow({
   const Icon = b.remote ? Cloud : GitBranch;
   return (
     <li
+      // Focusable, so focus can return to the row when its history closes.
+      tabIndex={0}
       onClick={onSelect}
+      onKeyDown={(e) => e.target === e.currentTarget && e.key === "Enter" && onSelect()}
       onDoubleClick={() => !b.current && onCheckout()}
       className={cn(
         "group flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 select-none",
@@ -219,7 +247,7 @@ function BranchRow({
           <Button
             variant="ghost"
             size="icon-xs"
-            className="opacity-0 group-hover:opacity-100 data-[state=open]:opacity-100"
+            className="touch-target opacity-0 group-hover:opacity-100 data-[state=open]:opacity-100 pointer-coarse:opacity-100"
             onClick={(e) => e.stopPropagation()}
           >
             <MoreHorizontal />

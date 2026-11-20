@@ -1,6 +1,7 @@
 import { parsePatchFiles, type FileDiffMetadata } from "@pierre/diffs";
 import { FileDiff } from "@pierre/diffs/react";
 import { useMemo } from "react";
+import { NARROW, useMediaQuery } from "@/lib/media";
 import { PALETTES } from "@/lib/palettes";
 import { useDiffStyle, usePalette, useTheme } from "@/lib/prefs";
 import { cn } from "@/lib/utils";
@@ -26,7 +27,9 @@ export function DiffView({ raw, className }: { raw: string; className?: string }
 export function DiffFiles({ files, className }: { files: FileDiffMetadata[]; className?: string }) {
   const { resolved } = useTheme();
   const [palette] = usePalette();
-  const [diffStyle] = useDiffStyle();
+  const [style] = useDiffStyle();
+  // Split columns don't fit a phone screen.
+  const diffStyle = useMediaQuery(NARROW) ? "unified" : style;
   const options = useMemo(
     () => ({
       theme: PALETTES[palette].diffs,

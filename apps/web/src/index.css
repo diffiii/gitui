@@ -7,6 +7,18 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Grows a small control's tap area to 40px under a finger without changing its layout. */
+@utility touch-target {
+  @media (pointer: coarse) {
+    position: relative;
+    &::after {
+      content: "";
+      position: absolute;
+      inset: min(0px, calc((100% - 2.5rem) / 2));
+    }
+  }
+}
+
 @theme inline {
   --font-heading: var(--font-sans);
   --font-sans: "Geist Variable", sans-serif;
@@ -67,6 +79,16 @@
   --sidebar-accent-foreground: oklch(0.205 0 0);
   --sidebar-border: oklch(0.922 0 0);
   --sidebar-ring: oklch(0.708 0 0);
+  /* The phone tab bar (ViewTabBar in ViewTabs.tsx), over the home indicator's inset. */
+  --tab-bar-height: calc(3.5rem + env(safe-area-inset-bottom));
+  /* Bottom edge of toasts (App.tsx): sonner's defaults, raised above the tab bar on phones. */
+  --toaster-bottom: calc(24px + env(safe-area-inset-bottom));
+  --toaster-mobile-bottom: calc(16px + env(safe-area-inset-bottom));
+
+  @variant max-md {
+    --toaster-bottom: calc(var(--tab-bar-height) + 16px);
+    --toaster-mobile-bottom: calc(var(--tab-bar-height) + 16px);
+  }
 }
 
 .dark {

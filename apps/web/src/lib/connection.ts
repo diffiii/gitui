@@ -139,6 +139,16 @@ function update(next: Connection) {
 
 export const useConnection = () => useSyncExternalStore(subscribe, getConnection);
 
+/**
+ * Forgetting the hosted app's pairing with gitui: the paired port and a function that disconnects,
+ * or null outside the hosted app.
+ */
+export function useDisconnect(): { port: number; disconnect: () => void } | null {
+  const connection = useConnection();
+  if (connection.kind !== "paired") return null;
+  return { port: connection.pairing.port, disconnect: () => setPairing(null) };
+}
+
 /** Pair the hosted app with a CLI, or forget the pairing with null, and save it for next time. */
 export function setPairing(pairing: Pairing | null) {
   try {

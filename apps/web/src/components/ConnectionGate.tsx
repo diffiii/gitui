@@ -13,6 +13,7 @@ import {
   retryWhileUnreachable,
   setPairing,
   useConnection,
+  useDisconnect,
   type ConnectionStatus,
 } from "@/lib/connection";
 
@@ -165,16 +166,22 @@ function UnreachableScreen({
 
 /** Header button that forgets the pairing; renders nothing outside the hosted app. */
 export function DisconnectButton() {
-  const connection = useConnection();
-  if (connection.kind !== "paired") return null;
+  const pairing = useDisconnect();
+  if (!pairing) return null;
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Button variant="ghost" size="icon-sm" onClick={() => setPairing(null)}>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Disconnect"
+          className="touch-target"
+          onClick={pairing.disconnect}
+        >
           <Unplug />
         </Button>
       </TooltipTrigger>
-      <TooltipContent>Disconnect from gitui on port {connection.pairing.port}</TooltipContent>
+      <TooltipContent>Disconnect from gitui on port {pairing.port}</TooltipContent>
     </Tooltip>
   );
 }
