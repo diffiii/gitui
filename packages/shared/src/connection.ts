@@ -6,12 +6,6 @@ export const DEFAULT_PORT = 4777;
 /** Header every API request carries. Cross-origin pages can't send it without a CORS preflight. */
 export const CLIENT_HEADER = "x-gitui";
 
-/**
- * @deprecated The web app no longer reads this `<meta>` tag (the dev server's pages are told by
- * `import.meta.env.DEV`); only the CLI's `scripts/local-ui.ts` still writes it. Remove with it.
- */
-export const LOCAL_UI_META = "gitui-local-ui";
-
 /** Origin of the hosted web app, the only cross-origin page the CLI accepts by default. */
 export const HOSTED_ORIGIN = "https://gitui.diffiii.dev";
 

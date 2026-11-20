@@ -64,7 +64,7 @@ One-time setup: create a GitHub environment named `npm` (Settings → Environmen
 The git backend needs a real filesystem and the `git` binary, so only the static UI is hosted on Cloudflare, at https://gitui.diffiii.dev (Workers static assets, `apps/web/wrangler.jsonc`). The page talks to the CLI on `http://127.0.0.1:<port>` straight from the browser:
 
 - `gitui` prints and opens a pairing link (`https://…/#port=…&token=…`). The page saves the pairing fragment in localStorage and drops it from the address bar; API calls then send the token as a bearer token.
-- Pages from the Vite dev server of `bun run dev` carry a `<meta name="gitui-local-ui">` tag (`LOCAL_UI_META`); they skip pairing and call `/api` same-origin, whatever their host. The production build (`vp build`), which is what gets deployed, has no such tag, so any page served from it pairs, even on localhost.
+- Pages from the Vite dev server of `bun run dev` skip pairing and call `/api` same-origin, through the dev server's proxy (`import.meta.env.DEV`). The production build (`vp build`), which is what gets deployed, never does, so any page served from it pairs, even on localhost.
 - `HOSTED_ORIGIN` in `packages/shared/src/connection.ts` must match the custom domain in `wrangler.jsonc`: the CLI only accepts that origin (plus any `--allow-origin`) and builds pairing links from it.
 
 Deploy once from a machine logged in to Cloudflare (`wrangler login`):
