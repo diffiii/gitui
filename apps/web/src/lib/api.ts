@@ -1,27 +1,39 @@
-import {
-  CLIENT_HEADER,
-  type Branch,
-  type Commit,
-  type CommitDetail,
-  type FileStatus,
-  type Status,
-} from "@gitui/shared";
+import type { Branch, Commit, CommitDetail, FileStatus, Status } from "@gitui/shared";
+import { apiTarget } from "./connection.ts";
+import { getPairing } from "./pairing.ts";
 
 export type { Branch, Commit, CommitDetail, FileStatus, Status };
 
-export class ApiError extends Error {}
+/** `unreachable`: no CLI answered. `unauthorized`: the CLI rejected the pairing token. */
+export type ApiErrorKind = "unreachable" | "unauthorized" | "failed";
 
-async function request<T>(method: "GET" | "POST", url: string, body?: unknown): Promise<T> {
-  const res = await fetch(url, {
+export class ApiError extends Error {
+  readonly kind: ApiErrorKind;
+  constructor(message: string, kind: ApiErrorKind) {
+    super(message);
+    this.kind = kind;
+  }
+}
+
+async function request<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
+  const { base, headers } = apiTarget(getPairing());
+  const res = await fetch(base + path, {
     method,
     headers: {
-      [CLIENT_HEADER]: "1",
+      ...headers,
       ...(body !== undefined ? { "content-type": "application/json" } : {}),
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
+  }).catch(() => {
+    throw new ApiError("Can't reach gitui", "unreachable");
   });
   const data = await res.json().catch(() => ({ error: res.statusText }));
-  if (!res.ok) throw new ApiError(data.error ?? res.statusText);
+  if (!res.ok) {
+    throw new ApiError(
+      data.error ?? res.statusText,
+      res.status === 401 ? "unauthorized" : "failed",
+    );
+  }
   return data as T;
 }
 
