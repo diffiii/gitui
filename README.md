@@ -39,4 +39,22 @@ bun test                  # run the tests
 - `packages/shared/` (`@gitui/shared`): API types and connection constants used by both sides.
 - Recent repositories are stored in `~/.config/gitui/recent.json`.
 
-The git backend needs a real filesystem and the `git` binary, so it can't run on Cloudflare Workers. Only the static UI is hosted there, and it calls the CLI on your machine at `http://127.0.0.1:<port>` straight from the browser.
+## Hosted web app
+
+The git backend needs a real filesystem and the `git` binary, so only the static UI is hosted on Cloudflare (Workers static assets, `apps/web/wrangler.jsonc`). The page talks to the CLI on `http://127.0.0.1:<port>` straight from the browser:
+
+- `gitui --hosted` prints and opens a pairing link (`https://…/#port=…&token=…`). The page saves the pairing in localStorage and drops it from the address bar; API calls then send it as a bearer token.
+- Pages served from localhost (the CLI itself, or `bun run dev`) skip pairing and call `/api` same-origin, as before.
+- `HOSTED_ORIGIN` in `packages/shared/src/connection.ts` must match the deployed URL: the CLI only accepts that origin (plus any `--allow-origin`) and builds pairing links from it.
+
+Deploy once from a machine logged in to Cloudflare (`wrangler login`):
+
+```sh
+cd apps/web && bun run deploy   # vp build, then wrangler deploy
+```
+
+Or connect the repository in Cloudflare Workers Builds with:
+
+- Root directory: `/` (the repo root, so the whole workspace installs)
+- Build command: `bun run build`
+- Deploy command: `cd apps/web && bunx wrangler deploy`
