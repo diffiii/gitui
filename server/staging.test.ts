@@ -2,8 +2,9 @@ import { afterEach, expect, test } from "bun:test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createApp, withRepoLock } from "./app.ts";
+import { createApp } from "./app.ts";
 import * as g from "./git.ts";
+import { withRepoLock } from "./lock.ts";
 
 const dirs: string[] = [];
 
@@ -102,6 +103,9 @@ test("valid bodies still work", async () => {
   fs.writeFileSync(path.join(dir, "a.txt"), "changed\n");
   const file = { path: "a.txt", x: ".", y: "M" };
   expect((await post(dir, "/discard", { file })).status).toBe(200);
+  fs.writeFileSync(path.join(dir, "b.txt"), "b\n");
+  const untracked = { path: "b.txt", x: ".", y: "?", untracked: true };
+  expect((await post(dir, "/discard", { file: untracked })).status).toBe(200);
   expect(await porcelain(dir)).toEqual([]);
 });
 
@@ -112,6 +116,15 @@ test("unstaging the new side of a staged rename unstages the whole rename", asyn
   const res = await post(dir, "/unstage", { paths: ["new.txt"] });
   expect(res.status).toBe(200);
   expect(await porcelain(dir)).toEqual([" D old.txt", "?? new.txt"]);
+});
+
+test("unstaging an unrelated path leaves a staged rename alone", async () => {
+  const dir = await makeRepo();
+  await g.git(dir, ["mv", "old.txt", "new.txt"]);
+  fs.writeFileSync(path.join(dir, "a.txt"), "a\n");
+  await g.stage(dir, ["a.txt"]);
+  expect((await post(dir, "/unstage", { paths: ["a.txt"] })).status).toBe(200);
+  expect(await porcelain(dir)).toEqual(["?? a.txt", "R  old.txt -> new.txt"]);
 });
 
 test("unstage with no paths works on an unborn repo", async () => {
