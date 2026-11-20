@@ -10,6 +10,16 @@ export function dirsOf(paths: Iterable<string>): string[] {
 }
 
 /**
+ * `paths` without any that is also a folder of another, which the tree can't hold (it throws on
+ * the collision). Git can list both: a tracked file `a` replaced on disk by a folder `a/` of
+ * untracked files.
+ */
+export function treePaths(paths: readonly string[]): readonly string[] {
+  const dirs = new Set(dirsOf(paths));
+  return paths.some((p) => dirs.has(`${p}/`)) ? paths.filter((p) => !dirs.has(`${p}/`)) : paths;
+}
+
+/**
  * The batch that turns a tree of `prev` into one of `next` in place, so its open folders and
  * search stay as they are. Removing a folder's last file leaves the folder, so folders that hold
  * none of `next` go too, each with what's in it; removals come first, so a file can become a

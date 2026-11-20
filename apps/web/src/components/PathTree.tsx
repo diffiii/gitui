@@ -2,7 +2,7 @@ import type { ContextMenuItem, ContextMenuOpenContext, GitStatusEntry } from "@p
 import { FileTree, useFileTree } from "@pierre/trees/react";
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { COARSE, useMediaQuery } from "@/lib/media";
-import { dirsOf, updatePaths } from "@/lib/pathTree";
+import { dirsOf, treePaths, updatePaths } from "@/lib/pathTree";
 import { useTheme } from "@/lib/prefs";
 import { cn } from "@/lib/utils";
 
@@ -38,7 +38,7 @@ export function PathTree(props: PathTreeProps) {
 }
 
 function FileTreeView({
-  paths,
+  paths: listed,
   gitStatus,
   selected,
   onSelect,
@@ -49,6 +49,7 @@ function FileTreeView({
   coarse,
 }: PathTreeProps & { coarse: boolean }) {
   const { resolved } = useTheme();
+  const paths = useMemo(() => treePaths(listed), [listed]);
   const onSelectRef = useRef(onSelect);
   const files = useRef(new Set(paths));
   useLayoutEffect(() => {

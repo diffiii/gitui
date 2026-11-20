@@ -41,13 +41,17 @@ async function dirChecker(repo: string) {
     if (gitDirs.has(`${st.dev}:${st.ino}`) || (await looksLikeGitDir(abs))) return "gitDir";
     return "ok";
   };
+  // A work tree can be its own git directory (`core.worktree = .` in a bare repo, or
+  // GIT_DIR = GIT_WORK_TREE): then everything in it is.
+  const rootSt = await stat(repo, { bigint: true });
+  const root: DirCheck = gitDirs.has(`${rootSt.dev}:${rootSt.ino}`) ? "gitDir" : "ok";
   const cache = new Map<string, Promise<DirCheck>>();
   /** `dir`, a repo-relative directory, checked after each one above it. */
   const check = (dir: string): Promise<DirCheck> => {
     let result = cache.get(dir);
     if (!result) {
       const slash = dir.lastIndexOf("/");
-      const parent = slash === -1 ? Promise.resolve<DirCheck>("ok") : check(dir.slice(0, slash));
+      const parent = slash === -1 ? Promise.resolve(root) : check(dir.slice(0, slash));
       result = parent.then((p) => (p === "ok" ? checkDir(path.join(repo, dir)) : p));
       cache.set(dir, result);
     }
@@ -56,7 +60,7 @@ async function dirChecker(repo: string) {
   /** The first problem with the directories that lead to `file`, or `ok`. */
   return (file: string): Promise<DirCheck> => {
     const slash = file.lastIndexOf("/");
-    return slash === -1 ? Promise.resolve("ok") : check(file.slice(0, slash));
+    return slash === -1 ? Promise.resolve(root) : check(file.slice(0, slash));
   };
 }
 
@@ -212,8 +216,9 @@ const OPEN_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants
  * read, however large the file is or grows.
  *
  * Accepted risk: a leading directory swapped for a symlink between `assertWorkingFile` and the
- * `open` is still followed, since Node has no `openat` to open each component in turn. That needs
- * someone with write access to the working copy racing the request.
+ * `open` is still followed, since Node has no `openat` to open each component in turn, and so is
+ * one turned into (or replaced by) a git directory. Either needs someone with write access to the
+ * working copy racing the request.
  */
 export async function workingFile(
   repo: string,

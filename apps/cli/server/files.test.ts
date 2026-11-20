@@ -212,6 +212,24 @@ test("leaves out a git directory in the work tree under another name, and refuse
   expect((await readFile(repo, "a.txt")).body.content).toBe("a\n");
 });
 
+test("a work tree that is its own git directory exposes nothing of it", async () => {
+  const repo = tmpDir();
+  git(repo, "init", "-q", "--bare", "-b", "main", ".");
+  git(repo, "config", "core.bare", "false");
+  git(repo, "config", "core.worktree", ".");
+  git(repo, "config", "user.name", "Test User");
+  git(repo, "config", "user.email", "test@example.com");
+  git(repo, "config", "remote.origin.url", "https://user:token@example.com/r.git");
+  commitFile(repo, "a.txt", "a\n");
+  expect(git(repo, "ls-files", "-o", "--exclude-standard")).toContain("config");
+
+  expect((await listFiles(repo)).body.paths).toEqual([]);
+  expect(await readFile(repo, "config")).toEqual(refused("Inside a git directory: config"));
+  const diff = await get(repo, "/diff", { path: "config", untracked: "1", staged: "0" });
+  expect(diff.status).toBe(400);
+  expect(JSON.stringify(diff.body)).not.toContain("token");
+});
+
 test("refuses a case variant of a git directory's path", async () => {
   const repo = separateGitDir();
   for (const file of ["META/config", "Meta/HEAD"]) {

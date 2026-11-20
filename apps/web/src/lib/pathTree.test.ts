@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { FileTree, type FileTreeDirectoryHandle } from "@pierre/trees";
-import { dirsOf, treeChanges, updatePaths } from "./pathTree.ts";
+import { dirsOf, treeChanges, treePaths, updatePaths } from "./pathTree.ts";
 
 /** A real tree model, as `PathTree` makes one, with no DOM. */
 const tree = (paths: string[], initialExpansion: "open" | "closed" = "open") =>
@@ -122,4 +122,10 @@ test("updatePaths recovers when the tree throws on a focused folder that becomes
   expect(rows(next)).toEqual(["a"]);
   updatePaths(next, ["a"], ["a", "b/c.ts"]);
   expect(rows(next)).toEqual(rowsOf(["a", "b/c.ts"]));
+});
+
+test("treePaths drops a file that is also another path's folder", () => {
+  expect(treePaths(["a/b", "a", "c"])).toEqual(["a/b", "c"]);
+  const same = ["x/y", "z"];
+  expect(treePaths(same)).toBe(same);
 });
