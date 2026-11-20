@@ -82,7 +82,7 @@ export function startNearby(options: NearbyOptions) {
   const report = (event: StatusEvent) => {
     const [next, line] = nextStatus(status, event);
     status = next;
-    if (status.announced) clearTimeout(statusTimer);
+    if (status.phase !== "starting") clearTimeout(statusTimer);
     if (line) log(lines[line]());
   };
   const statusTimer = setTimeout(

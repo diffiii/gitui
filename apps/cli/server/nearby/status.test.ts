@@ -35,7 +35,7 @@ test("losing the last family is said once, and so is coming back", () => {
 test("a host never visible says it is visible once it is", () => {
   const { lines, status } = run([4], [down(4), down(4), welcome(4)]);
   expect(lines).toEqual(["unreachable", "visible"]);
-  expect(status.lost).toBe(false);
+  expect(status.phase).toBe("up");
 });
 
 test("no room is said once until a welcome, or until the reason changes", () => {
