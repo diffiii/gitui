@@ -1,73 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
-import type { ClientMessage, SignalData } from "@gitui/shared";
+import type { ClientMessage } from "@gitui/shared";
 import { fakeSockets } from "./fake-socket.ts";
 import {
   backoffDelay,
-  parseServerMessage,
-  parseSignal,
   RendezvousClient,
   type RendezvousEvents,
   type RendezvousOptions,
 } from "./rendezvous.ts";
-
-test("server messages a host handles are parsed; anything else is null", () => {
-  const offer: SignalData = { kind: "offer", sdp: "v=0" };
-  expect(parseServerMessage('{"type":"welcome","id":"h1"}')).toEqual({ type: "welcome", id: "h1" });
-  expect(parseServerMessage('{"type":"gone","id":"g1"}')).toEqual({ type: "gone", id: "g1" });
-  expect(parseServerMessage(JSON.stringify({ type: "signal", from: "g1", data: offer }))).toEqual({
-    type: "signal",
-    from: "g1",
-    data: offer,
-  });
-  expect(parseServerMessage('{"type":"error","message":"bad hello"}')).toEqual({
-    type: "error",
-    message: "bad hello",
-  });
-  for (const text of [
-    "pong",
-    '{"type":"pong"}',
-    "null",
-    "[]",
-    '{"type":"hosts","hosts":[]}',
-    '{"type":"welcome"}',
-    '{"type":"signal","from":"g1","data":{"kind":"offer"}}',
-    JSON.stringify({ type: "signal", data: offer }),
-  ]) {
-    expect(parseServerMessage(text)).toBeNull();
-  }
-});
-
-test("signals are checked field by field", () => {
-  expect(parseSignal({ kind: "offer", sdp: "v=0", resume: true })).toEqual({
-    kind: "offer",
-    sdp: "v=0",
-    resume: true,
-  });
-  for (const resume of [false, "true", 1]) {
-    expect(parseSignal({ kind: "offer", sdp: "v=0", resume })).toEqual({
-      kind: "offer",
-      sdp: "v=0",
-    });
-  }
-  expect(parseSignal({ kind: "answer", sdp: "v=0", resume: true })).toEqual({
-    kind: "answer",
-    sdp: "v=0",
-  });
-  const candidate = { candidate: "candidate:1 1 udp 1 10.0.0.1 9 typ host", sdpMid: "0" };
-  expect(parseSignal({ kind: "candidate", candidate })).toEqual({ kind: "candidate", candidate });
-  expect(
-    parseSignal({ kind: "candidate", candidate: { candidate: "c", sdpMLineIndex: null } }),
-  ).toEqual({ kind: "candidate", candidate: { candidate: "c", sdpMLineIndex: null } });
-  for (const bad of [
-    { kind: "candidate", candidate: { candidate: 1 } },
-    { kind: "candidate", candidate: { candidate: "c", sdpMid: 0 } },
-    { kind: "candidate", candidate: { candidate: "c", sdpMLineIndex: "0" } },
-    { kind: "offer", sdp: "x".repeat(64 * 1024 + 1) },
-    { kind: "renegotiate", sdp: "v=0" },
-  ]) {
-    expect(parseSignal(bad)).toBeNull();
-  }
-});
 
 test("backoff doubles up to the cap, with jitter", () => {
   const backoff = { first: 100, max: 1000 };
@@ -131,17 +70,21 @@ test("the client says hello with its key, relays signals both ways and reconnect
   socket.receive("pong");
   socket.receive({ type: "pong" });
   socket.receive({ type: "hosts", hosts: [] });
-  socket.receive({ type: "signal", from: "g1", data: { kind: "offer", sdp: "v=0" } });
+  socket.receive({
+    type: "signal",
+    from: "g1",
+    data: { kind: "offer", offerId: "offer-0123456789ab", sdp: "v=0" },
+  });
   socket.receive({ type: "gone", id: "g1" });
   socket.receive({ type: "error", message: "slow down" });
   socket.emit("message", Buffer.from('{"type":"gone","id":"g2"}'), true);
   expect(log).toEqual(["welcome h1", "signal g1 offer", "gone g1", "error slow down"]);
 
-  rendezvous.send("g1", { kind: "answer", sdp: "v=0" });
+  rendezvous.send("g1", { kind: "answer", offerId: "offer-0123456789ab", sdp: "v=0" });
   expect(socket.sent[1]).toEqual({
     type: "signal",
     to: "g1",
-    data: { kind: "answer", sdp: "v=0" },
+    data: { kind: "answer", offerId: "offer-0123456789ab", sdp: "v=0" },
   });
 
   socket.fail();
@@ -150,7 +93,7 @@ test("the client says hello with its key, relays signals both ways and reconnect
   sockets[1].open();
   expect(sockets[1].sent).toEqual([hello]);
   // Signals go out on the live socket only.
-  rendezvous.send("g1", { kind: "answer", sdp: "v=0" });
+  rendezvous.send("g1", { kind: "answer", offerId: "offer-0123456789ab", sdp: "v=0" });
   expect(socket.sent).toHaveLength(2);
   expect(sockets[1].sent).toHaveLength(2);
 });

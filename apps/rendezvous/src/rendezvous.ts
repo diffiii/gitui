@@ -6,9 +6,15 @@
 // itself, without waking the object or calling webSocketMessage, and the auto-response below
 // answers RENDEZVOUS_PING (from browsers, which can't send protocol pings).
 import { DurableObject } from "cloudflare:workers";
-import { RENDEZVOUS_PING, RENDEZVOUS_PONG, type HostInfo, type ServerMessage } from "@gitui/shared";
+import {
+  MAX_MESSAGE_LENGTH,
+  parseClientMessage,
+  RENDEZVOUS_PING,
+  RENDEZVOUS_PONG,
+  type HostInfo,
+  type ServerMessage,
+} from "@gitui/shared";
 import type { Env } from "./index.ts";
-import { MAX_MESSAGE_LENGTH, parseClientMessage } from "./messages.ts";
 
 /** Most sockets one network may hold open. */
 export const MAX_SOCKETS = 50;

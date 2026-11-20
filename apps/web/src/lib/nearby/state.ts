@@ -1,4 +1,4 @@
-import { HOST_KEY, MAX_NAME_LENGTH, type HostInfo } from "@gitui/shared";
+import { HOST_KEY, hostName, type HostInfo } from "@gitui/shared";
 
 // The pure parts of the nearby connection: what the session store's states are, and the
 // decisions it makes. session.ts runs them against the network; tests run them as they are.
@@ -35,8 +35,8 @@ export function parseNearbyHost(value: unknown): NearbyHost | null {
   if (typeof value !== "object" || value === null) return null;
   const { key, name } = value as Record<string, unknown>;
   if (typeof key !== "string" || !HOST_KEY.test(key)) return null;
-  if (typeof name !== "string" || !name.trim() || name.length > MAX_NAME_LENGTH) return null;
-  return { key, name };
+  const valid = hostName(name);
+  return valid === null ? null : { key, name: valid };
 }
 
 /**

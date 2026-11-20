@@ -172,9 +172,11 @@ test("--nearby and --lan can't be combined, in either order", () => {
 
 test("--name needs --nearby and a short printable name", () => {
   expect(refusal(["--name", "Desk"])).toBe("--name only applies to --nearby");
-  for (const name of [undefined, "", "  ", "a\u001b[2Jb", "x".repeat(64)]) {
+  for (const name of [undefined, "", "  ", "a\u001b[2Jb", "evil\u202ekoob", "x".repeat(64)]) {
     const argv = name === undefined ? ["--nearby", "--name"] : ["--nearby", "--name", name];
-    expect(refusal(argv)).toBe("--name needs a name of 1 to 63 printable characters");
+    expect(refusal(argv)).toBe(
+      "--name needs a name of 1 to 63 characters, without control or bidi characters",
+    );
   }
   expect(parseArgs(["--nearby", "--name", "Jan's MacBook ✨"])).toMatchObject({
     mode: { nearby: { name: "Jan's MacBook ✨" } },
@@ -186,5 +188,8 @@ test("the default --nearby name is the hostname without .local, printable and sh
   expect(hostnameAsName("desk")).toBe("desk");
   expect(hostnameAsName("a\u001bb")).toBe("ab");
   expect(hostnameAsName("x".repeat(100))).toHaveLength(63);
+  // Cut by code point, so no emoji is split in half; bidi controls go too.
+  expect(hostnameAsName("💻".repeat(100))).toBe("💻".repeat(63));
+  expect(hostnameAsName("my\u202edesk")).toBe("mydesk");
   expect(hostnameAsName(".local")).toBe("gitui");
 });

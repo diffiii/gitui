@@ -1,11 +1,6 @@
 import { RENDEZVOUS_PING, type ServerMessage } from "@gitui/shared";
 import { expect, test } from "bun:test";
-import {
-  Rendezvous,
-  rendezvousUrl,
-  type RendezvousOptions,
-  type SocketLike,
-} from "./rendezvous.ts";
+import { Rendezvous, type RendezvousOptions, type SocketLike } from "./rendezvous.ts";
 
 class FakeSocket implements SocketLike {
   readyState = 0;
@@ -54,11 +49,6 @@ function setup(options: Partial<RendezvousOptions> = {}) {
 const wait = (ms = 1) => new Promise((r) => setTimeout(r, ms));
 const host = { id: "h1", name: "Jan's MacBook", key: "k".repeat(16) };
 
-test("rendezvousUrl puts the protocol path on the origin", () => {
-  expect(rendezvousUrl("ws://127.0.0.1:8787")).toBe("ws://127.0.0.1:8787/v1/connect");
-  expect(rendezvousUrl()).toBe("wss://rendezvous.gitui.diffiii.dev/v1/connect");
-});
-
 test("says hello as a guest and publishes the hosts", () => {
   const { client, sockets } = setup();
   const seen: unknown[] = [];
@@ -75,33 +65,38 @@ test("says hello as a guest and publishes the hosts", () => {
   ]);
 });
 
+const offerId = "offer-0123456789ab";
+
 test("relays signals to and from a peer, and tells it when it's gone", () => {
   const { client, sockets } = setup();
   const got: unknown[] = [];
   const stop = client.listen("h1", { signal: (d) => got.push(d), gone: () => got.push("gone") });
   sockets[0]!.open();
-  expect(client.signal("h1", { kind: "offer", sdp: "o" })).toBe(true);
+  expect(client.signal("h1", { kind: "offer", offerId, sdp: "o" })).toBe(true);
   expect(sockets[0]!.sent.at(-1)).toEqual({
     type: "signal",
     to: "h1",
-    data: { kind: "offer", sdp: "o" },
+    data: { kind: "offer", offerId, sdp: "o" },
   });
 
-  sockets[0]!.receive({ type: "signal", from: "h1", data: { kind: "answer", sdp: "a" } });
-  sockets[0]!.receive({ type: "signal", from: "other", data: { kind: "answer", sdp: "x" } });
+  const answer = (sdp: string) => ({ kind: "answer", offerId, sdp }) as const;
+  sockets[0]!.receive({ type: "signal", from: "h1", data: answer("a") });
+  sockets[0]!.receive({ type: "signal", from: "other", data: answer("x") });
+  // A signal the contract doesn't allow (no offerId) is dropped.
+  sockets[0]!.receive({ type: "signal", from: "h1", data: { kind: "answer", sdp: "y" } as never });
   sockets[0]!.receive({ type: "gone", id: "h1" });
   sockets[0]!.receive("garbage");
-  expect(got).toEqual([{ kind: "answer", sdp: "a" }, "gone"]);
+  expect(got).toEqual([answer("a"), "gone"]);
 
   stop();
-  sockets[0]!.receive({ type: "signal", from: "h1", data: { kind: "answer", sdp: "b" } });
+  sockets[0]!.receive({ type: "signal", from: "h1", data: answer("b") });
   expect(got).toHaveLength(2);
 });
 
 test("signal reports a signal it couldn't send", () => {
   const { client } = setup();
   client.subscribe(() => {});
-  expect(client.signal("h1", { kind: "offer", sdp: "o" })).toBe(false);
+  expect(client.signal("h1", { kind: "offer", offerId, sdp: "o" })).toBe(false);
 });
 
 test("reconnects with growing backoff and resets it once welcomed", async () => {

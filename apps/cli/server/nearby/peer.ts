@@ -1,31 +1,44 @@
 // One guest's connection, from its offer to its end: answers the offer, trickles candidates,
-// takes the guest's data channel, checks its code or resume token (auth.ts) and then hands the
-// channel to the bridge. Nothing reaches the bridge before the guest proved itself.
+// takes the guest's data channel, runs CPace for its code or checks its resume token (auth.ts,
+// @gitui/shared's nearby-pake.ts) and then hands the channel to the bridge. Nothing reaches the
+// bridge before the guest proved itself.
 import {
   AUTH_ATTEMPTS,
-  authProof,
-  type ChannelMessage,
+  decodeChannelMessage,
   DATA_CHANNEL_LABEL,
+  type Fingerprints,
+  hostFinish,
+  type HostMessage,
+  type HostPake,
+  hostRespond,
+  type IceCandidate,
+  resumeAnswer,
   type SignalData,
 } from "@gitui/shared";
-import { safeEqual } from "../access.ts";
-import { Attempts, findProof, fingerprints, newCode, parseOpening, type Tokens } from "./auth.ts";
+import { Attempts, fingerprints, newCode, type Tokens } from "./auth.ts";
 import { Bridge, type Fetch } from "./bridge.ts";
 import { type AnsweringPeer, createAnsweringPeer, type DataChannel } from "./webrtc.ts";
 
 /** How long a guest has, from its offer, to prove itself. */
 export const AUTH_TIMEOUT = 60_000;
 
+/** What the host sends a guest about its offer: its answer and candidates. */
+export type HostSignal =
+  | { kind: "answer"; sdp: string }
+  | { kind: "candidate"; candidate: IceCandidate };
+
 export interface GuestOptions {
   offerSdp: string;
+  /** The offer's id, which every signal of this session carries (SignalData). */
+  offerId: string;
   /**
    * The offer said the guest will `resume` (SignalData): the code is printed only if that
    * fails, so reconnections print nothing. Otherwise it is printed once the channel opens.
    */
   resuming?: boolean;
   stunUrls: string[];
-  /** Sends a signal to the guest through the rendezvous service. */
-  signal: (data: SignalData) => void;
+  /** Sends a signal of this offer's to the guest through the rendezvous service. */
+  signal: (data: Extract<SignalData, { kind: "answer" | "candidate" }>) => void;
   /** Answers the guest's requests once it is authenticated. */
   fetch: Fetch;
   /** This run's resume tokens: checked for `resume`, added to after a code. */
@@ -39,13 +52,10 @@ export interface GuestOptions {
 
 type State = "answering" | "authenticating" | "open" | "closed";
 
-/** What the guest's opening is checked against, once the answer is made. */
+/** What the guest's proofs are checked against, once the answer is made. */
 interface Expected {
   code: string;
-  codeProof: string;
-  /** The live tokens when the offer came, and their proofs for this connection. */
-  tokens: readonly string[];
-  tokenProofs: string[];
+  prints: Fingerprints;
 }
 
 export class GuestSession {
@@ -58,6 +68,8 @@ export class GuestSession {
   #opened = false;
   #state: State = "answering";
   #expected: Expected | null = null;
+  /** The CPace run waiting for the guest's `pake-confirm`. */
+  #pake: HostPake | null = null;
   #codeShown = false;
   #channel: DataChannel | null = null;
   #bridge: Bridge | null = null;
@@ -65,7 +77,8 @@ export class GuestSession {
   constructor(options: GuestOptions) {
     this.#options = options;
     this.#peer = createAnsweringPeer(options.stunUrls, {
-      candidate: (candidate) => options.signal({ kind: "candidate", candidate }),
+      candidate: (candidate) =>
+        options.signal({ kind: "candidate", offerId: options.offerId, candidate }),
       channel: (channel) => this.#take(channel),
       closed: () => this.close(),
     });
@@ -82,8 +95,10 @@ export class GuestSession {
     return this.#state === "open";
   }
 
-  /** Adds a candidate the guest trickled, once the offer is applied. */
-  addCandidate(candidate: Extract<SignalData, { kind: "candidate" }>["candidate"]) {
+  /** Adds a candidate the guest trickled for offer `offerId`, once the offer is applied. */
+  addCandidate(offerId: string, candidate: IceCandidate) {
+    // A candidate of an earlier offer of this guest's belongs to a connection that is gone.
+    if (offerId !== this.#options.offerId) return;
     void this.#answered.then(() => {
       if (this.#state !== "closed") return this.#peer.addCandidate(candidate);
     });
@@ -104,21 +119,18 @@ export class GuestSession {
   }
 
   async #answer() {
-    const { offerSdp, signal, tokens } = this.#options;
+    const { offerSdp, offerId, signal } = this.#options;
     try {
       const answerSdp = await this.#peer.answer(offerSdp);
       const prints = fingerprints(offerSdp, answerSdp);
       // (A session closed meanwhile stays closed, and quiet.)
-      if (!prints) return this.close("Nearby: refused an offer without a DTLS fingerprint");
-      const code = newCode();
-      const live = [...tokens.list()];
-      const [codeProof, ...tokenProofs] = await Promise.all(
-        [code, ...live].map((secret) => authProof(secret, prints.guest, prints.host)),
-      );
+      if (!prints) {
+        return this.close("Nearby: refused an offer without exactly one SHA-256 DTLS fingerprint");
+      }
       if (this.#state === "closed") return;
-      this.#expected = { code, codeProof, tokens: live, tokenProofs };
+      this.#expected = { code: newCode(), prints };
       this.#state = "authenticating";
-      signal({ kind: "answer", sdp: answerSdp });
+      signal({ kind: "answer", offerId, sdp: answerSdp });
     } catch (e) {
       this.close(`Nearby: couldn't answer a device: ${(e as Error).message}`);
     }
@@ -147,48 +159,98 @@ export class GuestSession {
     if (this.#bridge) return this.#bridge.receive(data);
     const expected = this.#expected;
     if (this.#state !== "authenticating" || !expected) return;
-    const opening = parseOpening(data);
-    if (opening === null) return this.close("Nearby: a device sent requests before its code");
+    const incoming = decodeChannelMessage(data, "guest");
+    const message = incoming.kind === "message" ? incoming.message : null;
+    const send = (message: HostMessage) => channel.send(JSON.stringify(message));
 
+    switch (message?.t) {
+      case "resume":
+        return this.#resume(channel, expected, message, send);
+      case "pake": {
+        this.#opened = true;
+        // A new `pake` gives up on the run before it, whose attempt is already spent.
+        this.#pake = null;
+        if (this.#attempts.left === 0) {
+          // Its last attempt went on the run it gave up on.
+          send({ t: "auth-fail", attemptsLeft: 0 });
+          return this.#refuse(channel);
+        }
+        const left = this.#attempts.spend();
+        const answer = hostRespond(expected.code, expected.prints, message.y);
+        // Whoever sent a code without being shown one gets it now (a guest that said it would
+        // resume and then didn't).
+        this.#showCode();
+        if (!answer) {
+          send({ t: "auth-fail", attemptsLeft: left });
+          if (left === 0) this.#refuse(channel);
+          return;
+        }
+        this.#pake = answer.state;
+        return send(answer.message);
+      }
+      case "pake-confirm":
+      case "pake-fail": {
+        const run = this.#pake;
+        this.#pake = null;
+        if (!run) return this.close("Nearby: a device broke the pairing protocol");
+        if (message.t === "pake-confirm" && hostFinish(run, message.confirm)) {
+          this.#open(channel, null);
+          send({ t: "auth-ok" });
+          send({ t: "session", token: this.#options.tokens.issue() });
+          return;
+        }
+        send({ t: "auth-fail", attemptsLeft: this.#attempts.left });
+        if (this.#attempts.left === 0) this.#refuse(channel);
+        return;
+      }
+      default:
+        return this.close("Nearby: a device sent requests before its code");
+    }
+  }
+
+  #resume(
+    channel: DataChannel,
+    expected: Expected,
+    message: { nonce: string; proof: string },
+    send: (message: HostMessage) => void,
+  ) {
     const first = !this.#opened;
     this.#opened = true;
-    // The token this guest resumes with, if it is a live one.
-    let resumed: string | null = null;
-    if (opening.t === "resume") {
-      const at = findProof(opening.proof, expected.tokenProofs);
-      resumed = at >= 0 ? expected.tokens[at] : null;
-    }
-    const send = (message: ChannelMessage) => channel.send(JSON.stringify(message));
+    this.#pake = null;
+    const answer = resumeAnswer(this.#options.tokens.list(), expected.prints, message);
     // A token from a CLI run that ended, or one this run forgot: the guest asks for the code on
     // this channel next, with every attempt left. Tokens are too long to guess, so only this
     // first resume is free; another one counts as a failed attempt.
-    if (first && opening.t === "resume" && resumed === null) {
+    if (first && answer === null) {
       send({ t: "auth-fail", attemptsLeft: this.#attempts.left });
       this.#showCode();
       return;
     }
-    const verdict = this.#attempts.check(
-      opening.t === "auth" ? safeEqual(opening.proof, expected.codeProof) : resumed !== null,
-    );
-    if (verdict.ok) {
-      clearTimeout(this.#timer);
-      this.#state = "open";
-      this.#bridge = new Bridge(channel, this.#options.fetch);
-      // A resumed guest keeps its token: it is as good as it was.
-      send({ t: "auth-ok" });
-      send({ t: "session", token: resumed ?? this.#options.tokens.issue() });
-      this.#options.log(resumed ? "Nearby: a device reconnected" : "Nearby: device connected");
+    const verdict = this.#attempts.check(answer !== null);
+    if (verdict.ok && answer) {
+      // The guest keeps its token: it is as good as it was. `resume-ok` proves this host holds it.
+      this.#open(channel, "Nearby: a device reconnected");
+      send(answer.message);
       return;
     }
+    if (verdict.ok) return;
     send({ t: "auth-fail", attemptsLeft: verdict.attemptsLeft });
-    if (verdict.attemptsLeft > 0) {
-      // Whoever sent a code without being shown one gets it now (a guest that said it would
-      // resume and then didn't).
-      this.#showCode();
-      return;
-    }
-    // Let the last auth-fail leave before the channel closes.
+    if (verdict.attemptsLeft > 0) this.#showCode();
+    else this.#refuse(channel);
+  }
+
+  /** The guest proved itself: requests go to the bridge from now on. */
+  #open(channel: DataChannel, line: string | null) {
+    clearTimeout(this.#timer);
+    this.#state = "open";
+    this.#bridge = new Bridge(channel, this.#options.fetch);
+    this.#options.log(line ?? "Nearby: device connected");
+  }
+
+  /** Out of attempts: the last `auth-fail` leaves, then the channel closes. */
+  #refuse(channel: DataChannel) {
     this.#expected = null;
+    this.#pake = null;
     void channel
       .drain(0)
       .then(() =>

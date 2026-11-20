@@ -7,7 +7,13 @@ import {
   subscribeConnection,
   type Connection,
 } from "../connection.ts";
-import { CONNECT_TIMEOUT, connectToHost, NearbyError, type GuestPeer } from "./peer.ts";
+import {
+  CONNECT_TIMEOUT,
+  connectToHost,
+  HostUnverifiedError,
+  NearbyError,
+  type GuestPeer,
+} from "./peer.ts";
 import { rendezvous } from "./rendezvous.ts";
 import {
   afterRejectedResume,
@@ -149,6 +155,14 @@ async function establish(
       return await authenticate(r, peer, restarted ? "restarted" : notice);
     } catch (e) {
       if (signal.aborted || run !== r) return;
+      // Something answered for the host without proving it holds our token: don't ask it for the
+      // code, and don't keep trying it. The token stays, for the real host.
+      if (e instanceof HostUnverifiedError) {
+        // (authenticate set r.peer, which TypeScript's narrowing above can't see.)
+        (r.peer as GuestPeer | null)?.close();
+        r.peer = null;
+        return set({ kind: "failed", host: r.host, reason: e.message });
+      }
       if (Date.now() >= deadline) return set({ kind: "failed", host: r.host, reason: reason(e) });
       await pause(r, Math.min(4000, 500 * 2 ** failures), signal);
       if (signal.aborted) return;

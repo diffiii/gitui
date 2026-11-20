@@ -1,8 +1,8 @@
 // What a guest must prove before its data channel serves anything (the contract's step 3): the
-// code this machine printed for its connection, or a resume token from an earlier one.
+// code this machine printed for its connection, through CPace, or a resume token from an
+// earlier one. The protocol itself is @gitui/shared's nearby-pake.ts; this is the host's part.
 import { randomBytes, randomInt } from "node:crypto";
-import { AUTH_ATTEMPTS, AUTH_CODE_DIGITS, sdpFingerprint } from "@gitui/shared";
-import { safeEqual } from "../access.ts";
+import { AUTH_ATTEMPTS, AUTH_CODE_DIGITS, type Fingerprints, sdpFingerprint } from "@gitui/shared";
 
 /** A fresh code of AUTH_CODE_DIGITS digits, leading zeros included. */
 export const newCode = () =>
@@ -36,22 +36,13 @@ export class Tokens {
 }
 
 /**
- * The DTLS fingerprints of the guest's offer and this side's answer, which every proof is bound
- * to (authProof), or null if either SDP has none.
+ * The DTLS fingerprints of the guest's offer and this side's answer, which CPace and the resume
+ * proofs are bound to, or null unless each SDP has exactly one SHA-256 one.
  */
-export function fingerprints(offerSdp: string, answerSdp: string) {
+export function fingerprints(offerSdp: string, answerSdp: string): Fingerprints | null {
   const guest = sdpFingerprint(offerSdp);
   const host = sdpFingerprint(answerSdp);
   return guest && host ? { guest, host } : null;
-}
-
-/** The index of `proof` in `expected`, or -1; compares with every one, in constant time. */
-export function findProof(proof: string, expected: readonly string[]) {
-  let found = -1;
-  expected.forEach((candidate, i) => {
-    if (safeEqual(proof, candidate)) found = i;
-  });
-  return found;
 }
 
 export type Verdict = { ok: true } | { ok: false; attemptsLeft: number };
@@ -70,23 +61,15 @@ export class Attempts {
 
   check(ok: boolean): Verdict {
     if (this.#left > 0 && ok) return { ok: true };
-    this.#left = Math.max(0, this.#left - 1);
-    return { ok: false, attemptsLeft: this.#left };
+    return { ok: false, attemptsLeft: this.spend() };
   }
-}
 
-/** A guest's opening message: an `auth` with a code's proof or a `resume` with a token's. */
-export type Opening = { t: "auth" | "resume"; proof: string };
-
-/** The opening in a channel message, or null if it isn't an `auth` or `resume` message. */
-export function parseOpening(data: string | Uint8Array): Opening | null {
-  if (typeof data !== "string") return null;
-  try {
-    const message: unknown = JSON.parse(data);
-    if (typeof message !== "object" || message === null) return null;
-    const { t, proof } = message as Record<string, unknown>;
-    return (t === "auth" || t === "resume") && typeof proof === "string" ? { t, proof } : null;
-  } catch {
-    return null;
+  /**
+   * Spends one try up front and returns the tries left: CPace tells the guest whether its code
+   * was right as soon as the host answers its `pake`, so the answer is the attempt.
+   */
+  spend() {
+    this.#left = Math.max(0, this.#left - 1);
+    return this.#left;
   }
 }

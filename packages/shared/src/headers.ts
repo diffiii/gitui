@@ -1,4 +1,5 @@
 import { RENDEZVOUS_ORIGIN } from "./nearby.ts";
+import { rendezvousUrl } from "./nearby-codec.ts";
 
 // Security headers of the web app's pages, wherever they are served from.
 
@@ -22,8 +23,7 @@ export function uiSecurityHeaders(connectSrc: string): Record<string, string> {
  * origin, since it goes into the CSP as is.
  */
 export function hostedHeadersFile(rendezvousOrigin = RENDEZVOUS_ORIGIN): string {
-  const url = URL.parse(rendezvousOrigin);
-  if (!url || !/^wss?:$/.test(url.protocol) || url.origin !== rendezvousOrigin) {
+  if (rendezvousUrl(rendezvousOrigin) === null) {
     throw new Error(`The rendezvous URL must be a ws: or wss: origin, not ${rendezvousOrigin}`);
   }
   const headers = uiSecurityHeaders(`'self' http://127.0.0.1:* ${rendezvousOrigin}`);

@@ -5,7 +5,7 @@
 // public address, and a guest may reach it over either family. Each session belongs to the
 // socket its offer came on, which carries all its signals and its `gone`.
 import net from "node:net";
-import { HOSTED_ORIGIN, RENDEZVOUS_ORIGIN, RENDEZVOUS_PATH, STUN_URLS } from "@gitui/shared";
+import { HOSTED_ORIGIN, type SignalData, STUN_URLS } from "@gitui/shared";
 import { newHostKey, Tokens } from "./auth.ts";
 import type { Fetch } from "./bridge.ts";
 import { guardWerift } from "./guard.ts";
@@ -31,16 +31,6 @@ export const STATUS_DELAY = 3000;
 /** At most one line per this long about packets the werift guard dropped. */
 const GUARD_LOG_INTERVAL = 60_000;
 
-/**
- * The rendezvous URL for `origin`, a ws: or wss: origin (GITUI_RENDEZVOUS_URL, if set), or null
- * if it isn't one.
- */
-export function rendezvousUrl(origin = RENDEZVOUS_ORIGIN): string | null {
-  const url = URL.parse(origin);
-  const valid = (url?.protocol === "ws:" || url?.protocol === "wss:") && url.origin === origin;
-  return valid ? origin + RENDEZVOUS_PATH : null;
-}
-
 /** The IP families to register over: both, unless `url` names an IP address. */
 export function familiesFor(url: string): Family[] {
   const host = new URL(url).hostname.replace(/^\[(.*)\]$/, "$1");
@@ -52,7 +42,7 @@ export function familiesFor(url: string): Family[] {
 const printable = (text: string) => text.replace(/\p{Cc}/gu, "");
 
 export interface NearbyOptions {
-  /** The rendezvous WebSocket URL (rendezvousUrl). */
+  /** The rendezvous WebSocket URL (@gitui/shared's rendezvousUrl). */
   url: string;
   /** The name guests see. */
   name: string;
@@ -137,9 +127,9 @@ export function startNearby(options: NearbyOptions) {
           }
         },
         signal(from, data) {
-          if (data.kind === "offer") offer(client, from, data.sdp, data.resume === true);
+          if (data.kind === "offer") offer(client, from, data);
           else if (data.kind === "candidate") {
-            sessions.get(sessionKey(family, from))?.addCandidate(data.candidate);
+            sessions.get(sessionKey(family, from))?.addCandidate(data.offerId, data.candidate);
           }
         },
         // A guest keeps its socket while connected. A closed tab sends nothing on the data
@@ -156,12 +146,24 @@ export function startNearby(options: NearbyOptions) {
     return client;
   });
 
-  function offer(client: RendezvousClient, from: string, offerSdp: string, resuming: boolean) {
+  function offer(
+    client: RendezvousClient,
+    from: string,
+    { offerId, sdp: offerSdp, resume }: Extract<SignalData, { kind: "offer" }>,
+  ) {
     const at = sessionKey(client.family, from);
     const now = Date.now();
     while (offerTimes.length && offerTimes[0] <= now - 60_000) offerTimes.shift();
     const pending = [...sessions].filter(([id, s]) => id !== at && !s.authenticated).length;
-    if (pending >= MAX_PENDING || offerTimes.length >= MAX_OFFERS_PER_MINUTE) {
+    const refusal =
+      pending >= MAX_PENDING
+        ? "busy"
+        : offerTimes.length >= MAX_OFFERS_PER_MINUTE
+          ? "rate-limited"
+          : null;
+    if (refusal) {
+      // Said, so the guest needn't wait for an answer that won't come.
+      client.send(from, { kind: "refused", offerId, reason: refusal });
       if (!limited) log("Nearby: ignoring connection requests, too many at once");
       limited = true;
       return;
@@ -172,7 +174,8 @@ export function startNearby(options: NearbyOptions) {
     sessions.get(at)?.close();
     const session: GuestSession = new GuestSession({
       offerSdp,
-      resuming,
+      offerId,
+      resuming: resume === true,
       stunUrls: STUN_URLS,
       signal: (data) => client.send(from, data),
       fetch,

@@ -145,11 +145,11 @@ test("unknown ids and garbage are reported and dropped", async () => {
     "res for unknown request 9",
     "frame for unknown request 9",
     "end for unknown request 9",
-    "message isn't JSON",
+    "not JSON",
     "message isn't an object",
-    'unexpected message {"t":"res","id":1,"status":"200","headers":[]}',
+    "invalid status",
     "unexpected auth-ok message",
-    "frame shorter than its header",
+    "short frame",
   ]);
   // The request in flight is unaffected.
   client.receive(text({ t: "res", id: 1, status: 200, headers: [] }));
@@ -231,9 +231,10 @@ test("aborting a request that was answered, or after close, sends no cancel", as
 });
 
 test("a session token from the host decodes as a message", () => {
-  expect(decodeIncoming(text({ t: "session", token: "tok" }))).toEqual({
+  const token = "t".repeat(43);
+  expect(decodeIncoming(text({ t: "session", token }))).toEqual({
     kind: "message",
-    message: { t: "session", token: "tok" },
+    message: { t: "session", token },
   });
   expect(decodeIncoming(JSON.stringify({ t: "session", token: "" })).kind).toBe("invalid");
 });
@@ -263,7 +264,9 @@ test("decodeIncoming accepts only what a host may send", () => {
     kind: "message",
     message: { t: "auth-fail", attemptsLeft: 2 },
   });
-  expect(decodeIncoming(text({ t: "auth", proof: "p" })).kind).toBe("invalid");
+  expect(decodeIncoming(JSON.stringify({ t: "auth", proof: "p" })).kind).toBe("invalid");
+  // A guest's own messages never come from the host.
+  expect(decodeIncoming(text({ t: "pake", y: "A".repeat(43) })).kind).toBe("invalid");
   expect(
     decodeIncoming(JSON.stringify({ t: "res", id: 1, status: 200, headers: [["a"]] })).kind,
   ).toBe("invalid");

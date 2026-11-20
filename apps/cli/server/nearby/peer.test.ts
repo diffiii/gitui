@@ -1,25 +1,29 @@
-// A real werift guest on loopback against a GuestSession: offer, answer, trickle, auth or
+// A real werift guest on loopback against a GuestSession: offer, answer, trickle, CPace or
 // resume, a request.
 import { afterEach, expect, test } from "bun:test";
 import {
   AUTH_ATTEMPTS,
-  authProof,
   type ChannelMessage,
   DATA_CHANNEL_LABEL,
+  type Fingerprints,
+  type GuestMessage,
+  guestFinish,
+  guestStart,
   HOST_KEY,
+  type HostMessage,
   parseChunk,
+  resumeStart,
+  resumeVerify,
   sdpFingerprint,
 } from "@gitui/shared";
 import { RTCPeerConnection } from "werift";
 import {
   Attempts,
-  findProof,
   fingerprints,
   MAX_TOKENS,
   newCode,
   newHostKey,
   newToken,
-  parseOpening,
   Tokens,
 } from "./auth.ts";
 import { GuestSession } from "./peer.ts";
@@ -36,6 +40,7 @@ const until = async (condition: () => boolean, ms = 5000) => {
   expect(condition()).toBe(true);
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const OFFER_ID = "offer-0123456789ab";
 
 /** Connects a guest to a new session; resolves once the host answered. */
 async function connect({
@@ -47,10 +52,10 @@ async function connect({
   const pc = new RTCPeerConnection({ iceServers: [] });
   peers.push(pc);
   const channel = pc.createDataChannel(label);
-  const received: (ChannelMessage | Uint8Array)[] = [];
+  const received: (HostMessage | Uint8Array)[] = [];
   let closed = false;
   channel.onmessage = ({ data }) =>
-    received.push(typeof data === "string" ? (JSON.parse(data) as ChannelMessage) : data);
+    received.push(typeof data === "string" ? (JSON.parse(data) as HostMessage) : data);
   channel.stateChanged.subscribe((state) => {
     if (state === "closed") closed = true;
   });
@@ -62,11 +67,13 @@ async function connect({
   let answerSdp = "";
   const session = new GuestSession({
     offerSdp,
+    offerId: OFFER_ID,
     stunUrls: [],
     authTimeout,
     resuming,
     tokens,
     signal: (data) => {
+      expect(data.offerId).toBe(OFFER_ID);
       if (data.kind === "answer") {
         answerSdp = data.sdp;
         void pc.setRemoteDescription({ type: "answer", sdp: data.sdp });
@@ -79,22 +86,47 @@ async function connect({
     },
   });
   sessions.push(session);
-  pc.onicecandidate = ({ candidate }) => candidate && session.addCandidate(candidate.toJSON());
+  pc.onicecandidate = ({ candidate }) =>
+    candidate && session.addCandidate(OFFER_ID, candidate.toJSON());
 
   await until(() => answerSdp !== "");
   /** The code the host printed, if it printed one. */
   const code = () => /code (\d{6})$/.exec(log.join("\n"))?.[1] ?? "";
-  /** The proof of `secret` (a code or a token) for this connection. */
-  const proof = (secret: string) =>
-    authProof(secret, sdpFingerprint(offerSdp)!, sdpFingerprint(answerSdp)!);
-  const send = (message: ChannelMessage) => channel.send(JSON.stringify(message));
+  /** This connection's fingerprints, as the guest sees them. */
+  const prints = (): Fingerprints => ({
+    guest: sdpFingerprint(offerSdp)!,
+    host: sdpFingerprint(answerSdp)!,
+  });
+  const send = (message: GuestMessage | ChannelMessage) => channel.send(JSON.stringify(message));
+  /** The next message from the host, after the `count` received so far. */
+  const next = async (count = received.length) => {
+    await until(() => received.length > count);
+    return received[count] as HostMessage;
+  };
+  /**
+   * One CPace run for `code` (bound to `as`, this connection's fingerprints by default): sends
+   * `pake`, checks the host's answer, and sends `pake-confirm`, or `pake-fail` if it didn't
+   * check out. Resolves with whether it did.
+   */
+  const pake = async (code: string, as = prints()) => {
+    const start = guestStart(code, as);
+    const count = received.length;
+    send(start.message);
+    const answer = await next(count);
+    if (answer.t !== "pake") throw new Error(`expected a pake answer, got ${answer.t}`);
+    const confirm = guestFinish(start.state, answer);
+    send(confirm ?? { t: "pake-fail" });
+    return confirm !== null;
+  };
   return {
     session,
     channel,
     received,
     log,
     code,
-    proof,
+    prints,
+    pake,
+    next,
     send,
     get closed() {
       return closed;
@@ -117,9 +149,9 @@ const wrongCode = (code: string) => String((Number(code) + 1) % 1e6).padStart(6,
 async function pair(tokens: Tokens) {
   const guest = await connect({ tokens });
   await guest.opened();
-  guest.send({ t: "auth", proof: await guest.proof(await guest.shownCode()) });
-  await until(() => guest.received.length === 2);
-  const [ok, session] = guest.received as ChannelMessage[];
+  expect(await guest.pake(await guest.shownCode())).toBe(true);
+  await until(() => guest.received.length === 3);
+  const [, ok, session] = guest.received as HostMessage[];
   expect(ok).toEqual({ t: "auth-ok" });
   if (session.t !== "session") throw new Error(`expected a session, got ${session.t}`);
   return { guest, token: session.token };
@@ -130,11 +162,12 @@ test("the right code opens the bridge, hands out a token; requests are answered"
   await guest.opened();
   const code = await guest.shownCode();
   expect(guest.log).toEqual([`Nearby: a device wants to connect — code ${code}`]);
-  guest.send({ t: "auth", proof: await guest.proof(code) });
+  expect(await guest.pake(code)).toBe(true);
   guest.send({ t: "req", id: 1, method: "GET", path: "/api/config", headers: [] });
   guest.send({ t: "end", id: 1 });
-  await until(() => guest.received.length === 5);
-  const [ok, session, res, body, end] = guest.received;
+  await until(() => guest.received.length === 6);
+  const [answer, ok, session, res, body, end] = guest.received;
+  expect(answer).toMatchObject({ t: "pake" });
   expect(ok).toEqual({ t: "auth-ok" });
   expect(session).toMatchObject({ t: "session" });
   expect((session as { token: string }).token).toMatch(/^[\w-]{43}$/);
@@ -151,7 +184,7 @@ test("the right code opens the bridge, hands out a token; requests are answered"
   expect(guest.log.at(-1)).toBe("Nearby: device disconnected");
 });
 
-test("a live token resumes without a code, and keeps the token", async () => {
+test("a live token resumes without a code; the host proves it holds the token too", async () => {
   const tokens = new Tokens();
   const { guest: first, token } = await pair(tokens);
   first.channel.close();
@@ -159,17 +192,17 @@ test("a live token resumes without a code, and keeps the token", async () => {
 
   const guest = await connect({ tokens, resuming: true });
   await guest.opened();
-  guest.send({ t: "resume", proof: await guest.proof(token) });
+  const resume = resumeStart(token, guest.prints());
+  guest.send(resume);
   guest.send({ t: "req", id: 1, method: "GET", path: "/api/status", headers: [] });
   guest.send({ t: "end", id: 1 });
-  await until(() => guest.received.length === 5);
-  expect(guest.received.slice(0, 3)).toEqual([
-    { t: "auth-ok" },
-    { t: "session", token },
-    expect.objectContaining({ t: "res", id: 1, status: 200 }),
-  ]);
+  await until(() => guest.received.length === 4);
+  const [ok, res] = guest.received as HostMessage[];
+  if (ok.t !== "resume-ok") throw new Error(`expected resume-ok, got ${ok.t}`);
+  expect(resumeVerify(token, guest.prints(), resume, ok)).toBe(true);
+  expect(res).toMatchObject({ t: "res", id: 1, status: 200 });
   expect(guest.session.authenticated).toBe(true);
-  // No code, then or later.
+  // No code, then or later, and no new token.
   await sleep(100);
   expect(guest.log).toEqual(["Nearby: a device reconnected"]);
   expect(tokens.list()).toEqual([token]);
@@ -183,14 +216,13 @@ test("a refused resume costs no attempt and shows the code, which still works", 
   // A guest that said it would resume sees no code until its resume fails.
   await sleep(100);
   expect(guest.code()).toBe("");
-  guest.send({ t: "resume", proof: await guest.proof(newToken()) });
-  await until(() => guest.received.length === 1);
-  expect(guest.received).toEqual([{ t: "auth-fail", attemptsLeft: AUTH_ATTEMPTS }]);
+  guest.send(resumeStart(newToken(), guest.prints()));
+  expect(await guest.next()).toEqual({ t: "auth-fail", attemptsLeft: AUTH_ATTEMPTS });
   const code = await guest.shownCode();
 
-  guest.send({ t: "auth", proof: await guest.proof(code) });
-  await until(() => guest.received.length === 3);
-  const fresh = (guest.received[2] as { token: string }).token;
+  expect(await guest.pake(code)).toBe(true);
+  await until(() => guest.received.length === 4);
+  const fresh = (guest.received[3] as { token: string }).token;
   expect(fresh).not.toBe(token);
   expect(tokens.list()).toEqual([token, fresh]);
   expect(guest.log.at(-1)).toBe("Nearby: device connected");
@@ -201,43 +233,67 @@ test(`after the first resume, resumes and codes share ${AUTH_ATTEMPTS} attempts`
   const { token } = await pair(tokens);
   const guest = await connect({ tokens, resuming: true });
   await guest.opened();
-  guest.send({ t: "resume", proof: await guest.proof(newToken()) });
-  guest.send({ t: "auth", proof: await guest.proof(wrongCode(await guest.shownCode())) });
-  guest.send({ t: "resume", proof: await authProof(token, "sha-256 AA", "sha-256 BB") });
-  guest.send({ t: "resume", proof: await guest.proof(newToken()) });
+  guest.send(resumeStart(newToken(), guest.prints()));
+  expect(await guest.next()).toEqual({ t: "auth-fail", attemptsLeft: 3 });
+  expect(await guest.pake(wrongCode(await guest.shownCode()))).toBe(false);
+  expect(await guest.next()).toEqual({ t: "auth-fail", attemptsLeft: 2 });
+  // The right token, proven for another connection.
+  guest.send(resumeStart(token, { guest: guest.prints().guest, host: "sha-256 00" }));
+  expect(await guest.next()).toEqual({ t: "auth-fail", attemptsLeft: 1 });
+  guest.send(resumeStart(newToken(), guest.prints()));
   // Too late: the attempts are spent.
-  guest.send({ t: "resume", proof: await guest.proof(token) });
+  guest.send(resumeStart(token, guest.prints()));
   await until(() => guest.ended && guest.closed);
-  expect(guest.received).toEqual([
-    { t: "auth-fail", attemptsLeft: 3 },
-    { t: "auth-fail", attemptsLeft: 2 },
-    { t: "auth-fail", attemptsLeft: 1 },
-    { t: "auth-fail", attemptsLeft: 0 },
-  ]);
+  expect(guest.received.slice(4)).toEqual([{ t: "auth-fail", attemptsLeft: 0 }]);
   expect(guest.session.authenticated).toBe(false);
 });
 
 test(`a wrong code is refused ${AUTH_ATTEMPTS} times, then the channel closes`, async () => {
   const guest = await connect();
   await guest.opened();
-  const wrong = await guest.proof(wrongCode(await guest.shownCode()));
-  for (let i = 0; i < AUTH_ATTEMPTS; i++) guest.send({ t: "auth", proof: wrong });
+  const wrong = wrongCode(await guest.shownCode());
+  for (let left = AUTH_ATTEMPTS - 1; left >= 0; left--) {
+    // The host answers each run; the guest finds its tag wrong and says so.
+    expect(await guest.pake(wrong)).toBe(false);
+    expect(await guest.next()).toEqual({ t: "auth-fail", attemptsLeft: left });
+  }
   await until(() => guest.ended && guest.closed);
-  expect(guest.received).toEqual([
-    { t: "auth-fail", attemptsLeft: 2 },
-    { t: "auth-fail", attemptsLeft: 1 },
-    { t: "auth-fail", attemptsLeft: 0 },
-  ]);
   expect(guest.log.at(-1)).toBe("Nearby: refused a device that entered a wrong code 3 times");
 });
 
-test("a proof bound to other fingerprints fails, even with the right code", async () => {
+test("a run bound to other fingerprints fails, even with the right code", async () => {
   const guest = await connect();
   await guest.opened();
   const code = await guest.shownCode();
-  guest.send({ t: "auth", proof: await authProof(code, "sha-256 AA", "sha-256 BB") });
-  await until(() => guest.received.length === 1);
-  expect(guest.received).toEqual([{ t: "auth-fail", attemptsLeft: 2 }]);
+  // A guest behind a relay that swapped the offer's certificate sees another fingerprint than
+  // the host does. (Not a swap of the two: werift uses one certificate per process, so here
+  // both sides have the same one.)
+  const relayed = { ...guest.prints(), guest: `sha-256 ${"00:".repeat(31)}00` };
+  expect(await guest.pake(code, relayed)).toBe(false);
+  expect(await guest.next()).toEqual({ t: "auth-fail", attemptsLeft: 2 });
+  // The same channel still takes the right code.
+  expect(await guest.pake(code)).toBe(true);
+  expect(await guest.next()).toEqual({ t: "auth-ok" });
+});
+
+test("a guest tag that doesn't check out is a failed attempt", async () => {
+  const guest = await connect();
+  await guest.opened();
+  const code = await guest.shownCode();
+  guest.send(guestStart(code, guest.prints()).message);
+  expect(await guest.next()).toMatchObject({ t: "pake" });
+  guest.send({ t: "pake-confirm", confirm: "A".repeat(43) });
+  expect(await guest.next()).toEqual({ t: "auth-fail", attemptsLeft: 2 });
+  expect(guest.session.authenticated).toBe(false);
+});
+
+test("a confirmation without a run breaks the protocol", async () => {
+  const guest = await connect();
+  await guest.opened();
+  guest.send({ t: "pake-confirm", confirm: "A".repeat(43) });
+  await until(() => guest.ended && guest.closed);
+  expect(guest.received).toEqual([]);
+  expect(guest.log.at(-1)).toBe("Nearby: a device broke the pairing protocol");
 });
 
 test("a request before the code ends the session unanswered", async () => {
@@ -262,29 +318,17 @@ test("the code expires", async () => {
   expect(guest.log.at(-1)).toBe(`Nearby: code ${code} expired`);
 });
 
-test("keys, tokens and codes have their formats; openings are parsed strictly", () => {
+test("keys, tokens and codes have their formats", () => {
   for (let i = 0; i < 100; i++) expect(newCode()).toMatch(/^\d{6}$/);
   expect(newHostKey()).toMatch(HOST_KEY);
   expect(newHostKey()).toHaveLength(22);
   expect(newToken()).toMatch(/^[\w-]{43}$/);
   expect(newHostKey()).not.toBe(newHostKey());
 
-  expect(parseOpening('{"t":"auth","proof":"p"}')).toEqual({ t: "auth", proof: "p" });
-  expect(parseOpening('{"t":"resume","proof":"p"}')).toEqual({ t: "resume", proof: "p" });
-  for (const data of [
-    '{"t":"auth"}',
-    '{"t":"resume","proof":1}',
-    '{"t":"req","proof":"p"}',
-    "nope",
-    "null",
-    new Uint8Array(1),
-  ]) {
-    expect(parseOpening(data)).toBeNull();
-  }
   expect(fingerprints("v=0", "v=0")).toBeNull();
 });
 
-test("attempts run out; proofs are found among many; tokens are capped", () => {
+test("attempts run out; tokens are capped", () => {
   const attempts = new Attempts();
   expect(attempts.check(false)).toEqual({ ok: false, attemptsLeft: 2 });
   expect(attempts.check(true)).toEqual({ ok: true });
@@ -292,9 +336,12 @@ test("attempts run out; proofs are found among many; tokens are capped", () => {
   expect(attempts.check(false)).toEqual({ ok: false, attemptsLeft: 0 });
   expect(attempts.check(true)).toEqual({ ok: false, attemptsLeft: 0 });
 
-  expect(findProof("b", ["a", "b", "c"])).toBe(1);
-  expect(findProof("d", ["a", "b", "c"])).toBe(-1);
-  expect(findProof("a", [])).toBe(-1);
+  const spent = new Attempts();
+  expect(spent.spend()).toBe(2);
+  expect(spent.check(true)).toEqual({ ok: true });
+  expect(spent.spend()).toBe(1);
+  expect(spent.spend()).toBe(0);
+  expect(spent.spend()).toBe(0);
 
   const tokens = new Tokens();
   const first = tokens.issue();

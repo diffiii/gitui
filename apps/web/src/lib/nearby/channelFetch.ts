@@ -1,4 +1,12 @@
-import { chunks, frameChunk, parseChunk, type ChannelMessage } from "@gitui/shared";
+import {
+  CHANNEL_HIGH_WATER,
+  chunks,
+  decodeChannelMessage,
+  frameChunk,
+  type GuestMessage,
+  type HostMessage,
+  type Incoming as ChannelIncoming,
+} from "@gitui/shared";
 
 // HTTP over the nearby data channel (see @gitui/shared nearby.ts): a request is a `req` head,
 // its body as binary frames and an `end`; the host answers with `res`, frames and `end`, or
@@ -15,63 +23,14 @@ export interface ChannelTransport {
 }
 
 /** Above this many queued bytes, senders wait for the buffer to drain before sending more. */
-export const SEND_HIGH_WATER = 1024 * 1024;
+export const SEND_HIGH_WATER = CHANNEL_HIGH_WATER;
 
-/** An incoming data channel message, decoded; `invalid` for anything the protocol doesn't allow. */
-export type Incoming =
-  | { kind: "message"; message: ChannelMessage }
-  | { kind: "chunk"; id: number; payload: Uint8Array }
-  | { kind: "invalid"; reason: string };
+/** An incoming data channel message from the host, decoded (@gitui/shared's codec). */
+export type Incoming = ChannelIncoming<HostMessage>;
 
-const isId = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 0;
-const isHeaders = (v: unknown): v is [string, string][] =>
-  Array.isArray(v) &&
-  v.every(
-    (h) =>
-      Array.isArray(h) && h.length === 2 && typeof h[0] === "string" && typeof h[1] === "string",
-  );
-
-/** The fields each message type must have, checked before the message is trusted. */
-function isChannelMessage(v: Record<string, unknown>): boolean {
-  switch (v.t) {
-    case "auth-ok":
-      return true;
-    case "auth-fail":
-      return isId(v.attemptsLeft);
-    case "session":
-      return typeof v.token === "string" && v.token.length > 0;
-    case "res":
-      return isId(v.id) && Number.isInteger(v.status) && isHeaders(v.headers);
-    case "end":
-      return isId(v.id);
-    case "abort":
-      return isId(v.id) && typeof v.message === "string";
-    default:
-      // `auth`, `resume`, `req` and `cancel` only ever go from guest to host.
-      return false;
-  }
-}
-
-/** Decode a message from the host: JSON text is a ChannelMessage, binary is a body frame. */
-export function decodeIncoming(data: string | ArrayBuffer | Uint8Array): Incoming {
-  if (typeof data !== "string") {
-    const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
-    if (bytes.byteLength < 4) return { kind: "invalid", reason: "frame shorter than its header" };
-    return { kind: "chunk", ...parseChunk(bytes) };
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(data);
-  } catch {
-    return { kind: "invalid", reason: "message isn't JSON" };
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return { kind: "invalid", reason: "message isn't an object" };
-  }
-  return isChannelMessage(parsed as Record<string, unknown>)
-    ? { kind: "message", message: parsed as ChannelMessage }
-    : { kind: "invalid", reason: `unexpected message ${JSON.stringify(parsed).slice(0, 80)}` };
-}
+/** Decode a message from the host: JSON text is a HostMessage, binary is a body frame. */
+export const decodeIncoming = (data: string | ArrayBuffer | Uint8Array): Incoming =>
+  decodeChannelMessage(data, "host");
 
 /** The messages that carry a request: its head, its body in frames, then `end`. */
 export function* encodeRequest(
@@ -79,9 +38,9 @@ export function* encodeRequest(
   head: { method: string; path: string; headers: [string, string][] },
   body: Uint8Array,
 ): Generator<string | Uint8Array<ArrayBuffer>> {
-  yield JSON.stringify({ t: "req", id, ...head } satisfies ChannelMessage);
+  yield JSON.stringify({ t: "req", id, ...head } satisfies GuestMessage);
   for (const chunk of chunks(body)) yield frameChunk(id, chunk) as Uint8Array<ArrayBuffer>;
-  yield JSON.stringify({ t: "end", id } satisfies ChannelMessage);
+  yield JSON.stringify({ t: "end", id } satisfies GuestMessage);
 }
 
 /** Statuses whose responses can't have a body (the Response constructor rejects one). */
@@ -153,7 +112,7 @@ export function createChannelClient(
     fail(id, reason);
     if (!known || closed !== null) return;
     try {
-      transport.send(JSON.stringify({ t: "cancel", id } satisfies ChannelMessage));
+      transport.send(JSON.stringify({ t: "cancel", id } satisfies GuestMessage));
     } catch {
       // the channel is closing; the host drops the request with it
     }

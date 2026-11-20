@@ -1,17 +1,20 @@
 // startNearby on fake rendezvous sockets (one per IP family), with a real werift guest.
 import { afterEach, expect, test } from "bun:test";
 import {
-  authProof,
   type ClientMessage,
   type ChannelMessage,
   DATA_CHANNEL_LABEL,
+  guestFinish,
+  guestStart,
   HOST_KEY,
+  type HostMessage,
+  resumeStart,
   sdpFingerprint,
   type SignalData,
 } from "@gitui/shared";
 import { RTCPeerConnection } from "werift";
 import { type FakeSocket, fakeSockets } from "./fake-socket.ts";
-import { familiesFor, rendezvousUrl, startNearby } from "./host.ts";
+import { familiesFor, MAX_OFFERS_PER_MINUTE, MAX_PENDING, startNearby } from "./host.ts";
 
 const until = async (condition: () => boolean, ms = 5000) => {
   for (let t = 0; t < ms && !condition(); t += 10) await new Promise((r) => setTimeout(r, 10));
@@ -49,12 +52,7 @@ const welcome = (socket: FakeSocket, id: string) => {
 const signals = (socket: FakeSocket, to: string) =>
   socket.sent.filter((m) => m.type === "signal" && m.to === to);
 
-test("rendezvous URLs are ws: or wss: origins; IP literals pin one family", () => {
-  expect(rendezvousUrl("wss://rendezvous.example")).toBe(URL);
-  expect(rendezvousUrl("ws://localhost:8787")).toBe("ws://localhost:8787/v1/connect");
-  for (const bad of ["https://x.example", "wss://x.example/path", "nope"]) {
-    expect(rendezvousUrl(bad)).toBeNull();
-  }
+test("IP literals in the rendezvous URL pin one family", () => {
   expect(familiesFor(URL)).toEqual([4, 6]);
   expect(familiesFor("ws://localhost:8787/v1/connect")).toEqual([4, 6]);
   expect(familiesFor("ws://127.0.0.1:8787/v1/connect")).toEqual([4]);
@@ -140,19 +138,20 @@ test("a session is bound to the socket its offer came on", async () => {
   const channel = pc.createDataChannel(DATA_CHANNEL_LABEL);
   const received: ChannelMessage[] = [];
   channel.onmessage = ({ data }) => received.push(JSON.parse(String(data)) as ChannelMessage);
+  const offerId = "offer-0123456789ab";
   let closed = false;
   channel.stateChanged.subscribe((state) => {
     if (state === "closed") closed = true;
   });
   pc.onicecandidate = ({ candidate }) => {
     if (candidate) {
-      const data: SignalData = { kind: "candidate", candidate: candidate.toJSON() };
+      const data: SignalData = { kind: "candidate", offerId, candidate: candidate.toJSON() };
       v6.receive({ type: "signal", from: "g1", data });
     }
   };
   await pc.setLocalDescription(await pc.createOffer());
   const offerSdp = pc.localDescription!.sdp;
-  v6.receive({ type: "signal", from: "g1", data: { kind: "offer", sdp: offerSdp } });
+  v6.receive({ type: "signal", from: "g1", data: { kind: "offer", offerId, sdp: offerSdp } });
 
   // Its answer and candidates go back on the IPv6 socket only.
   await until(() => signals(v6, "g1").some((m) => m.type === "signal" && m.data.kind === "answer"));
@@ -179,10 +178,15 @@ test("a session is bound to the socket its offer came on", async () => {
     await until(() => log.some((line) => /code \d{6}$/.test(line)));
     return /code (\d{6})$/.exec(log.join("\n"))![1];
   })();
-  const proof = await authProof(code, sdpFingerprint(offerSdp)!, sdpFingerprint(answerSdp)!);
-  channel.send(JSON.stringify({ t: "auth", proof } satisfies ChannelMessage));
-  await until(() => received.length === 2);
-  expect(received[0]).toEqual({ t: "auth-ok" });
+  const prints = { guest: sdpFingerprint(offerSdp)!, host: sdpFingerprint(answerSdp)! };
+  const start = guestStart(code, prints);
+  channel.send(JSON.stringify(start.message));
+  await until(() => received.length === 1);
+  const confirm = guestFinish(start.state, received[0] as Extract<HostMessage, { t: "pake" }>);
+  expect(confirm).not.toBeNull();
+  channel.send(JSON.stringify(confirm));
+  await until(() => received.length === 3);
+  expect(received[1]).toEqual({ t: "auth-ok" });
 
   // `gone` for "g1" on the other socket is another peer: the session stays.
   v4.receive({ type: "gone", id: "g1" });
@@ -204,19 +208,24 @@ test("an offer that says it resumes prints no code until its resume fails", asyn
   const channel = pc.createDataChannel(DATA_CHANNEL_LABEL);
   const received: ChannelMessage[] = [];
   channel.onmessage = ({ data }) => received.push(JSON.parse(String(data)) as ChannelMessage);
+  const offerId = "offer-0123456789ab";
   pc.onicecandidate = ({ candidate }) => {
     if (candidate) {
       v4.receive({
         type: "signal",
         from: "g1",
-        data: { kind: "candidate", candidate: candidate.toJSON() },
+        data: { kind: "candidate", offerId, candidate: candidate.toJSON() },
       });
     }
   };
   await pc.setLocalDescription(await pc.createOffer());
   const offerSdp = pc.localDescription!.sdp;
   // As the rendezvous relays it: JSON text, parsed by the host's own reader.
-  v4.receive({ type: "signal", from: "g1", data: { kind: "offer", sdp: offerSdp, resume: true } });
+  v4.receive({
+    type: "signal",
+    from: "g1",
+    data: { kind: "offer", offerId, sdp: offerSdp, resume: true },
+  });
   let answerSdp = "";
   let applied = 0;
   const trickle = setInterval(() => {
@@ -234,15 +243,46 @@ test("an offer that says it resumes prints no code until its resume fails", asyn
   await new Promise((r) => setTimeout(r, 200));
   expect(log.filter((line) => /code \d{6}$/.test(line))).toEqual([]);
 
-  const proof = await authProof(
-    "unknown-token",
-    sdpFingerprint(offerSdp)!,
-    sdpFingerprint(answerSdp)!,
-  );
-  channel.send(JSON.stringify({ t: "resume", proof } satisfies ChannelMessage));
+  const prints = { guest: sdpFingerprint(offerSdp)!, host: sdpFingerprint(answerSdp)! };
+  channel.send(JSON.stringify(resumeStart("unknown-token".padEnd(43, "x"), prints)));
   await until(() => received.length === 1);
   expect(received).toEqual([{ t: "auth-fail", attemptsLeft: 3 }]);
   await until(() => log.some((line) => /code \d{6}$/.test(line)));
+});
+
+test("offers over the limits are refused, with the reason", async () => {
+  const { log, last } = host();
+  const v4 = last(4)!;
+  welcome(v4, "h4");
+  const pc = new RTCPeerConnection({ iceServers: [] });
+  cleanup.push(() => pc.close());
+  pc.createDataChannel(DATA_CHANNEL_LABEL);
+  await pc.setLocalDescription(await pc.createOffer());
+  const sdp = pc.localDescription!.sdp;
+  const offer = (from: string, offerId: string) =>
+    v4.receive({ type: "signal", from, data: { kind: "offer", offerId, sdp } });
+  const refusals = () =>
+    v4.sent.flatMap((m) => (m.type === "signal" && m.data.kind === "refused" ? [m] : []));
+
+  for (let i = 0; i < MAX_PENDING; i++) offer(`g${i}`, `offer-${i}`.padEnd(16, "x"));
+  offer("busy", "offer-busy".padEnd(16, "x"));
+  expect(refusals()).toEqual([
+    {
+      type: "signal",
+      to: "busy",
+      data: { kind: "refused", offerId: "offer-busy".padEnd(16, "x"), reason: "busy" },
+    },
+  ]);
+  expect(log.at(-1)).toBe("Nearby: ignoring connection requests, too many at once");
+  // The same guests sending new offers replace their sessions, until the minute's offers run out.
+  for (let i = MAX_PENDING; i < MAX_OFFERS_PER_MINUTE; i++)
+    offer("g0", `offer-${i}`.padEnd(16, "x"));
+  offer("g0", "offer-late".padEnd(16, "x"));
+  expect(refusals().at(-1)?.data).toEqual({
+    kind: "refused",
+    offerId: "offer-late".padEnd(16, "x"),
+    reason: "rate-limited",
+  });
 });
 
 test("the werift guard is on while nearby runs", async () => {

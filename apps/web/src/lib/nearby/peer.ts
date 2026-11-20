@@ -1,36 +1,55 @@
 import {
-  authProof,
+  CHANNEL_LOW_WATER,
   DATA_CHANNEL_LABEL,
+  guestFinish,
+  guestStart,
+  newOfferId,
+  resumeStart,
+  resumeVerify,
   sdpFingerprint,
   STUN_URLS,
-  type ChannelMessage,
+  type Fingerprints,
+  type GuestMessage,
   type HostInfo,
+  type HostMessage,
   type SignalData,
 } from "@gitui/shared";
-import {
-  createChannelClient,
-  decodeIncoming,
-  SEND_HIGH_WATER,
-  type ChannelTransport,
-} from "./channelFetch.ts";
+import { createChannelClient, decodeIncoming, type ChannelTransport } from "./channelFetch.ts";
 import type { Rendezvous } from "./rendezvous.ts";
 
 // The guest's WebRTC connection to a host: it makes the offer, trickles ICE candidates through
-// the rendezvous, opens the data channel, proves it knows the host's code (or holds a resume
-// token from an earlier connection), and then carries HTTP requests (channelFetch.ts).
+// the rendezvous, opens the data channel, runs CPace with the host's code (or proves a resume
+// token from an earlier connection, and checks the host's proof of it), and then carries HTTP
+// requests (channelFetch.ts).
 
 /** A failure worth showing as is. */
 export class NearbyError extends Error {
   override name = "NearbyError";
 }
 
+/**
+ * The host answered a resume without proving it holds the token: whatever answers under this
+ * host's key isn't the computer the guest paired with. Not worth retrying, and the code mustn't
+ * be asked for on this connection.
+ */
+export class HostUnverifiedError extends NearbyError {
+  override name = "HostUnverifiedError";
+}
+
 export type AuthResult = { ok: true } | { ok: false; attemptsLeft: number };
 
 export interface GuestPeer {
   readonly host: HostInfo;
-  /** Send the proof for `code`. After `attemptsLeft: 0` the host closes the connection. */
+  /**
+   * Run CPace with `code`. A host whose answer doesn't check out (a wrong code, or not the real
+   * host) is told so and answers `auth-fail`. After `attemptsLeft: 0` the host closes the
+   * connection.
+   */
   authenticate(code: string): Promise<AuthResult>;
-  /** Send the proof for a resume token instead of a code. */
+  /**
+   * Prove a resume token instead of a code. Rejects with a HostUnverifiedError if the host
+   * accepts without proving it holds the token too.
+   */
   resume(token: string): Promise<AuthResult>;
   /** Hear the resume tokens the host sends after `auth-ok`. */
   onSession(listener: (token: string) => void): void;
@@ -49,7 +68,7 @@ export const CONNECT_TIMEOUT = 20_000;
 export const ANSWER_TIMEOUT = 5000;
 
 function dataChannelTransport(channel: RTCDataChannel): ChannelTransport {
-  channel.bufferedAmountLowThreshold = SEND_HIGH_WATER / 4;
+  channel.bufferedAmountLowThreshold = CHANNEL_LOW_WATER;
   return {
     send: (data) => (typeof data === "string" ? channel.send(data) : channel.send(data)),
     get bufferedAmount() {
@@ -86,6 +105,8 @@ export async function connectToHost(
   const channel = pc.createDataChannel(DATA_CHANNEL_LABEL, { ordered: true });
   channel.binaryType = "arraybuffer";
 
+  // Signals of an earlier offer to this host (one that timed out, say) carry another id.
+  const offerId = newOfferId();
   let answered = false;
   let remoteFingerprint: string | null = null;
   // Candidates that arrive before the answer wait for it: addIceCandidate needs a remote
@@ -95,8 +116,17 @@ export async function connectToHost(
   let failSetup: (error: Error) => void = () => {};
 
   const onSignal = async (data: SignalData) => {
+    if (data.offerId !== offerId) return;
     try {
-      if (data.kind === "answer" && !answered) {
+      if (data.kind === "refused") {
+        failSetup(
+          new NearbyError(
+            data.reason === "busy"
+              ? `${host.name} is busy with other devices connecting. Try again in a moment.`
+              : `${host.name} got too many connection requests. Try again in a minute.`,
+          ),
+        );
+      } else if (data.kind === "answer" && !answered) {
         answered = true;
         remoteFingerprint = sdpFingerprint(data.sdp);
         await pc.setRemoteDescription({ type: "answer", sdp: data.sdp });
@@ -118,6 +148,7 @@ export async function connectToHost(
     const { sdpMid, sdpMLineIndex } = candidate;
     const data: SignalData = {
       kind: "candidate",
+      offerId,
       candidate: { candidate: candidate.candidate, sdpMid, sdpMLineIndex },
     };
     if (unsent) unsent.push(data);
@@ -159,7 +190,12 @@ export async function connectToHost(
         await pc.setLocalDescription(await pc.createOffer());
         const offer = pc.localDescription!.sdp;
         localFingerprint = sdpFingerprint(offer);
-        const data: SignalData = { kind: "offer", sdp: offer, ...(resume && { resume: true }) };
+        const data: SignalData = {
+          kind: "offer",
+          offerId,
+          sdp: offer,
+          ...(resume && { resume: true }),
+        };
         if (!rendezvous.signal(host.id, data)) {
           throw new NearbyError("Not connected to the rendezvous server. Try again.");
         }
@@ -183,23 +219,28 @@ export async function connectToHost(
   const remote = remoteFingerprint as string | null;
   if (!guest || !remote) {
     pc.close();
-    throw new NearbyError("The connection has no DTLS fingerprint to authenticate with.");
+    throw new NearbyError("The connection has no single DTLS fingerprint to authenticate with.");
   }
-  return openPeer(host, pc, channel, guest, remote);
+  return openPeer(host, pc, channel, { guest, host: remote });
+}
+
+/** What the guest waits for during authentication: the host's next message. */
+interface Waiting {
+  receive(message: HostMessage): void;
+  reject(error: Error): void;
 }
 
 function openPeer(
   host: HostInfo,
   pc: RTCPeerConnection,
   channel: RTCDataChannel,
-  localFingerprint: string,
-  remoteFingerprint: string,
+  prints: Fingerprints,
 ): GuestPeer {
   const client = createChannelClient(dataChannelTransport(channel), (reason) =>
     console.warn(`nearby: dropped a message from ${host.name}: ${reason}`),
   );
   let authenticated = false;
-  let awaitingAuth: { resolve(r: AuthResult): void; reject(e: Error): void } | null = null;
+  let waiting: Waiting | null = null;
   let closed = false;
   const closeListeners: ((reason: string) => void)[] = [];
   const sessionListeners: ((token: string) => void)[] = [];
@@ -208,8 +249,8 @@ function openPeer(
     if (closed) return;
     closed = true;
     client.close(reason);
-    awaitingAuth?.reject(new NearbyError(reason));
-    awaitingAuth = null;
+    waiting?.reject(new NearbyError(reason));
+    waiting = null;
     channel.onmessage = channel.onclose = pc.onconnectionstatechange = null;
     pc.close();
     if (notify) closeListeners.forEach((l) => l(reason));
@@ -222,15 +263,12 @@ function openPeer(
       return sessionListeners.forEach((l) => l(message.token));
     }
     if (authenticated) return client.handle(incoming);
-    if (!awaitingAuth || (message?.t !== "auth-ok" && message?.t !== "auth-fail")) {
+    if (!waiting || !message) {
       return console.warn(`nearby: ${host.name} sent a message before authentication`);
     }
-    const waiting = awaitingAuth;
-    awaitingAuth = null;
-    authenticated = message.t === "auth-ok";
-    waiting.resolve(
-      message.t === "auth-ok" ? { ok: true } : { ok: false, attemptsLeft: message.attemptsLeft },
-    );
+    const w = waiting;
+    waiting = null;
+    w.receive(message);
   };
   channel.onclose = () => end(`${host.name} closed the connection.`, true);
   pc.onconnectionstatechange = () => {
@@ -239,23 +277,68 @@ function openPeer(
     }
   };
 
-  /** Send an `auth` or `resume` proof of `secret` and wait for the host's verdict. */
-  const prove = async (t: "auth" | "resume", secret: string): Promise<AuthResult> => {
-    if (closed) throw new NearbyError("The connection is closed.");
-    if (authenticated) return { ok: true };
-    if (awaitingAuth) throw new Error("already waiting for an answer to auth or resume");
-    const answer = new Promise<AuthResult>((resolve, reject) => {
-      awaitingAuth = { resolve, reject };
+  const send = (message: GuestMessage) => {
+    if (!closed) channel.send(JSON.stringify(message));
+  };
+
+  /** The host's next message during authentication. */
+  const next = () => {
+    if (closed) return Promise.reject(new NearbyError("The connection is closed."));
+    if (waiting) return Promise.reject(new Error("already waiting for the host"));
+    return new Promise<HostMessage>((resolve, reject) => {
+      waiting = { receive: resolve, reject };
     });
-    const proof = await authProof(secret, localFingerprint, remoteFingerprint);
-    if (!closed) channel.send(JSON.stringify({ t, proof } satisfies ChannelMessage));
-    return answer;
+  };
+
+  /** A verdict that only `auth-fail` may give; anything else breaks the protocol. */
+  const failure = (message: HostMessage): AuthResult => {
+    if (message.t === "auth-fail") return { ok: false, attemptsLeft: message.attemptsLeft };
+    end(`${host.name} broke the pairing protocol.`, true);
+    throw new NearbyError(`${host.name} broke the pairing protocol.`);
+  };
+
+  const authenticate = async (code: string): Promise<AuthResult> => {
+    if (authenticated) return { ok: true };
+    const start = guestStart(code, prints);
+    const answer = next();
+    send(start.message);
+    const reply = await answer;
+    if (reply.t !== "pake") return failure(reply);
+    // The host proves it knows the code, on this very connection, before the guest proves it.
+    const confirm = guestFinish(start.state, reply);
+    const verdict = next();
+    send(confirm ?? { t: "pake-fail" });
+    const result = await verdict;
+    if (confirm && result.t === "auth-ok") {
+      authenticated = true;
+      return { ok: true };
+    }
+    // (`auth-ok` after a host tag that didn't check out proves nothing: `failure` refuses it.)
+    return failure(result);
+  };
+
+  const resume = async (token: string): Promise<AuthResult> => {
+    if (authenticated) return { ok: true };
+    const message = resumeStart(token, prints);
+    const answer = next();
+    send(message);
+    const reply = await answer;
+    if (reply.t === "auth-fail") return failure(reply);
+    if (reply.t === "resume-ok" && resumeVerify(token, prints, message, reply)) {
+      authenticated = true;
+      return { ok: true };
+    }
+    end(`Couldn't verify ${host.name}.`, false);
+    throw new HostUnverifiedError(
+      `Couldn't verify that this is ${host.name}: something on this network answered for it ` +
+        "without proving it is the computer you paired with.",
+    );
   };
 
   return {
     host,
-    authenticate: (code) => prove("auth", code),
-    resume: (token) => prove("resume", token),
+    authenticate,
+    resume,
     onSession: (listener) => void sessionListeners.push(listener),
     isOpen: () =>
       !closed &&

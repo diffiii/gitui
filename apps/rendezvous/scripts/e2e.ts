@@ -161,7 +161,7 @@ async function run(base: string): Promise<void> {
   });
 
   const guest = await Peer.open(base, NET_A, true);
-  await guest.hello("guest");
+  const guestId = await guest.hello("guest");
   equal((await guest.next("hosts")).hosts, [], "hosts at first");
   const v4 = await Peer.open(base, NET_A);
   const v6 = await Peer.open(base, NET_A_MAPPED);
@@ -176,10 +176,13 @@ async function run(base: string): Promise<void> {
   });
 
   await step("signals reach the socket that isn't listed", async () => {
-    const offer = { kind: "offer", sdp: "v=0" } as const;
+    const offer = { kind: "offer", offerId: "offer-0123456789ab", sdp: "v=0" } as const;
     guest.send({ type: "signal", to: v6Id, data: offer });
     const signal = await v6.next("signal");
     equal(signal.data, offer, "signal");
+    const refused = { kind: "refused", offerId: offer.offerId, reason: "busy" } as const;
+    v6.send({ type: "signal", to: guestId, data: refused });
+    equal((await guest.next("signal")).data, refused, "refusal");
   });
 
   await step("when the listed socket leaves, the other takes its place", async () => {

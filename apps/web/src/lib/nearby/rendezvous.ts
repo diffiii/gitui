@@ -1,8 +1,8 @@
 import {
-  HOST_KEY,
+  parseServerMessage,
   RENDEZVOUS_ORIGIN,
-  RENDEZVOUS_PATH,
   RENDEZVOUS_PING,
+  rendezvousUrl,
   type ClientMessage,
   type HostInfo,
   type ServerMessage,
@@ -16,13 +16,6 @@ import { dedupeHosts } from "./state.ts";
 // `keepalive`, and a socket that doesn't answer a ping within `pingTimeout`, or is still
 // connecting after `watchdog` (Safari can leave one stuck after the page comes back), is
 // replaced: browsers keep a dead socket "open" for a long time after the network went away.
-
-/**
- * The rendezvous WebSocket URL. `VITE_GITUI_RENDEZVOUS_URL` replaces the origin at build or dev
- * time, e.g. `ws://127.0.0.1:8787` for `wrangler dev`.
- */
-export const rendezvousUrl = (origin: string = RENDEZVOUS_ORIGIN) =>
-  new URL(RENDEZVOUS_PATH, origin).href;
 
 export interface RendezvousState {
   /** `connecting`: no socket has been welcomed yet; `retrying`: the last one dropped. */
@@ -68,28 +61,6 @@ const OPEN = 1;
 /** 0.5 s, doubling up to 15 s, with jitter so a network's guests don't reconnect in step. */
 export const defaultBackoff = (attempt: number) =>
   Math.min(15_000, 500 * 2 ** (attempt - 1)) * (0.75 + Math.random() * 0.5);
-
-const isHost = (h: unknown): h is HostInfo => {
-  const { id, name, key } = (h ?? {}) as Record<string, unknown>;
-  return (
-    typeof id === "string" &&
-    typeof name === "string" &&
-    typeof key === "string" &&
-    HOST_KEY.test(key)
-  );
-};
-
-function parseServerMessage(data: unknown): ServerMessage | null {
-  if (typeof data !== "string") return null;
-  try {
-    const message: unknown = JSON.parse(data);
-    return typeof message === "object" && message !== null && "type" in message
-      ? (message as ServerMessage)
-      : null;
-  } catch {
-    return null;
-  }
-}
 
 export class Rendezvous {
   #state: RendezvousState = { status: "connecting", hosts: [] };
@@ -223,7 +194,7 @@ export class Rendezvous {
     };
     socket.onmessage = (event) => {
       this.#clearDeadline(); // anything counts as an answer to a ping
-      this.#receive(parseServerMessage(event.data));
+      this.#receive(typeof event.data === "string" ? parseServerMessage(event.data) : null);
     };
     socket.onclose = () => this.#dropped(socket, this.#options.backoff(++this.#failures));
   }
@@ -261,7 +232,7 @@ export class Rendezvous {
       case "hosts":
         this.#setState({
           status: "open",
-          hosts: dedupeHosts(Array.isArray(message.hosts) ? message.hosts.filter(isHost) : []),
+          hosts: dedupeHosts(message.hosts),
         });
         return;
       case "signal":
@@ -294,10 +265,15 @@ export class Rendezvous {
 
 let shared: Rendezvous | undefined;
 
-/** The page's rendezvous client, created on first use. */
+/**
+ * The page's rendezvous client, created on first use. `VITE_GITUI_RENDEZVOUS_URL` replaces the
+ * origin at build or dev time, e.g. `ws://127.0.0.1:8787` for `wrangler dev`.
+ */
 export function rendezvous(): Rendezvous {
-  shared ??= new Rendezvous({
-    url: rendezvousUrl(import.meta.env.VITE_GITUI_RENDEZVOUS_URL || undefined),
-  });
+  const origin = import.meta.env.VITE_GITUI_RENDEZVOUS_URL || RENDEZVOUS_ORIGIN;
+  const url = rendezvousUrl(origin);
+  if (!url)
+    throw new Error(`VITE_GITUI_RENDEZVOUS_URL must be a ws: or wss: origin, not ${origin}`);
+  shared ??= new Rendezvous({ url });
   return shared;
 }

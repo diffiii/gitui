@@ -26,6 +26,8 @@
     "@gitui/shared": "workspace:*",
     "@gitui/web": "workspace:*",
     "@hono/node-server": "^2.1.11",
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
     "@pierre/diffs": "^1.6.4",
     "@types/ws": "8.18.2",
     "hono": "^4.13.19",

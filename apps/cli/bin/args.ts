@@ -1,6 +1,6 @@
 // The `gitui` command line, parsed without side effects so it can be tested.
 import net from "node:net";
-import { DEFAULT_PORT, HOSTED_ORIGIN, MAX_NAME_LENGTH } from "@gitui/shared";
+import { DEFAULT_PORT, HOSTED_ORIGIN, hostName, MAX_NAME_LENGTH, toHostName } from "@gitui/shared";
 import { parseOrigin } from "../server/access.ts";
 
 export const HELP = `gitui — git in your browser
@@ -43,14 +43,12 @@ export interface Nearby {
   name: string | null;
 }
 
-/** The name `--nearby` uses without `--name`: the hostname, without `.local` (macOS adds it). */
+/**
+ * The name `--nearby` uses without `--name`: the hostname, without `.local` (macOS adds it),
+ * made into one the rendezvous takes (hostName), or "gitui" if nothing is left of it.
+ */
 export function hostnameAsName(hostname: string) {
-  const name = hostname
-    .replace(/\.local$/i, "")
-    .replace(/\p{Cc}/gu, "")
-    .slice(0, MAX_NAME_LENGTH)
-    .trim();
-  return name || "gitui";
+  return toHostName(hostname.replace(/\.local$/i, "")) ?? "gitui";
 }
 
 export interface Options {
@@ -109,10 +107,13 @@ export function parseArgs(argv: string[]): Options | "help" {
       options.mode = { kind: "lan", address };
     } else if (a === "--nearby") nearby = true;
     else if (a === "--name") {
-      // Control characters would let the name rewrite the terminals that print it.
-      name = argv[++i]?.trim() ?? "";
-      if (!name || name.length > MAX_NAME_LENGTH || /\p{Cc}/u.test(name)) {
-        throw new ArgsError(`--name needs a name of 1 to ${MAX_NAME_LENGTH} printable characters`);
+      // The rendezvous refuses other names (and the CLI would reconnect forever); control and
+      // bidi characters would also let the name rewrite or disguise the lines that print it.
+      name = hostName(argv[++i] ?? "");
+      if (name === null) {
+        throw new ArgsError(
+          `--name needs a name of 1 to ${MAX_NAME_LENGTH} characters, without control or bidi characters`,
+        );
       }
     } else if (a === "--allow-origin") {
       if (options.mode.kind === "lan") throw notWithLan(a);

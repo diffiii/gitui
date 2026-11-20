@@ -3,7 +3,15 @@
 // the Response back as a `res` head, body frames of at most CHUNK_SIZE bytes and an `end`, or an
 // `abort` if the app fails. A guest's `cancel` stops a response. Requests interleave by id.
 // Nothing here knows about WebRTC.
-import { type ChannelMessage, chunks, frameChunk, parseChunk } from "@gitui/shared";
+import {
+  CHANNEL_HIGH_WATER,
+  CHANNEL_LOW_WATER,
+  chunks,
+  decodeChannelMessage,
+  frameChunk,
+  type GuestMessage,
+  type HostMessage,
+} from "@gitui/shared";
 import { NEARBY_HOST } from "../access.ts";
 
 /** What the bridge needs of a data channel. */
@@ -22,17 +30,16 @@ export type Fetch = (request: Request) => Response | Promise<Response>;
  * Backpressure: a response stops sending once the channel holds more than HIGH_WATER queued
  * bytes, and resumes when it drains to LOW_WATER, so a large diff never sits in memory twice.
  */
-export const HIGH_WATER = 1024 * 1024;
-export const LOW_WATER = 256 * 1024;
+export const HIGH_WATER = CHANNEL_HIGH_WATER;
+export const LOW_WATER = CHANNEL_LOW_WATER;
 /** The most requests a channel may have open (not yet answered) at once. */
 export const MAX_OPEN_REQUESTS = 64;
 /** The largest request body; the API only takes small JSON bodies. */
 export const MAX_REQUEST_BODY = 16 * 1024 * 1024;
 
 const ORIGIN = `http://${NEARBY_HOST}`;
-const TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 
-type RequestHead = Extract<ChannelMessage, { t: "req" }>;
+type RequestHead = Extract<GuestMessage, { t: "req" }>;
 
 /** A channel message from the guest, checked. */
 export type Incoming =
@@ -43,54 +50,20 @@ export type Incoming =
   /** Not a message the guest may send; `id` is the request it names, if it names one. */
   | { kind: "invalid"; id: number | null; reason: string };
 
-const isId = (value: unknown): value is number =>
-  Number.isInteger(value) && (value as number) >= 0 && (value as number) <= 0xffff_ffff;
-
-const isHeaders = (value: unknown): value is [string, string][] =>
-  Array.isArray(value) &&
-  value.every(
-    (pair) =>
-      Array.isArray(pair) &&
-      pair.length === 2 &&
-      typeof pair[0] === "string" &&
-      typeof pair[1] === "string",
-  );
-
-/** A path the bridge serves: absolute, and naming no other host (`//host/…`). */
-const isPath = (value: unknown): value is string =>
-  typeof value === "string" && value.startsWith("/") && URL.parse(value, ORIGIN)?.origin === ORIGIN;
-
-/** Reads one channel message from the guest. */
+/** Reads one channel message from the guest (@gitui/shared's decodeChannelMessage). */
 export function decode(data: string | Uint8Array): Incoming {
-  if (typeof data !== "string") {
-    if (data.byteLength < 4) return { kind: "invalid", id: null, reason: "short frame" };
-    const { id, payload } = parseChunk(data);
-    return { kind: "chunk", id, payload };
-  }
-  let message: unknown;
-  try {
-    message = JSON.parse(data);
-  } catch {
-    return { kind: "invalid", id: null, reason: "not JSON" };
-  }
-  if (typeof message !== "object" || message === null) {
-    return { kind: "invalid", id: null, reason: "not an object" };
-  }
-  const { t, id, method, path, headers } = message as Record<string, unknown>;
-  if (!isId(id)) return { kind: "invalid", id: null, reason: "no request id" };
-  switch (t) {
+  const incoming = decodeChannelMessage(data, "guest");
+  if (incoming.kind !== "message") return incoming;
+  const { message } = incoming;
+  switch (message.t) {
     case "req":
-      if (typeof method !== "string" || !TOKEN.test(method)) {
-        return { kind: "invalid", id, reason: "invalid method" };
-      }
-      if (!isPath(path)) return { kind: "invalid", id, reason: "invalid path" };
-      if (!isHeaders(headers)) return { kind: "invalid", id, reason: "invalid headers" };
-      return { kind: "req", head: { t, id, method, path, headers } };
+      return { kind: "req", head: message };
     case "end":
     case "cancel":
-      return { kind: t, id };
+      return { kind: message.t, id: message.id };
     default:
-      return { kind: "invalid", id, reason: `unexpected message ${JSON.stringify(t)}` };
+      // Authentication is over once the bridge has the channel.
+      return { kind: "invalid", id: null, reason: `unexpected message "${message.t}"` };
   }
 }
 
@@ -201,7 +174,7 @@ export class Bridge {
         await response.body?.cancel();
         return;
       }
-      const head: ChannelMessage = {
+      const head: HostMessage = {
         t: "res",
         id,
         status: response.status,
@@ -209,7 +182,7 @@ export class Bridge {
       };
       this.#send(JSON.stringify(head));
       if (response.body && !(await this.#stream(id, response.body, signal))) return;
-      this.#send(JSON.stringify({ t: "end", id } satisfies ChannelMessage));
+      this.#send(JSON.stringify({ t: "end", id } satisfies HostMessage));
       this.#forget(id, open);
     } catch (e) {
       if (!signal.aborted) this.#fail(id, (e as Error).message);
@@ -252,7 +225,7 @@ export class Bridge {
   /** Ends request `id` with an `abort` to the guest. */
   #fail(id: number, message: string) {
     this.#cancel(id);
-    this.#send(JSON.stringify({ t: "abort", id, message } satisfies ChannelMessage));
+    this.#send(JSON.stringify({ t: "abort", id, message } satisfies HostMessage));
   }
 
   /** Ends request `id` without telling the guest. */

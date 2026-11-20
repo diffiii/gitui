@@ -1,7 +1,7 @@
 // The host's connection to the rendezvous service (the contract's step 1): announces this
 // machine to guests on the same network and relays WebRTC signals. One RendezvousClient keeps
 // one socket, pinned to an IP family, alive: it pings, and reconnects with backoff.
-import type { ClientMessage, ServerMessage, SignalData } from "@gitui/shared";
+import { type ClientMessage, parseServerMessage, type SignalData } from "@gitui/shared";
 import { WebSocket } from "ws";
 
 /**
@@ -19,9 +19,6 @@ const HANDSHAKE_TIMEOUT = 15_000;
 
 /** The largest message taken from the service; signals are a few kilobytes. */
 const MAX_PAYLOAD = 256 * 1024;
-
-/** The largest SDP the host accepts from a guest; a data-channel offer is a few kilobytes. */
-const MAX_SDP = 64 * 1024;
 
 export type Family = 4 | 6;
 
@@ -58,62 +55,6 @@ export interface RendezvousEvents {
   gone: (id: string) => void;
   /** The service reported an error. */
   error: (message: string) => void;
-}
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
-const optional = (value: unknown, type: "string" | "number") =>
-  value === undefined || value === null || typeof value === type;
-
-/** The signal in `value` if it is a well-formed one, else null. */
-export function parseSignal(value: unknown): SignalData | null {
-  if (!isRecord(value)) return null;
-  const { kind, sdp, candidate } = value;
-  if (kind === "offer" || kind === "answer") {
-    if (typeof sdp !== "string" || sdp.length > MAX_SDP) return null;
-    // An offer's `resume` says the guest will resume, so the host holds back the code.
-    return kind === "offer" && value.resume === true ? { kind, sdp, resume: true } : { kind, sdp };
-  }
-  if (kind === "candidate" && isRecord(candidate) && typeof candidate.candidate === "string") {
-    const { candidate: line, sdpMid, sdpMLineIndex } = candidate;
-    if (!optional(sdpMid, "string") || !optional(sdpMLineIndex, "number")) return null;
-    return {
-      kind,
-      candidate: {
-        candidate: line,
-        sdpMid: sdpMid as string | null | undefined,
-        sdpMLineIndex: sdpMLineIndex as number | null | undefined,
-      },
-    };
-  }
-  return null;
-}
-
-/** The message in a text frame from the service, or null if it isn't one a host handles. */
-export function parseServerMessage(text: string): ServerMessage | null {
-  let message: unknown;
-  try {
-    message = JSON.parse(text);
-  } catch {
-    return null;
-  }
-  if (!isRecord(message)) return null;
-  const { type, id, from, data } = message;
-  switch (type) {
-    case "welcome":
-    case "gone":
-      return typeof id === "string" ? { type, id } : null;
-    case "signal": {
-      const signal = parseSignal(data);
-      return typeof from === "string" && signal ? { type, from, data: signal } : null;
-    }
-    case "error":
-      return { type, message: String(message.message) };
-    default:
-      // Hosts get no `hosts` lists, and send no text pings to get `pong`s for.
-      return null;
-  }
 }
 
 /** The delay before reconnection attempt `attempt` (0 for the first). */
@@ -188,6 +129,7 @@ export class RendezvousClient {
     });
     socket.on("message", (data, isBinary) => {
       if (this.#socket !== socket) return;
+      // Hosts get no `hosts` lists, and send no text pings to get `pong`s for.
       const message = isBinary ? null : parseServerMessage(String(data));
       switch (message?.type) {
         case "welcome":

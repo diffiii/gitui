@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { HOSTED_ORIGIN, pairingUrl, RENDEZVOUS_ORIGIN } from "@gitui/shared";
+import { HOSTED_ORIGIN, pairingUrl, RENDEZVOUS_ORIGIN, rendezvousUrl } from "@gitui/shared";
 import { renderUnicodeCompact } from "uqr";
 import {
   type SocketListener,
@@ -17,7 +17,7 @@ import { pushRecent } from "../server/config.ts";
 import { resolveRepo } from "../server/git.ts";
 import { lanAddresses, PRIVATE_RANGES, pickLanAddress } from "../server/lan.ts";
 import { start } from "../server/main.ts";
-import { rendezvousUrl, startNearby } from "../server/nearby/host.ts";
+import { startNearby } from "../server/nearby/host.ts";
 import { ArgsError, HELP, hostnameAsName, type Nearby, type Options, parseArgs } from "./args.ts";
 
 function fail(message: string): never {
