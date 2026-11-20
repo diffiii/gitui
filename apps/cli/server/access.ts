@@ -10,11 +10,14 @@
 // - lan (`--lan`): the server listens on a network address, so anyone on the network can reach
 //   it. It serves its own UI only: no cross-origin pages, and every API request needs the session
 //   cookie that `/pair?key=<secret>` sets. The secret is made per run and travels over plain
-//   HTTP, so it is not the pairing token and can't pair the hosted app.
+//   HTTP, so it is not the pairing token and can't pair the hosted app. Cookies ignore ports:
+//   every other web service on this address gets the session cookie too, so LAN mode trusts
+//   whatever else runs on this machine.
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { CLIENT_HEADER, isLoopbackHost } from "@gitui/shared";
 import type { Context, Env, Hono } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
+import { loadToken } from "./config.ts";
 
 /** Listens on 127.0.0.1; serves same-origin pages and the allowed cross-origin ones. */
 export interface LoopbackListener {
@@ -32,21 +35,30 @@ export interface LanListener {
   address: string;
   /** Key in the pairing link, which `/pair` trades for the session cookie. */
   secret: string;
+  /** Name of the session cookie, made per run: another gitui on this address has its own. */
+  cookie: string;
 }
 
 export type Listener = LoopbackListener | LanListener;
 
 export interface AccessOptions {
   listener: Listener;
-  /** The port the server listens on; a LAN listener only accepts `<address>:<port>` as Host. */
-  port: number;
 }
 
-/** A LAN listener on `address`, with a fresh secret. */
+/** A loopback listener with the pairing token from the config dir. */
+export const loopbackListener = async (allowedOrigins: string[]): Promise<LoopbackListener> => ({
+  kind: "loopback",
+  allowedOrigins,
+  token: await loadToken(),
+});
+
+/** A LAN listener on `address`, with a fresh secret and cookie name. */
 export const lanListener = (address: string): LanListener => ({
   kind: "lan",
   address,
-  secret: randomBytes(32).toString("base64url"),
+  // 128 bits keep the pairing link, and its QR code, short.
+  secret: randomBytes(16).toString("base64url"),
+  cookie: `gitui-session-${randomBytes(4).toString("hex")}`,
 });
 
 /** The address to bind for `listener`. */
@@ -77,16 +89,14 @@ interface Rules {
   authError: (c: Context, crossOrigin: boolean) => string | null;
 }
 
-const isLoopback = (host: string) => isLoopbackHost(host.replace(/:\d+$/, ""));
+// A browser's Host always carries the port it connected to, so only the hostname is checked.
+const hostname = (host: string) => host.replace(/:\d+$/, "");
 
-// Cookies ignore ports, so another gitui on this address must not overwrite this one's.
-const sessionCookie = (port: number) => `gitui-session-${port}`;
-
-function rules({ listener, port }: AccessOptions): Rules {
+function rules(listener: Listener): Rules {
   if (listener.kind === "loopback") {
     const bearer = `Bearer ${listener.token}`;
     return {
-      hostAllowed: isLoopback,
+      hostAllowed: (host) => isLoopbackHost(hostname(host)),
       allowedOrigins: listener.allowedOrigins,
       authError: (c, crossOrigin) =>
         !crossOrigin || safeEqual(c.req.header("authorization") ?? "", bearer)
@@ -94,22 +104,19 @@ function rules({ listener, port }: AccessOptions): Rules {
           : "Missing or invalid pairing token",
     };
   }
-  const lanHost = `${listener.address}:${port}`;
   return {
-    // Loopback Hosts too, for a LAN listener on 127.0.0.1.
-    hostAllowed: (host) => host === lanHost || isLoopback(host),
+    hostAllowed: (host) => hostname(host) === listener.address,
     allowedOrigins: [],
     authError: (c) =>
-      safeEqual(getCookie(c, sessionCookie(port)) ?? "", listener.secret)
+      safeEqual(getCookie(c, listener.cookie) ?? "", listener.secret)
         ? null
         : "Not paired: open the link gitui printed",
   };
 }
 
 /** Adds the access checks to `/api/*`, and the `/pair` route for a LAN listener. */
-export function installAccess<E extends Env>(app: Hono<E>, opts: AccessOptions) {
-  const { hostAllowed, allowedOrigins, authError } = rules(opts);
-  const { listener, port } = opts;
+export function installAccess<E extends Env>(app: Hono<E>, { listener }: AccessOptions) {
+  const { hostAllowed, allowedOrigins, authError } = rules(listener);
 
   if (listener.kind === "lan") {
     app.get("/pair", (c) => {
@@ -117,7 +124,7 @@ export function installAccess<E extends Env>(app: Hono<E>, opts: AccessOptions) 
       if (!safeEqual(c.req.query("key") ?? "", listener.secret)) {
         return c.text("Invalid pairing key: open the link gitui printed", 403);
       }
-      setCookie(c, sessionCookie(port), listener.secret, {
+      setCookie(c, listener.cookie, listener.secret, {
         httpOnly: true,
         sameSite: "Strict",
         path: "/",

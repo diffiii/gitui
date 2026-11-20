@@ -1,14 +1,16 @@
-import { afterAll, expect, test } from "bun:test";
-import { type LanListener, lanPairingUrl } from "./access.ts";
+import { expect, test } from "bun:test";
+import { type LanListener, lanListener, lanPairingUrl } from "./access.ts";
 import { createApp } from "./app.ts";
-import { removeTempDirs } from "./test-repo.ts";
 
-afterAll(removeTempDirs);
-
-const listener: LanListener = { kind: "lan", address: "192.168.1.5", secret: "lan-secret" };
-const app = createApp({ listener, port: 4777 });
+const listener: LanListener = {
+  kind: "lan",
+  address: "192.168.1.5",
+  secret: "lan-secret",
+  cookie: "gitui-session-a1",
+};
+const app = createApp({ listener });
 const HOST = "192.168.1.5:4777";
-const SESSION = "gitui-session-4777=lan-secret";
+const SESSION = "gitui-session-a1=lan-secret";
 
 const get = (url: string, headers: Record<string, string>) =>
   app.request(`http://${HOST}${url}`, { headers });
@@ -16,6 +18,14 @@ const api = (headers: Record<string, string>) => get("/api/config", { "x-gitui":
 
 test("the pairing link carries the address, port and secret", () => {
   expect(lanPairingUrl(listener, 4777)).toBe("http://192.168.1.5:4777/pair?key=lan-secret");
+});
+
+test("each LAN listener gets its own secret and cookie name", () => {
+  const [a, b] = [lanListener("192.168.1.5"), lanListener("192.168.1.5")];
+  expect(a.secret).not.toBe(b.secret);
+  expect(a.cookie).not.toBe(b.cookie);
+  expect(a.cookie).toMatch(/^gitui-session-[0-9a-f]+$/);
+  expect(Buffer.from(a.secret, "base64url")).toHaveLength(16);
 });
 
 test("/pair with the key sets the session cookie and redirects to the UI", async () => {
@@ -46,9 +56,9 @@ test("the API needs the session cookie, same-origin requests included", async ()
   const requests: Record<string, string>[] = [
     { host: HOST },
     { host: HOST, origin: `http://${HOST}` },
-    { host: HOST, cookie: "gitui-session-4777=nope" },
-    // The session of a gitui on another port of this address.
-    { host: HOST, cookie: "gitui-session-4778=lan-secret" },
+    { host: HOST, cookie: "gitui-session-a1=nope" },
+    // The session of another gitui on this address.
+    { host: HOST, cookie: "gitui-session-b2=lan-secret" },
   ];
   for (const headers of requests) {
     const res = await api(headers);
@@ -57,8 +67,9 @@ test("the API needs the session cookie, same-origin requests included", async ()
   }
 });
 
-test("the API is allowed with the session cookie, on the LAN or loopback host", async () => {
-  for (const host of [HOST, "127.0.0.1:4777", "localhost:4777"]) {
+test("the API is allowed with the session cookie on the LAN address, whatever the port", async () => {
+  // A browser's Host carries the port it connected to; the cookie name tells instances apart.
+  for (const host of [HOST, "192.168.1.5:4778", "192.168.1.5"]) {
     const res = await api({ host, origin: `http://${host}`, cookie: SESSION });
     expect(res.status).toBe(200);
   }
@@ -70,7 +81,8 @@ test("the API still needs the x-gitui header", async () => {
 });
 
 test("other hosts are refused, even with the session (DNS rebinding)", async () => {
-  for (const host of ["evil.example:4777", "192.168.1.5:4778", "192.168.1.5", "192.168.1.6:4777"]) {
+  const hosts = ["evil.example:4777", "192.168.1.6:4777", "localhost:4777", "127.0.0.1:4777"];
+  for (const host of hosts) {
     const res = await api({ host, cookie: SESSION });
     expect(res.status).toBe(403);
   }

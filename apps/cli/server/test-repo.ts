@@ -15,7 +15,7 @@ process.env.GIT_CONFIG_NOSYSTEM = "1";
 
 /** The app as served locally, with no cross-origin callers. */
 export const testApp = () =>
-  createApp({ listener: { kind: "loopback", allowedOrigins: [], token: "unused" }, port: 4777 });
+  createApp({ listener: { kind: "loopback", allowedOrigins: [], token: "unused" } });
 
 const dirs: string[] = [];
 
