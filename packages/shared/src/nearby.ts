@@ -229,8 +229,11 @@ export const ERROR_CODES: readonly ErrorCode[] = [
 
 // ── Data channel ──────────────────────────────────────────────────────────────────────────
 
-/** A DTLS fingerprint as sdpFingerprint reads it: "sha-256 ab:cd:…", lowercase. */
-export type Fingerprint = string;
+/**
+ * A DTLS fingerprint as sdpFingerprint reads it: "sha-256 ab:cd:…", lowercase. Branded so
+ * that sdpFingerprint is the only place that makes (and normalizes) one.
+ */
+export type Fingerprint = string & { readonly __brand: "Fingerprint" };
 
 /** Both DTLS fingerprints of a connection, by role, as each side read them from the SDPs. */
 export interface Fingerprints {

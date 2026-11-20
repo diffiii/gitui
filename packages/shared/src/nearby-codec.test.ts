@@ -329,8 +329,8 @@ test("sdpFingerprint reads a single SHA-256 fingerprint", () => {
   const print = hex(7);
   const sdp = `v=0\r\na=group:BUNDLE 0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 ${print.toUpperCase()}\r\na=setup:actpass\r\n`;
   // Normalized to lowercase: sdpFingerprint is the one place that does it.
-  expect(sdpFingerprint(sdp)).toBe(`sha-256 ${print}`);
-  expect(sdpFingerprint(sdp.replaceAll("\r\n", "\n"))).toBe(`sha-256 ${print}`);
+  expect(sdpFingerprint(sdp) as string).toBe(`sha-256 ${print}`);
+  expect(sdpFingerprint(sdp.replaceAll("\r\n", "\n")) as string).toBe(`sha-256 ${print}`);
   expect(sdpFingerprint("v=0\r\n")).toBeNull();
 });
 

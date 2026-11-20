@@ -385,5 +385,5 @@ export function sdpFingerprint(sdp: string): Fingerprint | null {
   const lines = sdp.split(/\r\n|\r|\n/).filter((line) => /fingerprint/i.test(line));
   if (lines.length !== 1) return null;
   const match = FINGERPRINT.exec(lines[0]!.trim());
-  return match ? `sha-256 ${match[1]!.toLowerCase()}` : null;
+  return match ? (`sha-256 ${match[1]!.toLowerCase()}` as Fingerprint) : null;
 }
