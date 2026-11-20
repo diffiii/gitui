@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import * as Schema from "effect/Schema";
 import {
   AUTH_ATTEMPTS,
   ERROR_CODES,
@@ -10,8 +11,15 @@ import {
   RENDEZVOUS_PATH,
 } from "./nearby.ts";
 import {
+  ClientMessageSchema,
   decodeChannelMessage,
   decodeClientMessage,
+  GuestMessageSchema,
+  HostInfoSchema,
+  HostMessageSchema,
+  RelayedSignalSchema,
+  ServerMessageSchema,
+  SignalSchema,
   hostName,
   isId,
   NearbyCodecError,
@@ -393,4 +401,102 @@ test("sdpFingerprint refuses SDPs with more than one fingerprint, or another has
   // Malformed values.
   expect(sdpFingerprint(`v=0\r\na=fingerprint:sha-256 ${hex(3).slice(3)}\r\n`)).toBeNull();
   expect(sdpFingerprint(`v=0\r\na=fingerprint:sha-256 ${hex(3)} extra\r\n`)).toBeNull();
+});
+
+// One valid message of every kind each schema reads, as a peer would send it.
+const sdp = "v=0";
+const candidate = {
+  candidate: "candidate:1 1 udp 1 192.0.2.1 9 typ host",
+  sdpMid: "0",
+  sdpMLineIndex: 0,
+};
+const signals = [
+  { kind: "offer", offerId, sdp },
+  { kind: "offer", offerId, sdp, resume: true },
+  { kind: "answer", offerId, sdp },
+  { kind: "candidate", offerId, candidate },
+  { kind: "candidate", offerId, candidate: { candidate: "", sdpMid: null, sdpMLineIndex: null } },
+  { kind: "refused", offerId, reason: "busy" },
+];
+const valid: [string, Schema.Codec<unknown>, object[]][] = [
+  ["RelayedSignal", RelayedSignalSchema, signals],
+  ["SignalData", SignalSchema, signals],
+  [
+    "ClientMessage",
+    ClientMessageSchema,
+    [
+      { type: "hello", role: "guest" },
+      { type: "hello", role: "host", name: "box", secret },
+      ...signals.map((data) => ({ type: "signal", to: "p1", data })),
+    ],
+  ],
+  ["HostInfo", HostInfoSchema, [{ id: "p1", name: "box", key }]],
+  [
+    "ServerMessage",
+    ServerMessageSchema,
+    [
+      { type: "welcome", id: "p1" },
+      { type: "hosts", hosts: [{ id: "p1", name: "box", key }] },
+      ...signals.map((data) => ({ type: "signal", from: "p1", data })),
+      { type: "gone", id: "p1" },
+      { type: "error", code: "rate-limit", message: "slow down" },
+      { type: "pong" },
+    ],
+  ],
+  [
+    "GuestMessage",
+    GuestMessageSchema,
+    [
+      { t: "pake", y: b43 },
+      { t: "pake-confirm", confirm: b43 },
+      { t: "pake-fail" },
+      { t: "resume", nonce: "n".repeat(22), proof: b43 },
+      { t: "req", id: 1, method: "GET", path: "/api/config", headers: [["a", "b"]] },
+      { t: "end", id: 1 },
+      { t: "cancel", id: 1 },
+    ],
+  ],
+  [
+    "HostMessage",
+    HostMessageSchema,
+    [
+      { t: "pake", y: b43, confirm: b43 },
+      { t: "resume-ok", proof: b43 },
+      { t: "auth-ok" },
+      { t: "session", token: b43 },
+      { t: "auth-fail", attemptsLeft: 2 },
+      { t: "auth-fail", attemptsLeft: 0, locked: true },
+      { t: "res", id: 1, status: 200, headers: [] },
+      { t: "end", id: 1 },
+      { t: "abort", id: 1, message: "boom" },
+    ],
+  ],
+];
+
+test("every schema round-trips valid messages: decoding then encoding gives the message back", () => {
+  for (const [name, schema, messages] of valid) {
+    const decode = Schema.decodeUnknownSync(schema);
+    const encode = Schema.encodeSync(schema);
+    for (const message of messages) {
+      const decoded = decode(message);
+      expect([name, decoded]).toEqual([name, message]);
+      expect([name, encode(decoded)]).toEqual([name, message]);
+    }
+  }
+});
+
+test("every schema strips fields the contract doesn't have, at every level", () => {
+  /** `value` with an `extra` field added to it and to every object inside it. */
+  const withExtras = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(withExtras);
+    if (typeof value !== "object" || value === null) return value;
+    const entries = Object.entries(value).map(([k, v]) => [k, withExtras(v)]);
+    return { ...Object.fromEntries(entries), extra: 1 };
+  };
+  for (const [name, schema, messages] of valid) {
+    const decode = Schema.decodeUnknownSync(schema);
+    for (const message of messages) {
+      expect([name, decode(withExtras(message))]).toEqual([name, message]);
+    }
+  }
 });

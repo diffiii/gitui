@@ -67,8 +67,9 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   client header, hosted origin, loopback hosts, pairing links), used by both sides, and the
   hosted app's `_headers` file (`headers.ts`, which the web build emits), imported as `@gitui/shared`. The nearby
   protocol: `nearby.ts` (the contract and its docs), `nearby-codec.ts` (every check on what
-  crosses its wires, used by the Worker, the CLI and the web app alike: messages are rebuilt
-  with only the contract's fields, so a new field goes there) and `nearby-pake.ts` (CPace on
+  crosses its wires, used by the Worker, the CLI and the web app alike: each message is an
+  Effect Schema, decoding keeps only the contract's fields, so a new protocol field goes into
+  its schema there and its type in `nearby.ts`, which a type-level assertion keeps equal) and `nearby-pake.ts` (CPace on
   ristretto255 for the code and HMAC proofs both ways for resume tokens, pure and synchronous,
   with `@noble/curves` and `@noble/hashes`, which the CLI bundles). Its public functions are
   only in the `@gitui/shared/nearby-pake` entry (`pake.ts`), not in `@gitui/shared`, so the
