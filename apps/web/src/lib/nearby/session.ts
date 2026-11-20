@@ -8,6 +8,7 @@ import {
   NearbyError,
   PageOutdatedError,
   RefusedError,
+  refusalMessage,
   type AuthResult,
   type GuestPeer,
 } from "./peer.ts";
@@ -415,7 +416,12 @@ export function createSession(host: NearbyHost, deps: SessionDeps): NearbySessio
         return set({ kind: "code", checking: false, attemptsLeft: result.attemptsLeft, notice });
       }
       closePeer();
-      fail("Wrong code too many times, so gitui hung up.", false);
+      fail(
+        result.locked
+          ? refusalMessage(host.name, "pairing-locked")
+          : "Wrong code too many times, so gitui hung up.",
+        false,
+      );
     },
 
     retry() {

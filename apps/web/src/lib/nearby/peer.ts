@@ -85,7 +85,8 @@ const REFUSALS: Record<RefusalReason, (host: string) => string> = {
 /** What to say when `host` refuses an offer for `reason`. */
 export const refusalMessage = (host: string, reason: RefusalReason) => REFUSALS[reason](host);
 
-export type AuthResult = { ok: true } | { ok: false; attemptsLeft: number };
+/** `locked`: the host stopped taking codes for a while (its pairing budget ran out). */
+export type AuthResult = { ok: true } | { ok: false; attemptsLeft: number; locked?: boolean };
 
 export interface GuestPeer {
   readonly host: HostInfo;
@@ -352,7 +353,9 @@ function openPeer(
 
   /** A verdict that only `auth-fail` may give; anything else breaks the protocol. */
   const failure = (message: HostMessage): AuthResult => {
-    if (message.t === "auth-fail") return { ok: false, attemptsLeft: message.attemptsLeft };
+    if (message.t === "auth-fail") {
+      return { ok: false, attemptsLeft: message.attemptsLeft, locked: message.locked === true };
+    }
     end(`${host.name} broke the pairing protocol.`, true);
     throw new NearbyError(`${host.name} broke the pairing protocol.`);
   };

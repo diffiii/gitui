@@ -280,6 +280,19 @@ test("the last wrong code fails the session, and the old token stays", async () 
   expect(h.tokens.load(host.key)).toBe("old");
 });
 
+test("a code refused because the host locked pairing says so, not that the code was wrong", async () => {
+  const h = harness();
+  await flush();
+  void h.session.submitCode("123456");
+  h.peer().answer({ ok: false, attemptsLeft: 0, locked: true });
+  await flush();
+  expect(h.state()).toMatchObject({
+    kind: "failed",
+    reason: expect.stringContaining("too many wrong codes were tried"),
+    retryOnWake: false,
+  });
+});
+
 test("resume: a saved token connects without the code", async () => {
   const h = harness({ token: "tok" });
   await flush();

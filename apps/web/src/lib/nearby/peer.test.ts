@@ -3,6 +3,10 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { connectToHost, PageOutdatedError, RefusedError, refusalMessage } from "./peer.ts";
 import type { Rendezvous, SignalHandlers } from "./rendezvous.ts";
 
+// Loaded up front, so an offer waits on a resolved promise rather than a real import.
+const pakeModule = await import("@gitui/shared/nearby-pake");
+const loaded = { timeout: 1000, answerTimeout: 1000, pake: () => Promise.resolve(pakeModule) };
+
 const host: HostInfo = { id: "peer-1", name: "MacBook", key: "k".repeat(16) };
 const fingerprint = (byte: string) =>
   `a=fingerprint:sha-256 ${Array.from({ length: 32 }, () => byte).join(":")}`;
@@ -84,7 +88,7 @@ afterAll(() => {
 
 test("signals of another offer are dropped; the current offer's are used", async () => {
   const r = fakeRendezvous();
-  const connecting = connectToHost(r.rendezvous, host, { timeout: 1000, answerTimeout: 1000 });
+  const connecting = connectToHost(r.rendezvous, host, loaded);
   await flush();
   const offer = r.sent[0]!;
   expect(offer).toMatchObject({ kind: "offer" });
@@ -114,7 +118,7 @@ test("signals of another offer are dropped; the current offer's are used", async
 for (const reason of ["busy", "rate-limited"] as const) {
   test(`the current offer's refusal (${reason}) fails with a RefusedError`, async () => {
     const r = fakeRendezvous();
-    const connecting = connectToHost(r.rendezvous, host, { timeout: 1000, answerTimeout: 1000 });
+    const connecting = connectToHost(r.rendezvous, host, loaded);
     await flush();
     r.receive({ kind: "refused", offerId: r.sent[0]!.offerId, reason });
     const error = await connecting.then(
