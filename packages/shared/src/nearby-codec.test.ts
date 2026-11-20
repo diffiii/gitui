@@ -108,11 +108,13 @@ test("a refusal or error code this version doesn't know still decodes, as unknow
   const signal = (value: unknown): unknown => parseSignal(value);
   const refused = (reason: unknown) => ({ kind: "refused", offerId, reason });
   expect(signal(refused("tired-of-you"))).toEqual(refused("unknown"));
-  expect(parse({ type: "signal", to: "p1", data: refused("") })).toEqual({
-    type: "signal",
-    to: "p1",
-    data: refused("unknown"),
-  });
+  // The rendezvous relays any slug unchanged, and only slugs.
+  const relayed = { type: "signal", to: "p1", data: refused("tired-of-you") };
+  expect(parse(relayed)).toEqual(relayed);
+  for (const reason of ["", "Busy", "busy now", "x".repeat(33)]) {
+    expect(parse({ type: "signal", to: "p1", data: refused(reason) })).toBeNull();
+    expect(signal(refused(reason))).toBeNull();
+  }
   const server = (value: unknown): unknown => parseServerMessage(JSON.stringify(value));
   const error = (code: unknown) => ({ type: "error", code, message: "nope" });
   expect(server(error("too-new"))).toEqual(error("unknown"));

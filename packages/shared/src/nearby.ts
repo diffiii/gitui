@@ -151,65 +151,85 @@ export interface IceCandidate {
 }
 
 /**
- * WebRTC signaling payload, relayed by the rendezvous object. Every signal names the guest's
- * offer it belongs to: the host's answer and both sides' candidates repeat its `offerId`, and
- * each side drops signals of an offer that isn't its current one.
+ * A WebRTC signal, relayed by the rendezvous object. Every signal names the guest's offer it
+ * belongs to: the host's answer and both sides' candidates repeat its `offerId`, and each side
+ * drops signals of an offer that isn't its current one. `Reason` is what a `refused` carries,
+ * which differs by who holds the signal: SignalData, SentSignal and RelayedSignal.
  */
-export type SignalData =
+type Signal<Reason extends string> =
   /** `resume`: the guest will open with `resume`, so the host needn't print a code (step 3). */
   | { kind: "offer"; offerId: string; sdp: string; resume?: boolean }
   | { kind: "answer"; offerId: string; sdp: string }
   | { kind: "candidate"; offerId: string; candidate: IceCandidate }
   /** Host to guest: it won't answer this offer, and why. */
-  | { kind: "refused"; offerId: string; reason: RefusalReason };
+  | { kind: "refused"; offerId: string; reason: Reason };
+
+/** A signal as a peer decodes it (decodeSignal): a reason it doesn't know is `unknown`. */
+export type SignalData = Signal<RefusalReason>;
+/** A signal as a peer sends it: only reasons it knows. */
+export type SentSignal = Signal<WireRefusalReason>;
+/**
+ * A signal as the rendezvous relays it: any REASON_SLUG, passed on unchanged, since it never
+ * acts on one, so a newer host's reasons reach newer guests.
+ */
+export type RelayedSignal = Signal<string>;
 
 /**
- * Why a host refused an offer (SignalData's `refused`).
+ * Why a host refused an offer (SignalData's `refused`), as hosts send it.
  * - `busy`: too many guests are proving themselves at once (MAX_PENDING).
  * - `rate-limited`: too many offers came lately (MAX_OFFERS_PER_MINUTE).
  * - `pairing-locked`: too many codes were tried on the host lately, so it pairs no new device
  *   for a while; paired devices can still resume.
  * - `bad-offer`: the host can't use the offer (e.g. its SDP hasn't exactly one SHA-256
  *   fingerprint).
- * - `unknown`: a reason this version doesn't know, from a newer host. Hosts don't send it.
  *
- * New reasons decode as `unknown` where they aren't known yet (the rendezvous, older guests),
- * so adding one breaks nothing.
+ * New reasons decode as `unknown` where they aren't known yet (older guests), so adding one
+ * breaks nothing.
  */
-export type RefusalReason = "busy" | "rate-limited" | "pairing-locked" | "bad-offer" | "unknown";
-export const REFUSAL_REASONS: readonly RefusalReason[] = [
+export type WireRefusalReason = "busy" | "rate-limited" | "pairing-locked" | "bad-offer";
+/** A refusal's reason as a guest decodes it: `unknown` for one this version doesn't know. */
+export type RefusalReason = WireRefusalReason | "unknown";
+export const REFUSAL_REASONS: readonly WireRefusalReason[] = [
   "busy",
   "rate-limited",
   "pairing-locked",
   "bad-offer",
-  "unknown",
 ];
-export const isRefusalReason = (value: unknown): value is RefusalReason =>
+export const isRefusalReason = (value: unknown): value is WireRefusalReason =>
   (REFUSAL_REASONS as readonly unknown[]).includes(value);
+/** What the rendezvous relays as a refusal's reason (RelayedSignal). */
+export const REASON_SLUG = /^[a-z-]{1,32}$/;
 
 /** Messages a peer sends to the rendezvous object. */
 export type ClientMessage =
   /** `secret` matches HOST_SECRET; the object lists the host under hostKey(secret). */
   | { type: "hello"; role: "host"; name: string; secret: string }
   | { type: "hello"; role: "guest" }
-  | { type: "signal"; to: string; data: SignalData };
+  | { type: "signal"; to: string; data: RelayedSignal };
 
-/** Messages the rendezvous object sends to a peer. */
-export type ServerMessage =
+/**
+ * Messages the rendezvous object sends to a peer: as a peer decodes them by default, and as the
+ * object sends them with SentServerMessage.
+ */
+export type ServerMessage<Data = SignalData, Code = ErrorCode> =
   /** Reply to `hello`: this socket's peer id. */
   | { type: "welcome"; id: string }
   /** To guests, after `hello` and whenever the set of hosts changes. */
   | { type: "hosts"; hosts: HostInfo[] }
-  | { type: "signal"; from: string; data: SignalData }
+  | { type: "signal"; from: string; data: Data }
   /** The peer `id` disconnected; every peer of the other role on the network gets this. */
   | { type: "gone"; id: string }
   /** What went wrong; the socket is closed after it unless `code` is `unknown-peer`. */
-  | { type: "error"; code: ErrorCode; message: string }
+  | { type: "error"; code: Code; message: string }
   /** Auto-response to RENDEZVOUS_PING. */
   | { type: "pong" };
 
+/** What the rendezvous sends: signals as it relays them, and only codes it knows. */
+export type SentServerMessage = ServerMessage<RelayedSignal, WireErrorCode>;
+
 /**
- * Why the rendezvous sent an `error`. Every one but `unknown-peer` closes the socket.
+ * Why the rendezvous sent an `error`, as it sends it. Every one but `unknown-peer` closes the
+ * socket.
  * - `hello-required`: a signal before `hello`, or no `hello` within the Worker's timeout.
  * - `invalid-message`: binary, not the contract's, or a second `hello`.
  * - `too-large`: over MAX_MESSAGE_LENGTH.
@@ -218,11 +238,10 @@ export type ServerMessage =
  * - `host-limit`: the network lists as many host keys as it may.
  * - `key-limit`: this host's key already has as many sockets as it may.
  * - `unknown-peer`: a signal to a peer that isn't here (or has the same role).
- * - `unknown`: a code this version doesn't know, from a newer rendezvous. It doesn't send it.
  *
  * New codes decode as `unknown` where they aren't known yet, so adding one breaks nothing.
  */
-export type ErrorCode =
+export type WireErrorCode =
   | "hello-required"
   | "invalid-message"
   | "too-large"
@@ -230,9 +249,10 @@ export type ErrorCode =
   | "rate-limit"
   | "host-limit"
   | "key-limit"
-  | "unknown-peer"
-  | "unknown";
-export const ERROR_CODES: readonly ErrorCode[] = [
+  | "unknown-peer";
+/** An `error`'s code as a peer decodes it: `unknown` for one this version doesn't know. */
+export type ErrorCode = WireErrorCode | "unknown";
+export const ERROR_CODES: readonly WireErrorCode[] = [
   "hello-required",
   "invalid-message",
   "too-large",
@@ -241,9 +261,8 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "host-limit",
   "key-limit",
   "unknown-peer",
-  "unknown",
 ];
-export const isErrorCode = (value: unknown): value is ErrorCode =>
+export const isErrorCode = (value: unknown): value is WireErrorCode =>
   (ERROR_CODES as readonly unknown[]).includes(value);
 
 // ── Data channel ──────────────────────────────────────────────────────────────────────────

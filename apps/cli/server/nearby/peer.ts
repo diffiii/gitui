@@ -14,7 +14,7 @@ import {
   type IceCandidate,
   MAX_LOCAL_CANDIDATES,
   resumeAnswer,
-  type SignalData,
+  type SentSignal,
 } from "@gitui/shared";
 import {
   fingerprints,
@@ -60,7 +60,7 @@ export interface GuestOptions {
   resuming?: boolean;
   stunUrls: string[];
   /** Sends a signal of this offer's to the guest through the rendezvous service. */
-  signal: (data: Extract<SignalData, { kind: "answer" | "candidate" | "refused" }>) => void;
+  signal: (data: Extract<SentSignal, { kind: "answer" | "candidate" | "refused" }>) => void;
   /** Answers the guest's requests once it is authenticated. */
   fetch: Fetch;
   /** This run's resume tokens: checked for `resume`, added to after a code. */

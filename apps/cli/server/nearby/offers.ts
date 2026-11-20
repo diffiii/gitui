@@ -10,7 +10,7 @@ import {
   MAX_PENDING,
   MAX_REFUSALS_PER_WINDOW,
   RATE_WINDOW,
-  type RefusalReason,
+  type WireRefusalReason,
 } from "@gitui/shared";
 import type { PairingBudget } from "./auth.ts";
 import { RollingWindow } from "./rolling.ts";
@@ -24,7 +24,7 @@ export type Admission =
    * `line`: what to print, if anything (the budget prints its own line, lockoutLine). `tell`:
    * whether to send the guest `refused`, or ignore the offer.
    */
-  | { ok: false; reason: RefusalReason; line: string | null; tell: boolean };
+  | { ok: false; reason: WireRefusalReason; line: string | null; tell: boolean };
 
 export class OfferLimiter {
   readonly #budget: PairingBudget;
@@ -46,7 +46,7 @@ export class OfferLimiter {
    */
   admit(pending: number, resume: boolean): Admission {
     // The first that applies is the reason.
-    const refusals: { applies: boolean; reason: RefusalReason; line: string | null }[] = [
+    const refusals: { applies: boolean; reason: WireRefusalReason; line: string | null }[] = [
       { applies: pending >= MAX_PENDING, reason: "busy", line: BUSY_LINE },
       { applies: this.#offers.left === 0, reason: "rate-limited", line: BUSY_LINE },
       { applies: !resume && this.#budget.exhausted, reason: "pairing-locked", line: null },

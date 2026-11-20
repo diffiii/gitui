@@ -5,6 +5,7 @@ import {
   type ClientMessage,
   type ErrorCode,
   parseServerMessage,
+  type SentSignal,
   type SignalData,
 } from "@gitui/shared";
 import { WebSocket } from "ws";
@@ -97,7 +98,7 @@ export class RendezvousClient {
   }
 
   /** Relays `data` to peer `to`; dropped while the socket is down. */
-  send(to: string, data: SignalData) {
+  send(to: string, data: SentSignal) {
     this.#send({ type: "signal", to, data });
   }
 

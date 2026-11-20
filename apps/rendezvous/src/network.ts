@@ -2,13 +2,13 @@
 // learns that a peer left, the host list and each socket's budget. Pure, over plain records, so
 // it can be unit-tested; rendezvous.ts adapts it to the Durable Object's WebSockets.
 import {
-  type ErrorCode,
   hostKey,
   type HostInfo,
   MAX_MESSAGE_LENGTH,
   parseClientMessage,
   RATE_WINDOW,
-  type ServerMessage,
+  type SentServerMessage,
+  type WireErrorCode,
 } from "@gitui/shared";
 
 /** Most sockets one network may hold open. */
@@ -82,7 +82,7 @@ export interface Socket {
   /** False once either side started closing it. */
   readonly open: boolean;
   /** Sends a message; does nothing if the socket is closing. */
-  send(message: ServerMessage): void;
+  send(message: SentServerMessage): void;
   close(code: number, reason: string): void;
 }
 
@@ -278,7 +278,7 @@ function current(budget: Budget, epoch: number): Budget {
   return budget;
 }
 
-function reject(socket: Socket, close: number, code: ErrorCode, message: string): void {
+function reject(socket: Socket, close: number, code: WireErrorCode, message: string): void {
   socket.send({ type: "error", code, message });
   socket.close(close, message);
 }

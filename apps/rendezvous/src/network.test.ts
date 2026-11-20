@@ -1,13 +1,13 @@
 import { expect, test } from "bun:test";
 import {
-  type ErrorCode,
   hostKey,
   MAX_LOCAL_CANDIDATES,
   MAX_MESSAGE_LENGTH,
   MAX_OFFERS_PER_MINUTE,
   MAX_REFUSALS_PER_WINDOW,
   RATE_WINDOW,
-  type ServerMessage,
+  type SentServerMessage,
+  type WireErrorCode,
 } from "@gitui/shared";
 import {
   GUEST_RATE_LIMIT,
@@ -26,7 +26,7 @@ import {
  * is a copy on every read, so only write() changes it.
  */
 class FakeSocket implements Socket {
-  readonly sent: ServerMessage[] = [];
+  readonly sent: SentServerMessage[] = [];
   closed: { code: number; reason: string } | null = null;
   #attachment: string;
   constructor(attachment: Attachment) {
@@ -41,14 +41,14 @@ class FakeSocket implements Socket {
   get open() {
     return this.closed === null;
   }
-  send(message: ServerMessage) {
+  send(message: SentServerMessage) {
     if (this.open) this.sent.push(message);
   }
   close(code: number, reason: string) {
     this.closed ??= { code, reason };
   }
   /** Takes what was sent so far. */
-  take(): ServerMessage[] {
+  take(): SentServerMessage[] {
     return this.sent.splice(0);
   }
 }
@@ -115,7 +115,7 @@ function setup() {
 const newSecret = (n: number | string) => `secret-${n}`.padEnd(43, "_");
 
 /** An `error` the object sends. */
-const error = (code: ErrorCode, message: string): ServerMessage => ({
+const error = (code: WireErrorCode, message: string): SentServerMessage => ({
   type: "error",
   code,
   message,
@@ -159,7 +159,7 @@ test("signals go between a guest and a host", () => {
   });
 });
 
-test("a refusal with a reason this version doesn't know is relayed, as unknown", () => {
+test("a refusal with a reason this version doesn't know is relayed unchanged", () => {
   const { send, guest, host } = setup();
   const g = guest();
   const h = host();
@@ -167,7 +167,7 @@ test("a refusal with a reason this version doesn't know is relayed, as unknown",
   const offerId = OFFER.offerId;
   send(h, { type: "signal", to: g.id, data: { kind: "refused", offerId, reason: "too-new" } });
   expect(g.take()).toEqual([
-    { type: "signal", from: h.id, data: { kind: "refused", offerId, reason: "unknown" } },
+    { type: "signal", from: h.id, data: { kind: "refused", offerId, reason: "too-new" } },
   ]);
   // The host that sent it is still here.
   expect(h.closed).toBeNull();

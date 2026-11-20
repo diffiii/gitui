@@ -32,6 +32,10 @@ When a peer's socket closes, the object sends `gone` with its id to every peer o
 to every host when a guest leaves (a host ends that guest's session), and to every guest when a
 host leaves, followed by the new host list.
 
+Signals are checked against the contract and passed on rebuilt from its fields. The object never
+acts on a `refused` signal's reason, so it relays any short slug (`REASON_SLUG`) as it came: a
+newer CLI's reasons reach guests that know them, and the others read them as `unknown`.
+
 Keepalive is free. Hosts send WebSocket protocol pings, which the runtime answers without waking
 the object or calling `webSocketMessage`, and which aren't billed
 ([WebSocket best practices](https://developers.cloudflare.com/durable-objects/best-practices/websockets/),

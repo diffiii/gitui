@@ -23,6 +23,8 @@ import {
   OFFER_ID,
   parseChunk,
   PEER_ID,
+  REASON_SLUG,
+  type RelayedSignal,
   RENDEZVOUS_PATH,
   type ServerMessage,
   type SignalData,
@@ -147,8 +149,8 @@ function decodeCandidate(value: unknown): IceCandidate {
   };
 }
 
-/** A WebRTC signal (SignalData). */
-export function decodeSignal(value: unknown): SignalData {
+/** A WebRTC signal as the rendezvous relays it: a refusal's reason is any REASON_SLUG. */
+function decodeRelayedSignal(value: unknown): RelayedSignal {
   const data = record(value, "signal");
   const offerId = string(data.offerId, "offerId", OFFER_ID);
   switch (data.kind) {
@@ -164,14 +166,19 @@ export function decodeSignal(value: unknown): SignalData {
     }
     case "candidate":
       return { kind: "candidate", offerId, candidate: decodeCandidate(data.candidate) };
-    case "refused": {
-      // A reason this version doesn't know is a newer host's: still a refusal.
-      const reason = string(data.reason, "reason");
-      return { kind: "refused", offerId, reason: isRefusalReason(reason) ? reason : "unknown" };
-    }
+    case "refused":
+      return { kind: "refused", offerId, reason: string(data.reason, "reason", REASON_SLUG) };
     default:
       return fail("unknown signal kind");
   }
+}
+
+/** A WebRTC signal as its receiver reads it (SignalData). */
+export function decodeSignal(value: unknown): SignalData {
+  const signal = decodeRelayedSignal(value);
+  if (signal.kind !== "refused") return signal;
+  // A reason this version doesn't know is a newer host's: still a refusal.
+  return { ...signal, reason: isRefusalReason(signal.reason) ? signal.reason : "unknown" };
 }
 
 /** A message a peer sends the rendezvous (ClientMessage). RENDEZVOUS_PING isn't one. */
@@ -187,7 +194,7 @@ export function decodeClientMessage(text: string): ClientMessage {
   }
   if (message.type === "signal") {
     const to = string(message.to, "peer id", PEER_ID);
-    return { type: "signal", to, data: decodeSignal(message.data) };
+    return { type: "signal", to, data: decodeRelayedSignal(message.data) };
   }
   return fail("unknown message type");
 }
