@@ -267,7 +267,7 @@ test("aborting a request that was answered, or after close, sends no cancel", as
 });
 
 test("a session token from the host decodes as a message", () => {
-  const token = "t".repeat(43);
+  const token = `${"t".repeat(42)}s`; // canonical: no stray low bits
   expect(decodeIncoming(text({ t: "session", token }))).toEqual({
     kind: "message",
     message: { t: "session", token },

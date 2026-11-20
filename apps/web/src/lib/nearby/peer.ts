@@ -8,6 +8,7 @@ import {
   resumeVerify,
   sdpFingerprint,
   STUN_URLS,
+  type Fingerprint,
   type Fingerprints,
   type GuestMessage,
   type HostInfo,
@@ -58,6 +59,7 @@ type RefusedReason = Extract<SignalData, { kind: "refused" }>["reason"];
 const REFUSALS: Record<RefusedReason, (host: string) => string> = {
   busy: (host) => `${host} is busy with other devices connecting. Try again in a moment.`,
   "rate-limited": (host) => `${host} got too many connection requests. Try again in a minute.`,
+  "bad-offer": (host) => `${host} couldn't use this connection request. Try again.`,
 };
 
 /** What to say when `host` refuses an offer for `reason`. */
@@ -138,7 +140,7 @@ export async function connectToHost(
   // Signals of an earlier offer to this host (one that timed out, say) carry another id.
   const offerId = newOfferId();
   let answered = false;
-  let remoteFingerprint: string | null = null;
+  let remoteFingerprint: Fingerprint | null = null;
   // Candidates that arrive before the answer wait for it: addIceCandidate needs a remote
   // description. Ours wait for the offer to go out, so the host never sees one before it.
   const early: RTCIceCandidateInit[] = [];
@@ -181,7 +183,7 @@ export async function connectToHost(
 
   let timer: ReturnType<typeof setTimeout> | undefined;
   let answerTimer: ReturnType<typeof setTimeout> | undefined;
-  let localFingerprint: string | null = null;
+  let localFingerprint: Fingerprint | null = null;
   try {
     await new Promise<void>((resolve, reject) => {
       failSetup = reject;
@@ -239,8 +241,8 @@ export async function connectToHost(
   }
 
   // Assigned in callbacks above, which TypeScript's narrowing can't see.
-  const guest = localFingerprint as string | null;
-  const remote = remoteFingerprint as string | null;
+  const guest = localFingerprint as Fingerprint | null;
+  const remote = remoteFingerprint as Fingerprint | null;
   if (!guest || !remote) {
     pc.close();
     throw new NearbyError("The connection has no single DTLS fingerprint to authenticate with.");
