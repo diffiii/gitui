@@ -1,5 +1,15 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Columns2, Laptop, Moon, RefreshCw, Rows2, Sun, Upload, Download } from "lucide-react";
+import {
+  Columns2,
+  Download,
+  Laptop,
+  type LucideIcon,
+  Moon,
+  RefreshCw,
+  Rows2,
+  Sun,
+  Upload,
+} from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
@@ -13,8 +23,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { useDiffStyle, usePalette, useTheme, type Theme } from "@/lib/prefs";
-import { PALETTES, type PaletteId } from "@/lib/themes";
+import { PALETTE_IDS, PALETTES } from "@/lib/palettes";
+import { THEMES, useDiffStyle, usePalette, useTheme, type Theme } from "@/lib/prefs";
 import { useRepo } from "@/lib/repo";
 import { useStatus } from "./ChangesView";
 import { BranchSwitcher } from "./BranchSwitcher";
@@ -135,16 +145,16 @@ function DiffStyleToggle() {
   );
 }
 
-const MODES: { value: Theme; label: string; icon: typeof Sun }[] = [
-  { value: "system", label: "System", icon: Laptop },
-  { value: "light", label: "Light", icon: Sun },
-  { value: "dark", label: "Dark", icon: Moon },
-];
+const MODES: Record<Theme, { label: string; icon: LucideIcon }> = {
+  system: { label: "System", icon: Laptop },
+  light: { label: "Light", icon: Sun },
+  dark: { label: "Dark", icon: Moon },
+};
 
 function ThemeMenu() {
-  const { theme, resolved, setTheme } = useTheme();
+  const { theme, setTheme } = useTheme();
   const [palette, setPalette] = usePalette();
-  const Icon = MODES.find((m) => m.value === theme)?.icon ?? Laptop;
+  const Icon = MODES[theme].icon;
   return (
     <DropdownMenu>
       <Tooltip>
@@ -159,24 +169,28 @@ function ThemeMenu() {
       </Tooltip>
       <DropdownMenuContent align="end" className="w-44">
         <DropdownMenuLabel>Mode</DropdownMenuLabel>
-        <DropdownMenuRadioGroup value={theme} onValueChange={(v) => setTheme(v as Theme)}>
-          {MODES.map((m) => (
-            <DropdownMenuRadioItem key={m.value} value={m.value}>
-              <m.icon />
-              {m.label}
-            </DropdownMenuRadioItem>
-          ))}
+        <DropdownMenuRadioGroup value={theme} onValueChange={setTheme}>
+          {THEMES.map((t) => {
+            const { label, icon: ModeIcon } = MODES[t];
+            return (
+              <DropdownMenuRadioItem key={t} value={t}>
+                <ModeIcon />
+                {label}
+              </DropdownMenuRadioItem>
+            );
+          })}
         </DropdownMenuRadioGroup>
         <DropdownMenuSeparator />
         <DropdownMenuLabel>Colors</DropdownMenuLabel>
-        <DropdownMenuRadioGroup value={palette} onValueChange={(v) => setPalette(v as PaletteId)}>
-          {PALETTES.map((p) => (
-            <DropdownMenuRadioItem key={p.id} value={p.id}>
+        <DropdownMenuRadioGroup value={palette} onValueChange={setPalette}>
+          {PALETTE_IDS.map((id) => (
+            <DropdownMenuRadioItem key={id} value={id}>
+              {/* data-palette scopes that palette's colors to the swatch (palettes.css). */}
               <span
-                className="size-3 rounded-full border border-border"
-                style={{ background: p.swatch[resolved] }}
+                data-palette={id}
+                className="size-3 rounded-full border border-border bg-primary"
               />
-              {p.label}
+              {PALETTES[id].label}
             </DropdownMenuRadioItem>
           ))}
         </DropdownMenuRadioGroup>

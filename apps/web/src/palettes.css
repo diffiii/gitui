@@ -1,6 +1,7 @@
-/* Color themes (src/lib/themes.ts). "neutral" is the base palette in index.css and sets no
-   data-palette. Each theme sets its base colors for light and dark; the rest derive from them. */
-:root[data-palette] {
+/* Color palettes (src/lib/palettes.ts). <html> always carries data-palette (index.html sets the
+   default), and so does each swatch in the palette menu, which shows that palette's --primary.
+   Each palette sets its base colors for light and dark; the shared rule derives the rest. */
+[data-palette] {
   --card-foreground: var(--foreground);
   --popover: var(--card);
   --popover-foreground: var(--foreground);
@@ -11,7 +12,38 @@
   --ring: var(--primary);
 }
 
-:root[data-palette="github"] {
+[data-palette="neutral"] {
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --accent: oklch(0.97 0 0);
+  --border: oklch(0.922 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --ring: oklch(0.708 0 0);
+}
+.dark[data-palette="neutral"],
+.dark [data-palette="neutral"] {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --border: oklch(1 0 0 / 10%);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+}
+
+[data-palette="github"] {
   --background: #ffffff;
   --foreground: #1f2328;
   --card: #ffffff;
@@ -22,7 +54,8 @@
   --primary: #0969da;
   --primary-foreground: #ffffff;
 }
-:root.dark[data-palette="github"] {
+.dark[data-palette="github"],
+.dark [data-palette="github"] {
   --background: #0d1117;
   --foreground: #f0f6fc;
   --card: #151b23;
@@ -34,7 +67,7 @@
   --primary-foreground: #0d1117;
 }
 
-:root[data-palette="catppuccin"] {
+[data-palette="catppuccin"] {
   --background: #eff1f5;
   --foreground: #4c4f69;
   --card: #e6e9ef;
@@ -45,7 +78,8 @@
   --primary: #8839ef;
   --primary-foreground: #eff1f5;
 }
-:root.dark[data-palette="catppuccin"] {
+.dark[data-palette="catppuccin"],
+.dark [data-palette="catppuccin"] {
   --background: #1e1e2e;
   --foreground: #cdd6f4;
   --card: #181825;
@@ -57,7 +91,7 @@
   --primary-foreground: #1e1e2e;
 }
 
-:root[data-palette="rose-pine"] {
+[data-palette="rose-pine"] {
   --background: #faf4ed;
   --foreground: #575279;
   --card: #fffaf3;
@@ -68,7 +102,8 @@
   --primary: #907aa9;
   --primary-foreground: #faf4ed;
 }
-:root.dark[data-palette="rose-pine"] {
+.dark[data-palette="rose-pine"],
+.dark [data-palette="rose-pine"] {
   --background: #191724;
   --foreground: #e0def4;
   --card: #1f1d2e;
@@ -80,7 +115,7 @@
   --primary-foreground: #191724;
 }
 
-:root[data-palette="gruvbox"] {
+[data-palette="gruvbox"] {
   --background: #fbf1c7;
   --foreground: #3c3836;
   --card: #f9f5d7;
@@ -91,7 +126,8 @@
   --primary: #af3a03;
   --primary-foreground: #fbf1c7;
 }
-:root.dark[data-palette="gruvbox"] {
+.dark[data-palette="gruvbox"],
+.dark [data-palette="gruvbox"] {
   --background: #282828;
   --foreground: #ebdbb2;
   --card: #32302f;

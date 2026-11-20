@@ -1,7 +1,8 @@
 import { parsePatchFiles, type FileDiffMetadata } from "@pierre/diffs";
 import { FileDiff } from "@pierre/diffs/react";
 import { useMemo } from "react";
-import { useDiffStyle, useTheme } from "@/lib/prefs";
+import { PALETTES } from "@/lib/palettes";
+import { useDiffStyle, usePalette, useTheme } from "@/lib/prefs";
 import { cn } from "@/lib/utils";
 
 export function useParsedPatch(raw: string) {
@@ -23,11 +24,12 @@ export function DiffView({ raw, className }: { raw: string; className?: string }
 }
 
 export function DiffFiles({ files, className }: { files: FileDiffMetadata[]; className?: string }) {
-  const { resolved, palette } = useTheme();
+  const { resolved } = useTheme();
+  const [palette] = usePalette();
   const [diffStyle] = useDiffStyle();
   const options = useMemo(
     () => ({
-      theme: palette.diffs,
+      theme: PALETTES[palette].diffs,
       themeType: resolved,
       diffStyle,
       overflow: "scroll" as const,

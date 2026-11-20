@@ -5,7 +5,7 @@ try {
   if (t === "dark" || (t !== "light" && matchMedia("(prefers-color-scheme: dark)").matches))
     document.documentElement.classList.add("dark");
   const p = localStorage.getItem("gitui-palette");
-  if (p && p !== "neutral") document.documentElement.dataset.palette = p;
+  if (p) document.documentElement.dataset.palette = p;
 } catch {
   // storage unavailable: prefs.ts applies the theme once the app loads
 }

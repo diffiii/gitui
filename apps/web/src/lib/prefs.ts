@@ -1,16 +1,23 @@
 import { useSyncExternalStore } from "react";
-import { findPalette, type PaletteId } from "./themes.ts";
+import { PALETTE_IDS } from "./palettes.ts";
 
-/** Tiny localStorage-backed preference store usable from any component. */
-function createPref<T extends string>(key: string, fallback: T) {
+/**
+ * Tiny localStorage-backed preference store usable from any component. Only `values` are
+ * accepted: anything else stored or set is ignored, and the first value is the default.
+ */
+function createPref<const T extends string>(key: string, values: readonly T[]) {
   const listeners = new Set<() => void>();
-  let value: T = fallback;
+  const valid = (v: string | null): v is T => values.includes(v as T);
+  let value: T = values[0];
   try {
-    value = (localStorage.getItem(key) as T | null) ?? fallback;
+    const stored = localStorage.getItem(key);
+    if (valid(stored)) value = stored;
   } catch {
     // storage unavailable
   }
-  const set = (v: T) => {
+  /** Takes a string, e.g. a radio group's value, and ignores anything that isn't a value. */
+  const set = (v: string) => {
+    if (!valid(v)) return;
     value = v;
     try {
       localStorage.setItem(key, v);
@@ -28,13 +35,13 @@ function createPref<T extends string>(key: string, fallback: T) {
   return Object.assign(use, { get, subscribe });
 }
 
-export type Theme = "light" | "dark" | "system";
-export type DiffStyle = "unified" | "split";
+export const THEMES = ["system", "light", "dark"] as const;
+export type Theme = (typeof THEMES)[number];
 
-const useThemePref = createPref<Theme>("gitui-theme", "system");
-export const usePalette = createPref<PaletteId>("gitui-palette", "neutral");
-export const useDiffStyle = createPref<DiffStyle>("gitui-diff-style", "unified");
-export const useHistoryDetails = createPref<"open" | "closed">("gitui-history-details", "open");
+const useThemePref = createPref("gitui-theme", THEMES);
+export const usePalette = createPref("gitui-palette", PALETTE_IDS);
+export const useDiffStyle = createPref("gitui-diff-style", ["unified", "split"]);
+export const useHistoryDetails = createPref("gitui-history-details", ["open", "closed"]);
 
 const media = window.matchMedia("(prefers-color-scheme: dark)");
 const subscribeMedia = (cb: () => void) => {
@@ -47,14 +54,8 @@ const resolveTheme = (theme: Theme, systemDark: boolean): "light" | "dark" =>
 
 export function useTheme() {
   const [theme, setTheme] = useThemePref();
-  const [palette] = usePalette();
   const systemDark = useSyncExternalStore(subscribeMedia, () => media.matches);
-  return {
-    theme,
-    resolved: resolveTheme(theme, systemDark),
-    setTheme,
-    palette: findPalette(palette),
-  };
+  return { theme, resolved: resolveTheme(theme, systemDark), setTheme };
 }
 
 // Keep the theme class and palette on <html> in sync, outside React, so they are right before
@@ -64,9 +65,7 @@ function applyTheme() {
   const resolved = resolveTheme(useThemePref.get(), media.matches);
   root.classList.toggle("dark", resolved === "dark");
   root.style.colorScheme = resolved;
-  const palette = findPalette(usePalette.get()).id;
-  if (palette === "neutral") delete root.dataset.palette;
-  else root.dataset.palette = palette;
+  root.dataset.palette = usePalette.get();
 }
 applyTheme();
 useThemePref.subscribe(applyTheme);
