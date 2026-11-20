@@ -5,7 +5,7 @@
 // public address, and a guest may reach it over either family. Each session belongs to the
 // socket its offer came on, which carries all its signals and its `gone`.
 import net from "node:net";
-import { HOSTED_ORIGIN, hostKey, type SignalData, STUN_URLS } from "@gitui/shared";
+import { HOSTED_ORIGIN, hostKey, printable, type SignalData, STUN_URLS } from "@gitui/shared";
 import { lockoutLine, newHostSecret, PairingBudget, Tokens } from "./auth.ts";
 import type { Fetch } from "./bridge.ts";
 import { guardWerift } from "./guard.ts";
@@ -33,9 +33,6 @@ export function familiesFor(url: string): Family[] {
   return family === 4 || family === 6 ? [family] : [4, 6];
 }
 
-/** `text` without control characters, which would let a remote string drive the terminal. */
-const printable = (text: string) => text.replace(/\p{Cc}/gu, "");
-
 export interface NearbyOptions {
   /** The rendezvous WebSocket URL (@gitui/shared's rendezvousUrl). */
   url: string;
@@ -43,7 +40,7 @@ export interface NearbyOptions {
   name: string;
   /** Answers authenticated guests' requests: an app built with the nearby listener. */
   fetch: Fetch;
-  /** Prints a line; every line comes without control characters (`printable`). */
+  /** Prints a line; every line comes through `printable` (@gitui/shared), so none is unsafe. */
   log: (line: string) => void;
   /** For tests: how sockets and peer connections open, the pairing budget, and timings. */
   open?: SocketFactory;

@@ -90,9 +90,21 @@ export const isHeaders = (value: unknown): value is [string, string][] =>
   );
 
 // Control characters, line and paragraph separators, and the bidi controls that could make a
-// name display as another.
-const UNSAFE_NAME_CHAR = /[\p{Cc}\p{Zl}\p{Zp}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/u;
-const UNSAFE_NAME_CHARS = new RegExp(UNSAFE_NAME_CHAR.source, "gu");
+// name display as another, or a remote string drive or garble a terminal.
+const UNSAFE_CHAR = /[\p{Cc}\p{Zl}\p{Zp}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/u;
+const UNSAFE_CHARS = new RegExp(UNSAFE_CHAR.source, "gu");
+
+/** The longest text `printable` returns, in code points. */
+export const MAX_PRINTABLE_LENGTH = 500;
+
+/**
+ * `text` safe to print where it may quote others (a terminal, a log): without the characters
+ * that hostName refuses, and cut to `max` code points, ending in "…" if it was cut.
+ */
+export function printable(text: string, max = MAX_PRINTABLE_LENGTH): string {
+  const kept = Array.from(text.replace(UNSAFE_CHARS, ""));
+  return kept.length > max ? `${kept.slice(0, max - 1).join("")}…` : kept.join("");
+}
 
 /**
  * A host's display name, trimmed, if it is 1 to MAX_NAME_LENGTH code points long and has no
@@ -102,7 +114,7 @@ export function hostName(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const name = value.trim();
   const length = Array.from(name).length; // code points
-  return length >= 1 && length <= MAX_NAME_LENGTH && !UNSAFE_NAME_CHAR.test(name) ? name : null;
+  return length >= 1 && length <= MAX_NAME_LENGTH && !UNSAFE_CHAR.test(name) ? name : null;
 }
 
 /**
@@ -110,7 +122,7 @@ export function hostName(value: unknown): string | null {
  * to MAX_NAME_LENGTH code points. Null if nothing is left.
  */
 export function toHostName(text: string): string | null {
-  const kept = Array.from(text.replace(UNSAFE_NAME_CHARS, "").trim()).slice(0, MAX_NAME_LENGTH);
+  const kept = Array.from(text.replace(UNSAFE_CHARS, "").trim()).slice(0, MAX_NAME_LENGTH);
   return hostName(kept.join(""));
 }
 

@@ -20,6 +20,8 @@ import {
   parseSignal,
   rendezvousUrl,
   sdpFingerprint,
+  MAX_PRINTABLE_LENGTH,
+  printable,
   toHostName,
 } from "./nearby-codec.ts";
 
@@ -239,6 +241,15 @@ test("hostName trims and bounds names by code point and rejects control and bidi
   }
   // Emoji sequences keep their joiners.
   expect(hostName("👩‍💻 box")).toBe("👩‍💻 box");
+});
+
+test("printable drops control and bidi characters and caps the length", () => {
+  expect(printable("a\u001b[2Jb\nc\u202Ed\u2028e\u2066f")).toBe("a[2Jbcdef");
+  expect(printable("💻".repeat(MAX_PRINTABLE_LENGTH))).toBe("💻".repeat(MAX_PRINTABLE_LENGTH));
+  expect(printable("💻".repeat(MAX_PRINTABLE_LENGTH + 1))).toBe(
+    `${"💻".repeat(MAX_PRINTABLE_LENGTH - 1)}…`,
+  );
+  expect(printable("abcdef", 4)).toBe("abc…");
 });
 
 test("toHostName drops what hostName refuses and cuts by code point", () => {

@@ -506,7 +506,7 @@ test("during a lockout, an offer that says it resumes but sends a pake is refuse
   v4.receive({ type: "signal", from: "b", data: { kind: "candidate", offerId: guest.offerId } });
   v4.receive({ type: "signal", from: "b", data: { kind: "nonsense", offerId: guest.offerId } });
   v4.receive({ type: "signal", from: "b", data: { kind: "refused", offerId, reason: "?" } });
-  v4.receive({ type: "error", code: "from-the-future", message: "new\u0007 error" });
+  v4.receive({ type: "error", code: "from-the-future", message: "new\u0007 \u202Eerror" });
   expect(log.at(-1)).toBe("Nearby: the rendezvous service reported: new error (unknown)");
   expect(guest.closed).toBe(false);
 
