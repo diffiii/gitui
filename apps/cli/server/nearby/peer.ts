@@ -10,7 +10,6 @@ import {
   type Fingerprints,
   hostFinish,
   type HostMessage,
-  type HostPake,
   hostRespond,
   type IceCandidate,
   MAX_LOCAL_CANDIDATES,
@@ -21,8 +20,8 @@ import {
   fingerprints,
   Gatekeeper,
   newCode,
+  type Outcome,
   type PairingBudget,
-  type Step,
   type Tokens,
 } from "./auth.ts";
 import { Bridge, type Fetch } from "./bridge.ts";
@@ -66,6 +65,9 @@ export interface GuestOptions {
   authTimeout?: number;
 }
 
+/** A CPace run answered, waiting for the guest's `pake-confirm`. */
+type Run = NonNullable<ReturnType<typeof hostRespond>>;
+
 type State = "answering" | "authenticating" | "open" | "closed";
 
 /** What the guest's proofs are checked against, once the answer is made. */
@@ -79,15 +81,13 @@ export class GuestSession {
   readonly #peer: AnsweringPeer;
   readonly #answered: Promise<void>;
   readonly #timer: ReturnType<typeof setTimeout>;
-  readonly #gate: Gatekeeper;
+  readonly #gate: Gatekeeper<Run>;
   /** The candidates the guest trickled for this offer. */
   #candidates = 0;
   /** The candidates this side trickled. */
   #localCandidates = 0;
   #state: State = "answering";
   #expected: Expected | null = null;
-  /** The CPace run waiting for the guest's `pake-confirm`. */
-  #pake: HostPake | null = null;
   #codeShown = false;
   #channel: DataChannel | null = null;
   #bridge: Bridge | null = null;
@@ -197,29 +197,33 @@ export class GuestSession {
 
     switch (message?.t) {
       case "resume": {
-        this.#pake = null;
         const answer = resumeAnswer(this.#options.tokens.list(), expected.prints, message);
-        return this.#do(channel, this.#gate.resume(answer !== null), answer?.message);
+        const outcome = this.#gate.resume(answer !== null);
+        if (outcome.kind !== "open") return this.#do(channel, outcome);
+        // The guest keeps its token: it is as good as it was. `resume-ok` proves this host holds
+        // it.
+        this.#open(channel, "Nearby: a device reconnected");
+        if (answer) this.#send(channel, answer.message);
+        return;
       }
       case "pake": {
-        this.#pake = null;
-        const step = this.#gate.pake();
+        const step = this.#gate.pake(() => hostRespond(expected.code, expected.prints, message.y));
         if (step.kind !== "answer") return this.#do(channel, step);
         // Whoever sent a code without being shown one gets it now (a guest that said it would
         // resume and then didn't).
         this.#showCode();
-        const answer = hostRespond(expected.code, expected.prints, message.y);
-        if (!answer) return this.#do(channel, this.#gate.confirm(false));
-        this.#pake = answer.state;
-        return this.#send(channel, answer.message);
+        return this.#send(channel, step.run.message);
       }
       case "pake-confirm":
-      case "pake-fail": {
-        const run = this.#pake;
-        this.#pake = null;
-        const ok = message.t === "pake-confirm" && run !== null && hostFinish(run, message.confirm);
-        return this.#do(channel, this.#gate.confirm(ok));
-      }
+        return this.#do(
+          channel,
+          this.#gate.confirm((run) => hostFinish(run.state, message.confirm)),
+        );
+      case "pake-fail":
+        return this.#do(
+          channel,
+          this.#gate.confirm(() => false),
+        );
       default:
         return this.close("Nearby: a device sent requests before its code");
     }
@@ -229,32 +233,23 @@ export class GuestSession {
     channel.send(JSON.stringify(message));
   }
 
-  /** Carries out the Gatekeeper's `step`; `resumed` is the `resume-ok` for a resume. */
-  #do(channel: DataChannel, step: Step, resumed?: HostMessage) {
-    switch (step.kind) {
-      case "answer":
-        return;
+  /** Carries out the Gatekeeper's `outcome`; an `open` one here is by code (resumes open above). */
+  #do(channel: DataChannel, outcome: Outcome) {
+    switch (outcome.kind) {
       case "open":
-        if (step.via === "resume") {
-          // The guest keeps its token: it is as good as it was. `resume-ok` proves this host
-          // holds it.
-          this.#open(channel, "Nearby: a device reconnected");
-          if (resumed) this.#send(channel, resumed);
-          return;
-        }
         this.#open(channel, null);
         this.#send(channel, { t: "auth-ok" });
         return this.#send(channel, { t: "session", token: this.#options.tokens.issue() });
       case "fail":
         // A refused first resume shows the code: the guest asks for it on this channel next.
-        this.#send(channel, { t: "auth-fail", attemptsLeft: step.attemptsLeft });
+        this.#send(channel, { t: "auth-fail", attemptsLeft: outcome.attemptsLeft });
         return this.#showCode();
       case "refuse":
         this.#send(channel, { t: "auth-fail", attemptsLeft: 0 });
         // Out of budget, the budget's own line said why (host.ts).
         return this.#refuse(
           channel,
-          step.why === "attempts"
+          outcome.why === "attempts"
             ? `Nearby: refused a device that entered a wrong code ${AUTH_ATTEMPTS} times`
             : undefined,
         );
@@ -274,7 +269,6 @@ export class GuestSession {
   /** Out of attempts: the last `auth-fail` leaves, then the channel closes. */
   #refuse(channel: DataChannel, line?: string) {
     this.#expected = null;
-    this.#pake = null;
     void channel.drain(0).then(() => this.close(line));
   }
 }

@@ -6,7 +6,7 @@
 // socket its offer came on, which carries all its signals and its `gone`.
 import net from "node:net";
 import { HOSTED_ORIGIN, hostKey, type SignalData, STUN_URLS } from "@gitui/shared";
-import { BUDGET_LINE, newHostSecret, PairingBudget, Tokens } from "./auth.ts";
+import { lockoutLine, newHostSecret, PairingBudget, Tokens } from "./auth.ts";
 import type { Fetch } from "./bridge.ts";
 import { guardWerift } from "./guard.ts";
 import { OfferLimiter } from "./offers.ts";
@@ -44,8 +44,9 @@ export interface NearbyOptions {
   /** Answers authenticated guests' requests: an app built with the nearby listener. */
   fetch: Fetch;
   log: (line: string) => void;
-  /** For tests: how sockets open, and timings. */
+  /** For tests: how sockets open, the pairing budget, and timings. */
   open?: SocketFactory;
+  pairingBudget?: number;
   backoff?: typeof BACKOFF;
   keepalive?: typeof KEEPALIVE;
   statusDelay?: number;
@@ -58,7 +59,10 @@ export function startNearby(options: NearbyOptions) {
   /** What guests see: the service lists this host under it. */
   const key = hostKey(secret);
   const tokens = new Tokens();
-  const budget = new PairingBudget({ onExhausted: () => log(BUDGET_LINE) });
+  const budget = new PairingBudget({
+    limit: options.pairingBudget,
+    onLockout: (until) => log(lockoutLine(until)),
+  });
   const limiter = new OfferLimiter(budget);
   /** Sessions by socket family and the guest's peer id on it. */
   const sessions = new Map<string, GuestSession>();

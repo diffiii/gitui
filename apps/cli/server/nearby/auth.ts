@@ -3,6 +3,7 @@
 // earlier one. The protocol itself is @gitui/shared's nearby-pake.ts; this is the host's part.
 import { randomBytes, randomInt } from "node:crypto";
 import { AUTH_ATTEMPTS, AUTH_CODE_DIGITS, type Fingerprints, sdpFingerprint } from "@gitui/shared";
+import { RollingWindow } from "./rolling.ts";
 
 /** A fresh code of AUTH_CODE_DIGITS digits, leading zeros included. */
 export const newCode = () =>
@@ -51,19 +52,29 @@ export function fingerprints(offerSdp: string, answerSdp: string): Fingerprints 
 /**
  * The pairing attempts this process answers, across every connection: each `pake` the host
  * answers is a guess at a code, and AUTH_ATTEMPTS alone would start over with every new
- * connection. Over PAIRING_BUDGET in PAIRING_WINDOW, no `pake` is answered and offers are
- * refused (OfferLimiter). Successful pairings count too, and reset nothing.
+ * connection. Over PAIRING_BUDGET in PAIRING_WINDOW, no `pake` is answered and offers that don't
+ * resume are refused as `pairing-locked` (OfferLimiter). Successful pairings count too, and
+ * reset nothing.
  */
 export const PAIRING_BUDGET = 10;
 export const PAIRING_WINDOW = 10 * 60_000;
 
-/** The line printed when the pairing budget runs out. */
-export const BUDGET_LINE =
-  "Nearby: too many pairing attempts in the last 10 minutes, refusing new devices for now";
+/** "HH:MM" of `time`, in local time. */
+const clock = (time: number) => new Date(time).toTimeString().slice(0, 5);
+
+/** The line printed when the pairing budget runs out, until `until`. */
+export const lockoutLine = (until: number) =>
+  `Nearby: too many pairing attempts in the last ${PAIRING_WINDOW / 60_000} minutes, so ` +
+  `someone may be guessing codes. New devices can't pair until ${clock(until)}; paired ` +
+  "devices can still reconnect";
 
 export interface PairingBudgetOptions {
-  /** Called when a spend takes the last attempt: once each time the budget runs out. */
-  onExhausted?: () => void;
+  /**
+   * Called when a spend takes the last attempt, with when one frees up again: once per lockout,
+   * which lasts until a whole window passes without attempts. Attempts that free up during a
+   * lockout and are spent again (as a sustained attack does) don't call it again.
+   */
+  onLockout?: (until: number) => void;
   now?: () => number;
   limit?: number;
   window?: number;
@@ -71,29 +82,25 @@ export interface PairingBudgetOptions {
 
 /** The process-wide pairing budget (PAIRING_BUDGET per rolling PAIRING_WINDOW). */
 export class PairingBudget {
-  readonly #times: number[] = [];
-  readonly #onExhausted: () => void;
-  readonly #now: () => number;
+  readonly #attempts: RollingWindow;
+  readonly #onLockout: (until: number) => void;
   readonly #limit: number;
-  readonly #window: number;
+  #locked = false;
 
   constructor({
-    onExhausted = () => {},
+    onLockout = () => {},
     now = Date.now,
     limit = PAIRING_BUDGET,
     window = PAIRING_WINDOW,
   }: PairingBudgetOptions = {}) {
-    this.#onExhausted = onExhausted;
-    this.#now = now;
+    this.#attempts = new RollingWindow(limit, window, now);
+    this.#onLockout = onLockout;
     this.#limit = limit;
-    this.#window = window;
   }
 
   /** The attempts left in the current window. */
   get left() {
-    const since = this.#now() - this.#window;
-    while (this.#times.length && this.#times[0]! <= since) this.#times.shift();
-    return this.#limit - this.#times.length;
+    return this.#attempts.left;
   }
 
   get exhausted() {
@@ -102,45 +109,62 @@ export class PairingBudget {
 
   /** Takes one attempt; false if none is left. */
   spend() {
-    if (this.exhausted) return false;
-    this.#times.push(this.#now());
-    if (this.exhausted) this.#onExhausted();
+    // A whole window without attempts ends a lockout.
+    if (this.left === this.#limit) this.#locked = false;
+    if (!this.#attempts.take()) return false;
+    if (this.exhausted && !this.#locked) {
+      this.#locked = true;
+      this.#onLockout(this.#attempts.freesAt);
+    }
     return true;
   }
 }
 
-/** What the host does about a guest's authentication message (Gatekeeper). */
-export type Step =
-  /** Answer the `pake` (hostRespond); this run spent an attempt. */
-  | { kind: "answer" }
-  /** The guest proved itself, with its code or a resume token. */
-  | { kind: "open"; via: "code" | "resume" }
+type Fail = {
   /** Send `auth-fail` and show the code: the guest may try again. */
-  | { kind: "fail"; attemptsLeft: number }
+  kind: "fail";
+  attemptsLeft: number;
+};
+type Refuse = {
   /**
    * Send `auth-fail` with no attempts left and close the channel: the guest used its attempts,
    * or the pairing budget ran out.
    */
-  | { kind: "refuse"; why: "attempts" | "budget" }
+  kind: "refuse";
+  why: "attempts" | "budget";
+};
+
+/** What the host does about a guest's `pake` (Gatekeeper.pake). */
+export type PakeStep<Run> =
+  /** Send the run's answer; this run spent an attempt, and waits for its confirmation. */
+  { kind: "answer"; run: Run } | Fail | Refuse;
+
+/** How a guest's authentication went, after a confirmation or a resume. */
+export type Outcome =
+  /** The guest proved itself: with its code after `confirm`, its token after `resume`. */
+  | { kind: "open" }
+  | Fail
+  | Refuse
   /** A confirmation without a run: close the channel. */
   | { kind: "violation" };
 
 /**
- * One guest's authentication, decided without I/O: its attempts, the pairing budget, codes and
- * resumes. GuestSession (peer.ts) does the cryptography and sends what each step says.
+ * One guest's authentication, decided without I/O: its attempts, the pairing budget, codes,
+ * resumes, and the CPace run (a `Run`) waiting for its confirmation. GuestSession (peer.ts) does
+ * the cryptography and sends what each step says.
  *
  * Every `pake` answered spends one of AUTH_ATTEMPTS attempts and one of the budget's. The first
  * `resume` is free if it fails (tokens can't be guessed; the attempts guard the code), unless
  * the budget is out, since the code it would show couldn't be used; any later one that fails
  * spends an attempt. After the last attempt every message fails, right or not.
  */
-export class Gatekeeper {
+export class Gatekeeper<Run> {
   readonly #budget: PairingBudget;
   #left = AUTH_ATTEMPTS;
   /** Whether the guest sent its opening (`pake` or `resume`) yet. */
   #opened = false;
-  /** Whether a `pake` was answered and waits for its confirmation. */
-  #running = false;
+  /** The run answered that waits for its confirmation. */
+  #run: Run | null = null;
 
   constructor(budget: PairingBudget) {
     this.#budget = budget;
@@ -150,33 +174,38 @@ export class Gatekeeper {
     return this.#left;
   }
 
-  /** The guest's `pake`. A new one gives up on the run before it, whose attempt is spent. */
-  pake(): Step {
+  /**
+   * The guest's `pake`: `respond` answers it (hostRespond), or returns null for a share it can't
+   * use, which is a failed attempt. It is called only if the pake may be answered. A new `pake`
+   * gives up on the run before it, whose attempt is spent.
+   */
+  pake(respond: () => Run | null): PakeStep<Run> {
     this.#opened = true;
-    this.#running = false;
+    this.#run = null;
     if (this.#left === 0) return { kind: "refuse", why: "attempts" };
     if (!this.#budget.spend()) return { kind: "refuse", why: "budget" };
     this.#left--;
-    this.#running = true;
-    return { kind: "answer" };
+    this.#run = respond();
+    return this.#run === null ? this.#fail() : { kind: "answer", run: this.#run };
   }
 
   /**
-   * The end of the run: `ok` if the guest's `pake-confirm` checked out; false for a tag that
-   * didn't, a `pake-fail`, or a share hostRespond couldn't use.
+   * The end of the run: `check` says whether the guest's `pake-confirm` checks out against it.
+   * A `pake-fail` is a check that fails.
    */
-  confirm(ok: boolean): Step {
-    if (!this.#running) return { kind: "violation" };
-    this.#running = false;
-    return ok ? { kind: "open", via: "code" } : this.#fail();
+  confirm(check: (run: Run) => boolean): Outcome {
+    const run = this.#run;
+    if (run === null) return { kind: "violation" };
+    this.#run = null;
+    return check(run) ? { kind: "open" } : this.#fail();
   }
 
   /** The guest's `resume`; `valid` if its proof matched a live token. */
-  resume(valid: boolean): Step {
+  resume(valid: boolean): Outcome {
     const first = !this.#opened;
     this.#opened = true;
-    this.#running = false;
-    if (valid && this.#left > 0) return { kind: "open", via: "resume" };
+    this.#run = null;
+    if (valid && this.#left > 0) return { kind: "open" };
     if (first && !valid) {
       return this.#budget.exhausted
         ? { kind: "refuse", why: "budget" }
@@ -186,7 +215,7 @@ export class Gatekeeper {
     return this.#fail();
   }
 
-  #fail(): Step {
+  #fail(): Fail | Refuse {
     return this.#left > 0
       ? { kind: "fail", attemptsLeft: this.#left }
       : { kind: "refuse", why: "attempts" };

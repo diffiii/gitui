@@ -339,7 +339,7 @@ test("secrets, keys, tokens and codes have their formats", () => {
 
 test("the pairing budget spans sessions; once out, a pake is refused unanswered", async () => {
   const lines: string[] = [];
-  const budget = new PairingBudget({ limit: 2, onExhausted: () => lines.push("out") });
+  const budget = new PairingBudget({ limit: 2, onLockout: () => lines.push("out") });
   const first = await connect({ budget });
   await first.opened();
   expect(await first.pake(wrongCode(await first.shownCode()))).toBe(false);

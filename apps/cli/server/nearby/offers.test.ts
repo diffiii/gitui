@@ -44,8 +44,21 @@ test("while the pairing budget is out, only offers that resume are taken", () =>
   const { limiter: offers, budget } = limiter(1);
   budget.spend();
   // The budget printed its own line.
-  expect(offers.admit(0, false)).toMatchObject({ reason: "rate-limited", line: null });
+  expect(offers.admit(0, false)).toEqual({
+    ok: false,
+    reason: "pairing-locked",
+    line: null,
+    tell: true,
+  });
   expect(offers.admit(0, true)).toEqual({ ok: true });
+});
+
+test("the first limit that applies is the reason", () => {
+  const { limiter: offers, budget } = limiter(1);
+  budget.spend();
+  for (let i = 0; i < MAX_OFFERS_PER_MINUTE; i++) offers.admit(0, true);
+  expect(offers.admit(MAX_PENDING, false)).toMatchObject({ reason: "busy" });
+  expect(offers.admit(0, false)).toMatchObject({ reason: "rate-limited" });
 });
 
 test("refusals are told at most MAX_REFUSALS_PER_WINDOW times in any RATE_WINDOW", () => {
