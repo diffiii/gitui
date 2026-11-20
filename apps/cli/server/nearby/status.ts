@@ -55,11 +55,14 @@ export const initialStatus = (families: readonly Family[]): Status => ({
 
 type Next = [Status, StatusLine | null];
 
-/** The first line, said once every family settled or STATUS_DELAY passed. */
-const announce = (status: Status): Next =>
-  status.visible.length
-    ? [{ ...status, phase: "up" }, "visible"]
-    : [{ ...status, phase: "unreachable" }, "unreachable"];
+/**
+ * The first line, said once every family settled or STATUS_DELAY passed. A host the service had
+ * no room for reached it, and that was said already.
+ */
+const announce = (status: Status): Next => {
+  if (status.visible.length) return [{ ...status, phase: "up" }, "visible"];
+  return [{ ...status, phase: "unreachable" }, status.noRoomSaid ? null : "unreachable"];
+};
 
 /** The status after `event`, and the line it calls for, if any (at most one). */
 export function nextStatus(status: Status, event: StatusEvent): Next {

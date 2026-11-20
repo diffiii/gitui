@@ -48,3 +48,12 @@ test("no room is said once until a welcome, or until the reason changes", () => 
     "no-room-sockets",
   ]);
 });
+
+test("no room before the first line isn't followed by a line that the service can't be reached", () => {
+  const hosts: StatusEvent = { type: "no-room", why: "hosts" };
+  expect(run([4], [hosts, down(4), hosts, down(4), welcome(4)]).lines).toEqual([
+    "no-room-hosts",
+    "visible",
+  ]);
+  expect(run([4, 6], [hosts, down(4), { type: "timeout" }]).lines).toEqual(["no-room-hosts"]);
+});
