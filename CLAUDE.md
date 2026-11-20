@@ -13,6 +13,7 @@ bun test                    # bun:test; server tests run against real temp repos
 vp check                    # format, lint (type-aware), type check
 bun run build               # tsc -b, build apps/web, bundle the CLI into apps/cli/dist (+ dist/web)
 cd apps/web && bun run deploy  # build and deploy the hosted UI to Cloudflare (needs wrangler login)
+scripts/smoke.sh            # run the built CLI with node (hosted and --local) and probe it
 ```
 
 ## Layout
@@ -21,11 +22,13 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
 
 - `apps/cli/` (`@diffiii/gitui`, published to npm): the `gitui` bin (`bin/gitui.ts`) and the
   Hono API in `server/`. `app.ts` holds the routes, `git.ts` wraps the git CLI and parses its
-  output, `main.ts` starts the server (`@hono/node-server`) and serves the UI from `dist/web`,
-  `dev.ts` is the dev API entry. `bun run build` bundles `bin/gitui.ts` for Node into
-  `dist/gitui.js` and copies `apps/web/dist` to `dist/web`; that is all the package ships, with
-  no runtime dependencies. Server code must run on Node too: no `Bun.*` APIs outside tests.
-  Tests live next to the code (`server/*.test.ts`).
+  output, `main.ts` starts the server (`@hono/node-server`), serving the UI directory it's given
+  (`bin/gitui.ts` passes `dist/web` only with `--local`; by default the hosted app is the UI),
+  `dev.ts` is the dev API entry. `bun run build` (`scripts/build.ts`) bundles `bin/gitui.ts` for
+  Node into `dist/gitui.js`, copies `apps/web/dist` to `dist/web` and the root `LICENSE` into
+  the package; with `README.md` that is all the package ships, with no runtime dependencies.
+  Code in `bin/` and `server/` must run on Node too: no `Bun.*` APIs outside tests, `dev.ts`
+  and `test-repo.ts` (a lint rule enforces it). Tests live next to the code (`server/*.test.ts`).
 - `apps/web/` (`@gitui/web`): React app. `src/lib/` holds the API client, graph layout and
   prefs, `src/components/` the views, and `src/components/ui/` the shadcn components. Unit
   tests sit next to their module (`src/**/*.test.ts`, type-checked by `tsconfig.test.json`).
@@ -37,10 +40,11 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
 - `packages/shared/` (`@gitui/shared`): API types and the connection contract (default port,
   client header, hosted origin, loopback hosts, pairing links) used by both sides, imported as
   `@gitui/shared`.
-- Root: `scripts/dev.ts` (runs both apps), `vite.config.ts` (workspace fmt/lint/type check
-  config, `defaultPackage` points `vp dev`/`vp build` at `apps/web`), `tsconfig.json`
-  (project references to every package), `.github/workflows/release.yml` (publishes the CLI to
-  npm on `v*` tags, via trusted publishing).
+- Root: `scripts/dev.ts` (runs both apps), `scripts/smoke.sh` (runs the built bundle with node
+  in both modes and checks what it serves; CI and release run it), `vite.config.ts` (workspace
+  fmt/lint/type check config, `defaultPackage` points `vp dev`/`vp build` at `apps/web`),
+  `tsconfig.json` (project references to every package), `.github/workflows/release.yml`
+  (publishes the CLI to npm on `v*` tags matching its version, via trusted publishing).
 
 ## Conventions
 
