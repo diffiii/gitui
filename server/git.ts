@@ -28,11 +28,28 @@ interface RunOptions {
   okCodes?: number[];
   input?: string;
   maxBytes?: number;
+  /** Kill the child and reject if it runs longer than this. Default: no timeout. */
+  timeoutMs?: number;
 }
 
 const MAX_OUTPUT = 8 * 1024 * 1024;
 
+export interface CappedOutput {
+  stdout: string;
+  /** stdout exceeded `maxBytes`; the child was killed and only the first part was kept. */
+  truncated: boolean;
+}
+
 export function git(cwd: string, args: string[], opts: RunOptions = {}): Promise<string> {
+  return gitCapped(cwd, args, opts).then((r) => r.stdout);
+}
+
+/** Like `git()`, but reports whether stdout was cut off at `maxBytes` (default 8 MB). */
+export function gitCapped(
+  cwd: string,
+  args: string[],
+  opts: RunOptions = {},
+): Promise<CappedOutput> {
   const okCodes = opts.okCodes ?? [0];
   const maxBytes = opts.maxBytes ?? MAX_OUTPUT;
   return new Promise((resolve, reject) => {
@@ -49,6 +66,19 @@ export function git(cwd: string, args: string[], opts: RunOptions = {}): Promise
     const err: Buffer[] = [];
     let size = 0;
     let truncated = false;
+    let timedOut = false;
+    // On SIGTERM git also signals the children it marks clean-on-exit (ssh, remote helpers,
+    // aliases). We reject right away rather than on "close", which a straggler holding the pipe
+    // could delay.
+    const timer =
+      opts.timeoutMs === undefined
+        ? undefined
+        : setTimeout(() => {
+            timedOut = true;
+            child.kill();
+            const secs = Math.round(opts.timeoutMs! / 100) / 10;
+            reject(new GitError(`git ${args[0]} timed out after ${secs} s`, null, ""));
+          }, opts.timeoutMs);
     child.stdout.on("data", (chunk: Buffer) => {
       if (truncated) return;
       size += chunk.length;
@@ -61,17 +91,58 @@ export function git(cwd: string, args: string[], opts: RunOptions = {}): Promise
       out.push(chunk);
     });
     child.stderr.on("data", (chunk: Buffer) => err.push(chunk));
-    child.on("error", reject);
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      reject(e);
+    });
     child.on("close", (code) => {
+      clearTimeout(timer);
+      if (timedOut) return;
       const stdout = Buffer.concat(out).toString("utf8");
-      if (truncated) return resolve(stdout);
+      if (truncated) return resolve({ stdout, truncated });
       const stderr = Buffer.concat(err).toString("utf8").trim();
-      if (code !== null && okCodes.includes(code)) return resolve(stdout);
+      if (code !== null && okCodes.includes(code)) return resolve({ stdout, truncated });
       reject(new GitError(stderr || `git ${args[0]} exited with ${code}`, code, stderr));
     });
     if (opts.input !== undefined) child.stdin.end(opts.input);
     else child.stdin.end();
   });
+}
+
+/**
+ * Make a patch that was cut off at an arbitrary byte parseable again:
+ * - If it contains more than one file, drop the trailing partial file (cut at the last
+ *   `diff --git` header).
+ * - Otherwise (always the case for a single-file diff) keep the first file up to its last complete
+ *   line, and rewrite the line counts of its last hunk header to match what was kept, so the
+ *   parser sees a valid (shorter) hunk instead of a broken one.
+ * Content lines start with ' ', '+', '-' or '\\', so these markers only match real headers.
+ */
+function trimPatch(patch: string): string {
+  const fileCut = patch.lastIndexOf("\ndiff --git ");
+  if (fileCut >= 0) return patch.slice(0, fileCut + 1);
+  const hunkAt = patch.lastIndexOf("\n@@ ") + 1;
+  if (hunkAt === 0) return "";
+  const lines = patch
+    .slice(hunkAt, patch.lastIndexOf("\n") + 1)
+    .split("\n")
+    .slice(0, -1);
+  const m = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/.exec(lines[0] ?? "");
+  if (!m) return patch.slice(0, hunkAt);
+  let oldN = 0;
+  let newN = 0;
+  for (const l of lines.slice(1)) {
+    if (l[0] === " " || l[0] === "-") oldN++;
+    if (l[0] === " " || l[0] === "+") newN++;
+  }
+  // Nothing of this hunk survived: keep only what came before it.
+  if (oldN + newN === 0) return patch.slice(0, hunkAt);
+  const header = `@@ -${m[1]},${oldN} +${m[2]},${newN} @@${m[3]}`;
+  return patch.slice(0, hunkAt) + [header, ...lines.slice(1)].join("\n") + "\n";
+}
+
+function cappedPatch({ stdout, truncated }: CappedOutput) {
+  return { patch: truncated ? trimPatch(stdout) : stdout, truncated };
 }
 
 export function expandHome(p: string) {
@@ -174,17 +245,33 @@ async function hasHead(repo: string) {
 
 export async function fileDiff(
   repo: string,
-  opts: { path: string; origPath?: string; staged: boolean; untracked: boolean },
-): Promise<string> {
+  opts: {
+    path: string;
+    origPath?: string;
+    staged: boolean;
+    untracked: boolean;
+    /** Output cap; defaults to 8 MB. */
+    maxBytes?: number;
+  },
+): Promise<{ diff: string; truncated: boolean }> {
+  let out: CappedOutput;
   if (opts.untracked) {
-    return git(repo, ["diff", "--no-index", "--no-color", "--", "/dev/null", opts.path], {
-      okCodes: [0, 1],
-    });
+    out = await gitCapped(
+      repo,
+      ["diff", "--no-index", "--no-color", "--", "/dev/null", opts.path],
+      {
+        okCodes: [0, 1],
+        maxBytes: opts.maxBytes,
+      },
+    );
+  } else {
+    const paths = opts.origPath ? [opts.origPath, opts.path] : [opts.path];
+    const args = ["diff", "--no-color", "-M", "--no-ext-diff"];
+    if (opts.staged) args.push("--cached");
+    out = await gitCapped(repo, [...args, "--", ...paths], { maxBytes: opts.maxBytes });
   }
-  const paths = opts.origPath ? [opts.origPath, opts.path] : [opts.path];
-  const args = ["diff", "--no-color", "-M", "--no-ext-diff"];
-  if (opts.staged) args.push("--cached");
-  return git(repo, [...args, "--", ...paths]);
+  const { patch, truncated } = cappedPatch(out);
+  return { diff: patch, truncated };
 }
 
 // ---------------------------------------------------------------- staging & commit
@@ -264,7 +351,11 @@ export async function log(
   return parseLog(await git(repo, args).catch(() => ""));
 }
 
-export async function showCommit(repo: string, hash: string): Promise<CommitDetail> {
+export async function showCommit(
+  repo: string,
+  hash: string,
+  opts: { maxBytes?: number } = {},
+): Promise<CommitDetail> {
   const metaRaw = await git(repo, [
     "show",
     "-s",
@@ -275,16 +366,22 @@ export async function showCommit(repo: string, hash: string): Promise<CommitDeta
   ]);
   const [h, parents, author, email, date, refs, subject, committer, cdate, body] =
     metaRaw.split("\x1f");
-  const patch = await git(repo, [
-    "show",
-    "--format=",
-    "--no-color",
-    "-M",
-    "--diff-merges=first-parent",
-    "--no-ext-diff",
-    hash,
-    "--",
-  ]);
+  const { patch, truncated } = cappedPatch(
+    await gitCapped(
+      repo,
+      [
+        "show",
+        "--format=",
+        "--no-color",
+        "-M",
+        "--diff-merges=first-parent",
+        "--no-ext-diff",
+        hash,
+        "--",
+      ],
+      { maxBytes: opts.maxBytes },
+    ),
+  );
   return {
     hash: h,
     parents: parents ? parents.split(" ") : [],
@@ -297,6 +394,7 @@ export async function showCommit(repo: string, hash: string): Promise<CommitDeta
     committerDate: Number(cdate),
     body: (body ?? "").trim(),
     patch,
+    truncated,
   };
 }
 
@@ -369,15 +467,19 @@ export async function deleteBranch(repo: string, name: string, force: boolean) {
 
 // ---------------------------------------------------------------- remotes
 
+/** Remote operations can legitimately be slow, but a hung one (e.g. ssh stuck) must not live forever. */
+const REMOTE_TIMEOUT_MS = 10 * 60 * 1000;
+
 export async function remoteAction(repo: string, action: "fetch" | "pull" | "push") {
-  if (action === "fetch") return git(repo, ["fetch", "--all", "--prune"]);
-  if (action === "pull") return git(repo, ["pull", "--ff-only"]);
+  const opts = { timeoutMs: REMOTE_TIMEOUT_MS };
+  if (action === "fetch") return git(repo, ["fetch", "--all", "--prune"], opts);
+  if (action === "pull") return git(repo, ["pull", "--ff-only"], opts);
   const st = await status(repo);
   if (!st.head.upstream) {
     const remotes = (await git(repo, ["remote"])).split("\n").filter(Boolean);
     const remote = remotes.includes("origin") ? "origin" : remotes[0];
     if (!remote) throw new GitError("No remote configured", null, "");
-    return git(repo, ["push", "-u", remote, "HEAD"]);
+    return git(repo, ["push", "-u", remote, "HEAD"], opts);
   }
-  return git(repo, ["push"]);
+  return git(repo, ["push"], opts);
 }

@@ -257,10 +257,23 @@ function FileDiffPane({ file, staged }: { file: FileStatus; staged: boolean }) {
   if (error) return <div className="p-6 text-sm text-destructive">{error.message}</div>;
   if (!data) return null;
   if (!data.diff.trim()) {
-    return <EmptyState icon={FileDiff} title="No textual changes" description={file.path} />;
+    return data.truncated ? (
+      <EmptyState
+        icon={FileDiff}
+        title="Diff is too large to show"
+        description={`${file.path} — larger than 8 MB`}
+      />
+    ) : (
+      <EmptyState icon={FileDiff} title="No textual changes" description={file.path} />
+    );
   }
   return (
     <ScrollArea className="h-full">
+      {data.truncated && (
+        <div className="mx-3 mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+          Diff is larger than 8 MB — showing only the first part
+        </div>
+      )}
       <DiffView raw={data.diff} className="p-3" />
     </ScrollArea>
   );
