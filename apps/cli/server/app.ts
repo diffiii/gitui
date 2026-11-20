@@ -1,7 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import { Hono } from "hono";
-import { type AccessOptions, apiAccess } from "./access.ts";
+import { type AccessOptions, installAccess } from "./access.ts";
 import { pushRecent, readRecent } from "./config.ts";
 import * as g from "./git.ts";
 import { withRepoLock } from "./lock.ts";
@@ -80,7 +80,7 @@ export function createApp(opts: AppOptions) {
   const app = new Hono<Env>();
   const api = new Hono<Env>();
 
-  app.use("/api/*", apiAccess(opts));
+  installAccess(app, opts);
 
   app.onError((err, c) => {
     const message = err instanceof g.GitError ? err.message : String(err);

@@ -24,9 +24,12 @@ gitui                     # open the repository picker
 gitui .                   # open the repository containing the current directory
 gitui ~/code/x -p 5000 --no-open
 gitui --local             # serve the UI bundled in the package instead of using the hosted app
+gitui --lan               # serve the bundled UI on your network, to use from your phone
 ```
 
 By default gitui serves only the API and opens the hosted app at https://gitui.diffiii.dev through a pairing link it prints. The link carries the port and a pairing token (kept in `~/.config/gitui/token`; delete it to rotate the token), so a browser stays paired across restarts. `--local` serves the UI from the package on localhost and opens that instead, for offline use or browsers that may block the hosted page from reaching localhost (Safari); the pairing link is printed either way. `--allow-origin <origin>` (repeatable) lets another web app origin pair too, e.g. a self-hosted copy or a local build.
+
+`--lan [address]` serves the bundled UI on this machine's network address (by default the IPv4 address of the default route; pass one to override it) and prints a link and a QR code for a phone or another device on the same network. The link sets a session cookie, which every API request then needs; its key is made per run, so restarting gitui unpairs every device. It travels over plain HTTP, so use it on trusted networks only (home Wi-Fi or a phone hotspot, not public Wi-Fi). LAN mode serves its own UI only: the hosted app can't pair with it, and it doesn't open a browser.
 
 ## Development
 
@@ -49,7 +52,7 @@ One-time setup: create a GitHub environment named `npm` (Settings → Environmen
 
 ## How it works
 
-- `apps/cli/` (`@diffiii/gitui`): the `gitui` CLI and a [Hono](https://hono.dev) API (`server/`) that shells out to the `git` CLI (`server/git.ts`). It listens on 127.0.0.1 only, rejects requests whose `Host` isn't localhost, and requires an `x-gitui` header on every API request. Cross-origin requests are refused unless they come from an allowed origin (the hosted app, plus any `--allow-origin`), and those must also send the pairing token as a bearer token, so other websites can't drive it. `bun run build` bundles it into one Node-compatible file (`dist/gitui.js`) next to a copy of the built UI (`dist/web`), which is what the npm package ships, with `apps/cli/README.md` and the root `LICENSE`.
+- `apps/cli/` (`@diffiii/gitui`): the `gitui` CLI and a [Hono](https://hono.dev) API (`server/`) that shells out to the `git` CLI (`server/git.ts`). It listens on 127.0.0.1 only, rejects requests whose `Host` isn't localhost, and requires an `x-gitui` header on every API request. Cross-origin requests are refused unless they come from an allowed origin (the hosted app, plus any `--allow-origin`), and those must also send the pairing token as a bearer token, so other websites can't drive it. With `--lan` it listens on a network address instead, accepts only that address (or localhost) as `Host`, refuses cross-origin pages, and requires the session cookie from its pairing link (`/pair?key=…`) on every API request. `bun run build` bundles it into one Node-compatible file (`dist/gitui.js`) next to a copy of the built UI (`dist/web`, whose `index.html` gets the `gitui-local-ui` meta tag that tells the app it is served by the CLI), which is what the npm package ships, with `apps/cli/README.md` and the root `LICENSE`.
 - `apps/web/`: React, Tailwind v4, shadcn/ui and TanStack Query. Status polls every 3s, and every mutation refreshes the repo's queries.
 - `packages/shared/` (`@gitui/shared`): API types and connection constants used by both sides.
 - Recent repositories are stored in `~/.config/gitui/recent.json`.

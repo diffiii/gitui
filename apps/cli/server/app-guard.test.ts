@@ -6,7 +6,10 @@ afterAll(removeTempDirs);
 
 const ALLOWED = "https://hosted.example";
 const TOKEN = "secret-token";
-const app = createApp({ allowedOrigins: [ALLOWED], token: TOKEN });
+const app = createApp({
+  listener: { kind: "loopback", allowedOrigins: [ALLOWED], token: TOKEN },
+  port: 4777,
+});
 let repo: string;
 
 beforeEach(() => {

@@ -27,7 +27,8 @@
     "@gitui/web": "workspace:*",
     "@hono/node-server": "^2.1.11",
     "@pierre/diffs": "^1.6.4",
-    "hono": "^4.13.19"
+    "hono": "^4.13.19",
+    "uqr": "0.1.3"
   },
   "engines": {
     "node": ">=22.1.0"

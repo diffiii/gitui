@@ -24,9 +24,10 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   Hono API in `server/`. `app.ts` holds the routes, `git.ts` wraps the git CLI and parses its
   output, `main.ts` starts the server (`@hono/node-server`), serving the UI directory it's given
   (`bin/gitui.ts` passes `dist/web` only with `--local`; by default the hosted app is the UI),
-  `dev.ts` is the dev API entry. `bun run build` (`scripts/build.ts`) bundles `bin/gitui.ts` for
-  Node into `dist/gitui.js`, copies `apps/web/dist` to `dist/web` and the root `LICENSE` into
-  the package; with `README.md` that is all the package ships, with no runtime dependencies.
+  `dev.ts` is the dev API entry, `lan.ts` picks the `--lan` address. `bun run build`
+  (`scripts/build.ts`) bundles `bin/gitui.ts` for Node into `dist/gitui.js`, copies
+  `apps/web/dist` to `dist/web` (`scripts/local-ui.ts` adds the `LOCAL_UI_META` tag to that copy
+  only, never to `apps/web/dist`, which is the hosted app) and the root `LICENSE` into the package; with `README.md` that is all the package ships, with no runtime dependencies.
   Code in `bin/` and `server/` must run on Node too: no `Bun.*` APIs outside tests, `dev.ts`
   and `test-repo.ts` (a lint rule enforces it). Tests live next to the code (`server/*.test.ts`).
 - `apps/web/` (`@gitui/web`): React app. `src/lib/` holds the API client, graph layout and
@@ -52,9 +53,12 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   shell strings. User-supplied paths go after `--`.
 - Validate ref-like request inputs (branch names, hashes, refs) with `ref()` in
   `apps/cli/server/app.ts`, which rejects anything git could parse as an option.
-- `/api/*` access policy lives in `apps/cli/server/access.ts`: localhost `Host` and the
-  `x-gitui` header always; cross-origin callers only from `allowedOrigins`, with CORS headers
-  and the pairing token (`loadToken` in `server/config.ts`) as a bearer token. Don't add checks in routes.
+- `/api/*` access policy lives in `apps/cli/server/access.ts`, keyed by the `Listener`: the
+  `x-gitui` header always. `loopback`: localhost `Host`; cross-origin callers only from
+  `allowedOrigins`, with CORS headers and the pairing token (`loadToken` in `server/config.ts`)
+  as a bearer token. `lan` (`--lan`): `Host` is `<address>:<port>` or localhost, no cross-origin
+  callers, and the session cookie that `/pair?key=<per-run secret>` sets. Don't add checks in
+  routes or `main.ts`.
 - Frontend data goes through TanStack Query with keys that start with the repo:
   `[repo, "status"]`, `[repo, "log", ...]`. Repo mutations use `useGitMutation` from
   `apps/web/src/lib/repo.tsx`, which invalidates `[repo]` when it settles and toasts errors.
