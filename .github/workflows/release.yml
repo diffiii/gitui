@@ -1,0 +1,34 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm trusted publishing (OIDC) and provenance
+    steps:
+      - uses: actions/checkout@v5
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: bun install --frozen-lockfile
+      - run: bunx vp check
+      - run: bunx tsc -b
+      - run: bun test
+      - run: bun run --cwd apps/cli build
+      - run: node apps/cli/dist/gitui.js --help
+      # npm refuses to run inside the repo (the root devEngines names bun), so pack with bun and
+      # publish the tarball from outside it. Trusted publishing adds provenance on its own.
+      - run: bun pm pack --destination "$RUNNER_TEMP"
+        working-directory: apps/cli
+      - run: npm publish ./diffiii-gitui-*.tgz
+        working-directory: ${{ runner.temp }}
