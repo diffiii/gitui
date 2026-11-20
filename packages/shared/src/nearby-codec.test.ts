@@ -6,6 +6,7 @@ import {
   MAX_MESSAGE_LENGTH,
   MAX_NAME_LENGTH,
   newOfferId,
+  REFUSAL_REASONS,
   RENDEZVOUS_PATH,
 } from "./nearby.ts";
 import {
@@ -97,10 +98,28 @@ test("parseClientMessage accepts signals and keeps only the contract's fields", 
     data: { kind: "candidate", offerId, candidate: endOfCandidates },
   };
   expect(parse(end)).toEqual(end);
-  for (const reason of ["busy", "rate-limited", "bad-offer"]) {
+  for (const reason of REFUSAL_REASONS) {
     const refused = { type: "signal", to: "p1", data: { kind: "refused", offerId, reason } };
     expect(parse(refused)).toEqual(refused);
   }
+});
+
+test("a refusal or error code this version doesn't know still decodes, as unknown", () => {
+  const signal = (value: unknown): unknown => parseSignal(value);
+  const refused = (reason: unknown) => ({ kind: "refused", offerId, reason });
+  expect(signal(refused("tired-of-you"))).toEqual(refused("unknown"));
+  expect(parse({ type: "signal", to: "p1", data: refused("") })).toEqual({
+    type: "signal",
+    to: "p1",
+    data: refused("unknown"),
+  });
+  const server = (value: unknown): unknown => parseServerMessage(JSON.stringify(value));
+  const error = (code: unknown) => ({ type: "error", code, message: "nope" });
+  expect(server(error("too-new"))).toEqual(error("unknown"));
+  // Only the enum is open: the shape is checked as before.
+  for (const reason of [undefined, null, 1, ["busy"]]) expect(signal(refused(reason))).toBeNull();
+  for (const code of [undefined, 1, {}]) expect(server(error(code))).toBeNull();
+  expect(server({ type: "error", code: "too-new" })).toBeNull();
 });
 
 test("parseClientMessage rejects garbage", () => {
@@ -121,7 +140,8 @@ test("parseClientMessage rejects garbage", () => {
     signal({ kind: "offer", offerId }),
     signal({ kind: "answer", offerId, sdp: 1 }),
     signal({ kind: "bye", offerId, sdp: "v=0" }),
-    signal({ kind: "refused", offerId, reason: "tired" }),
+    signal({ kind: "refused", offerId, reason: 1 }),
+    signal({ kind: "refused", offerId }),
     signal(null),
     signal({ kind: "candidate", offerId }),
     signal({ kind: "candidate", offerId, candidate: "candidate:1" }),
@@ -179,7 +199,7 @@ test("parseServerMessage rebuilds every message a peer handles", () => {
     { type: "signal", from: "p1", data: { kind: "answer", sdp: "v=0" } },
     { type: "error", code: "rate-limit", message: 1 },
     { type: "error", message: "no code" },
-    { type: "error", code: "tired", message: "unknown code" },
+    { type: "error", code: 1, message: "code isn't a string" },
     { type: "hello", role: "guest" },
   ]) {
     expect(server(bad)).toBeNull();

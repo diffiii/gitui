@@ -19,15 +19,22 @@ const UNGATED = ["GET /api/config", "POST /api/open", "GET /pair"];
 /** Values for route parameters, so each route's path matches it. */
 const PARAMS: Record<string, string> = { hash: "HEAD", action: "fetch" };
 
-/** Every API endpoint the app has, from its router: "METHOD /path" (middleware left out). */
+/**
+ * Every API endpoint the app has, from its router: "METHOD /path". Wildcard registrations for
+ * every method are left out: those are `use` middleware (the gate among them) and the 404
+ * fallback. An `all()` route on a path is an endpoint, and is sent a POST.
+ */
 const endpoints = (app: ReturnType<typeof createApp>) =>
   app.routes
-    .filter((r) => r.method !== "ALL")
-    .map((r) => ({
-      name: `${r.method} ${r.path}`,
-      method: r.method,
-      path: r.path.replace(/:(\w+)/g, (_, name: string) => PARAMS[name] ?? "x"),
-    }));
+    .filter((r) => !(r.method === "ALL" && r.path.endsWith("*")))
+    .map((r) => {
+      const method = r.method === "ALL" ? "POST" : r.method;
+      return {
+        name: `${r.method} ${r.path}`,
+        method,
+        path: r.path.replace(/:(\w+)/g, (_, name: string) => PARAMS[name] ?? "x"),
+      };
+    });
 
 const LAN = {
   kind: "lan",
@@ -125,6 +132,14 @@ for (const { listener, host, headers } of clients) {
           expect([name, res.status]).not.toEqual([name, 404]);
           expect([name, res.status]).not.toEqual([name, 403]);
         }
+      });
+
+      test("the route list leaves out middleware only, so all() routes are checked too", () => {
+        const routes = app();
+        routes.all("/api/repo/extra", (c) => c.text("x"));
+        const names = endpoints(routes).map((e) => e.name);
+        expect(names).toContain("ALL /api/repo/extra");
+        expect(names.filter((name) => name.endsWith("*"))).toEqual([]);
       });
 
       test("another repository is refused, for reads and writes", async () => {

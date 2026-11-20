@@ -4,18 +4,19 @@
 // clients' events and prints the lines.
 import type { Family } from "./rendezvous.ts";
 
+/**
+ * Where the host stands: `starting` until the first line, then `up` while some family is
+ * welcomed, `unreachable` if none was by the first line, and `lost` once every family dropped
+ * after the host was visible.
+ */
+export type Phase = "starting" | "up" | "unreachable" | "lost";
+
 export interface Status {
-  /** The families the host registers over. */
-  readonly families: readonly Family[];
-  /** Those the service welcomed, until they drop. */
+  readonly phase: Phase;
+  /** The families the service welcomed, until they drop. */
   readonly visible: readonly Family[];
-  /** Those that connected or failed at least once. */
-  readonly settled: readonly Family[];
-  /** Whether the first line was said. */
-  readonly announced: boolean;
-  /** Whether the host is said to be unreachable or lost, and not back yet. */
-  readonly lost: boolean;
-  readonly everVisible: boolean;
+  /** The families that haven't connected or failed yet; the first line waits for them. */
+  readonly unsettled: readonly Family[];
   /** The service's lack of room last said since the last welcome, if any. */
   readonly noRoomSaid: NoRoom | null;
 }
@@ -44,56 +45,49 @@ export type StatusLine =
   | "no-room-hosts"
   | "no-room-sockets";
 
+/** The status of a host that registers over `families`. */
 export const initialStatus = (families: readonly Family[]): Status => ({
-  families,
+  phase: "starting",
   visible: [],
-  settled: [],
-  announced: false,
-  lost: false,
-  everVisible: false,
+  unsettled: families,
   noRoomSaid: null,
 });
 
 type Next = [Status, StatusLine | null];
 
-const add = (list: readonly Family[], family: Family) =>
-  list.includes(family) ? list : [...list, family];
-
-function announce(status: Status): Next {
-  if (status.announced) return [status, null];
-  if (status.visible.length) return [{ ...status, announced: true }, "visible"];
-  return [{ ...status, announced: true, lost: true }, "unreachable"];
-}
-
-function settle(status: Status, family: Family): Next {
-  const next = { ...status, settled: add(status.settled, family) };
-  return next.settled.length === next.families.length ? announce(next) : [next, null];
-}
+/** The first line, said once every family settled or STATUS_DELAY passed. */
+const announce = (status: Status): Next =>
+  status.visible.length
+    ? [{ ...status, phase: "up" }, "visible"]
+    : [{ ...status, phase: "unreachable" }, "unreachable"];
 
 /** The status after `event`, and the line it calls for, if any (at most one). */
 export function nextStatus(status: Status, event: StatusEvent): Next {
-  switch (event.type) {
-    case "timeout":
-      return announce(status);
-    case "no-room":
-      if (status.noRoomSaid === event.why) return [status, null];
-      return [{ ...status, noRoomSaid: event.why }, `no-room-${event.why}`];
-    case "welcome": {
-      const visible = add(status.visible, event.family);
-      const [next, line] = settle({ ...status, visible }, event.family);
-      const back = next.announced && next.lost;
-      const after = { ...next, lost: false, everVisible: true, noRoomSaid: null };
-      if (back) return [after, next.everVisible ? "reconnected" : "visible"];
-      return [after, line];
-    }
-    case "down": {
-      const was = status.visible.includes(event.family);
-      const visible = status.visible.filter((f) => f !== event.family);
-      const [next, line] = settle({ ...status, visible }, event.family);
-      if (next.announced && was && !visible.length && !next.lost) {
-        return [{ ...next, lost: true }, "lost"];
-      }
-      return [next, line];
-    }
+  if (event.type === "no-room") {
+    if (status.noRoomSaid === event.why) return [status, null];
+    return [{ ...status, noRoomSaid: event.why }, `no-room-${event.why}`];
+  }
+  if (event.type === "timeout")
+    return status.phase === "starting" ? announce(status) : [status, null];
+
+  const { family } = event;
+  const welcomed = event.type === "welcome";
+  const next: Status = {
+    ...status,
+    visible: welcomed
+      ? [...status.visible.filter((f) => f !== family), family]
+      : status.visible.filter((f) => f !== family),
+    unsettled: status.unsettled.filter((f) => f !== family),
+    noRoomSaid: welcomed ? null : status.noRoomSaid,
+  };
+  switch (status.phase) {
+    case "starting":
+      return next.unsettled.length ? [next, null] : announce(next);
+    case "up":
+      return next.visible.length ? [next, null] : [{ ...next, phase: "lost" }, "lost"];
+    case "unreachable":
+    case "lost":
+      if (!welcomed) return [next, null];
+      return [{ ...next, phase: "up" }, status.phase === "lost" ? "reconnected" : "visible"];
   }
 }

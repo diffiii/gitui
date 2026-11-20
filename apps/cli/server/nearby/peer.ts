@@ -10,7 +10,6 @@ import {
   type Fingerprints,
   hostFinish,
   type HostMessage,
-  type HostPake,
   hostRespond,
   type IceCandidate,
   MAX_LOCAL_CANDIDATES,
@@ -21,12 +20,17 @@ import {
   fingerprints,
   Gatekeeper,
   newCode,
+  type Outcome,
   type PairingBudget,
-  type Step,
   type Tokens,
 } from "./auth.ts";
 import { Bridge, type Fetch } from "./bridge.ts";
-import { type AnsweringPeer, createAnsweringPeer, type DataChannel } from "./webrtc.ts";
+import {
+  type AnsweringPeer,
+  createAnsweringPeer,
+  type DataChannel,
+  type PeerEvents,
+} from "./webrtc.ts";
 
 /** How long a guest has, from its offer, to prove itself. */
 export const AUTH_TIMEOUT = 60_000;
@@ -35,6 +39,10 @@ export const AUTH_TIMEOUT = 60_000;
 export const MAX_REMOTE_CANDIDATES = 32;
 // This side trickles at most MAX_LOCAL_CANDIDATES, which the rendezvous's limit for hosts
 // counts on (apps/rendezvous/src/network.ts).
+
+/** The line for a connection closed after an error of ours (the session's, or host.ts's). */
+export const errorLine = (error: unknown) =>
+  `Nearby: closed a connection after an error: ${String(error)}`;
 
 /** What the host sends a guest about its offer: its answer and candidates. */
 export type HostSignal =
@@ -61,10 +69,15 @@ export interface GuestOptions {
   budget: PairingBudget;
   /** Prints a line for the person at this machine. */
   log: (line: string) => void;
-  /** Called once, when the session ends for any reason. */
+  /** Called once, when the session ends for any reason, even if ending it throws. */
   onEnd: () => void;
   authTimeout?: number;
+  /** For tests: the peer connection, a werift one (createAnsweringPeer) by default. */
+  peer?: (stunUrls: string[], events: PeerEvents) => AnsweringPeer;
 }
+
+/** A CPace run answered, waiting for the guest's `pake-confirm`. */
+type Run = NonNullable<ReturnType<typeof hostRespond>>;
 
 type State = "answering" | "authenticating" | "open" | "closed";
 
@@ -79,15 +92,13 @@ export class GuestSession {
   readonly #peer: AnsweringPeer;
   readonly #answered: Promise<void>;
   readonly #timer: ReturnType<typeof setTimeout>;
-  readonly #gate: Gatekeeper;
+  readonly #gate: Gatekeeper<Run>;
   /** The candidates the guest trickled for this offer. */
   #candidates = 0;
   /** The candidates this side trickled. */
   #localCandidates = 0;
   #state: State = "answering";
   #expected: Expected | null = null;
-  /** The CPace run waiting for the guest's `pake-confirm`. */
-  #pake: HostPake | null = null;
   #codeShown = false;
   #channel: DataChannel | null = null;
   #bridge: Bridge | null = null;
@@ -95,14 +106,15 @@ export class GuestSession {
   constructor(options: GuestOptions) {
     this.#options = options;
     this.#gate = new Gatekeeper(options.budget);
-    this.#peer = createAnsweringPeer(options.stunUrls, {
+    const createPeer = options.peer ?? createAnsweringPeer;
+    this.#peer = createPeer(options.stunUrls, {
       candidate: (candidate) => {
         if (++this.#localCandidates > MAX_LOCAL_CANDIDATES) return;
         options.signal({ kind: "candidate", offerId: options.offerId, candidate });
       },
       channel: (channel) => this.#take(channel),
       closed: () => this.close(),
-      error: (error) => this.close(`Nearby: closed a connection after an error: ${String(error)}`),
+      error: (error) => this.close(errorLine(error)),
     });
     this.#timer = setTimeout(
       () =>
@@ -127,18 +139,25 @@ export class GuestSession {
     });
   }
 
-  /** Ends the session, printing `line` if given. Safe to call more than once. */
+  /**
+   * Ends the session, printing `line` if given. Safe to call more than once. If tearing it down
+   * throws, the session still ends (`onEnd`) and prints its line, and the error goes to the
+   * caller.
+   */
   close(line?: string) {
     if (this.#state === "closed") return;
     const wasOpen = this.#state === "open";
     this.#state = "closed";
-    clearTimeout(this.#timer);
-    this.#bridge?.close();
-    this.#channel?.close();
-    this.#peer.close();
-    if (line) this.#options.log(line);
-    else if (wasOpen) this.#options.log("Nearby: device disconnected");
-    this.#options.onEnd();
+    try {
+      this.#bridge?.close();
+      this.#channel?.close();
+      this.#peer.close();
+    } finally {
+      clearTimeout(this.#timer);
+      this.#options.onEnd();
+      if (line) this.#options.log(line);
+      else if (wasOpen) this.#options.log("Nearby: device disconnected");
+    }
   }
 
   async #answer() {
@@ -197,29 +216,33 @@ export class GuestSession {
 
     switch (message?.t) {
       case "resume": {
-        this.#pake = null;
         const answer = resumeAnswer(this.#options.tokens.list(), expected.prints, message);
-        return this.#do(channel, this.#gate.resume(answer !== null), answer?.message);
+        const outcome = this.#gate.resume(answer !== null);
+        if (outcome.kind !== "open") return this.#do(channel, outcome);
+        // The guest keeps its token: it is as good as it was. `resume-ok` proves this host holds
+        // it.
+        this.#open(channel, "Nearby: a device reconnected");
+        if (answer) this.#send(channel, answer.message);
+        return;
       }
       case "pake": {
-        this.#pake = null;
-        const step = this.#gate.pake();
+        const step = this.#gate.pake(() => hostRespond(expected.code, expected.prints, message.y));
         if (step.kind !== "answer") return this.#do(channel, step);
         // Whoever sent a code without being shown one gets it now (a guest that said it would
         // resume and then didn't).
         this.#showCode();
-        const answer = hostRespond(expected.code, expected.prints, message.y);
-        if (!answer) return this.#do(channel, this.#gate.confirm(false));
-        this.#pake = answer.state;
-        return this.#send(channel, answer.message);
+        return this.#send(channel, step.run.message);
       }
       case "pake-confirm":
-      case "pake-fail": {
-        const run = this.#pake;
-        this.#pake = null;
-        const ok = message.t === "pake-confirm" && run !== null && hostFinish(run, message.confirm);
-        return this.#do(channel, this.#gate.confirm(ok));
-      }
+        return this.#do(
+          channel,
+          this.#gate.confirm((run) => hostFinish(run.state, message.confirm)),
+        );
+      case "pake-fail":
+        return this.#do(
+          channel,
+          this.#gate.confirm(() => false),
+        );
       default:
         return this.close("Nearby: a device sent requests before its code");
     }
@@ -229,32 +252,23 @@ export class GuestSession {
     channel.send(JSON.stringify(message));
   }
 
-  /** Carries out the Gatekeeper's `step`; `resumed` is the `resume-ok` for a resume. */
-  #do(channel: DataChannel, step: Step, resumed?: HostMessage) {
-    switch (step.kind) {
-      case "answer":
-        return;
+  /** Carries out the Gatekeeper's `outcome`; an `open` one here is by code (resumes open above). */
+  #do(channel: DataChannel, outcome: Outcome) {
+    switch (outcome.kind) {
       case "open":
-        if (step.via === "resume") {
-          // The guest keeps its token: it is as good as it was. `resume-ok` proves this host
-          // holds it.
-          this.#open(channel, "Nearby: a device reconnected");
-          if (resumed) this.#send(channel, resumed);
-          return;
-        }
         this.#open(channel, null);
         this.#send(channel, { t: "auth-ok" });
         return this.#send(channel, { t: "session", token: this.#options.tokens.issue() });
       case "fail":
         // A refused first resume shows the code: the guest asks for it on this channel next.
-        this.#send(channel, { t: "auth-fail", attemptsLeft: step.attemptsLeft });
+        this.#send(channel, { t: "auth-fail", attemptsLeft: outcome.attemptsLeft });
         return this.#showCode();
       case "refuse":
         this.#send(channel, { t: "auth-fail", attemptsLeft: 0 });
         // Out of budget, the budget's own line said why (host.ts).
         return this.#refuse(
           channel,
-          step.why === "attempts"
+          outcome.why === "attempts"
             ? `Nearby: refused a device that entered a wrong code ${AUTH_ATTEMPTS} times`
             : undefined,
         );
@@ -274,7 +288,6 @@ export class GuestSession {
   /** Out of attempts: the last `auth-fail` leaves, then the channel closes. */
   #refuse(channel: DataChannel, line?: string) {
     this.#expected = null;
-    this.#pake = null;
     void channel.drain(0).then(() => this.close(line));
   }
 }

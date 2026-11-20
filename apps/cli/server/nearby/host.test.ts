@@ -12,13 +12,16 @@ import {
   MAX_OFFERS_PER_MINUTE,
   MAX_PENDING,
   MAX_REFUSALS_PER_WINDOW,
+  newOfferId,
   resumeStart,
   sdpFingerprint,
   type SignalData,
 } from "@gitui/shared";
 import { RTCPeerConnection } from "werift";
 import { type FakeSocket, fakeSockets } from "./fake-socket.ts";
-import { familiesFor, startNearby } from "./host.ts";
+import { lockoutLine, PAIRING_WINDOW } from "./auth.ts";
+import { fakePeers, sdpWithPrint } from "./fake-peer.ts";
+import { familiesFor, type NearbyOptions, startNearby } from "./host.ts";
 
 const until = async (condition: () => boolean, ms = 5000) => {
   for (let t = 0; t < ms && !condition(); t += 10) await new Promise((r) => setTimeout(r, 10));
@@ -32,7 +35,7 @@ afterEach(async () => {
 
 const URL = "wss://rendezvous.example/v1/connect";
 
-function host({ statusDelay = 1000 } = {}) {
+function host(options: Partial<NearbyOptions> = {}) {
   const fake = fakeSockets();
   const log: string[] = [];
   const nearby = startNearby({
@@ -42,7 +45,8 @@ function host({ statusDelay = 1000 } = {}) {
     log: (line) => log.push(line),
     open: fake.open,
     backoff: { first: 10, max: 20 },
-    statusDelay,
+    statusDelay: 1000,
+    ...options,
   });
   cleanup.push(() => nearby.stop());
   return { nearby, log, ...fake };
@@ -367,4 +371,127 @@ test("the werift guard is on while nearby runs", async () => {
   expect(process.listenerCount("unhandledRejection")).toBe(before + 1);
   nearby.stop();
   expect(process.listenerCount("unhandledRejection")).toBe(before);
+});
+
+test("an error about one guest closes only its session", async () => {
+  // The connections of the first two offers throw when they are torn down.
+  let n = 0;
+  const fake = fakePeers({ closeThrows: () => n++ < 2 });
+  const { log, last } = host({ peer: fake.peer });
+  const v4 = last(4)!;
+  welcome(v4, "h4");
+  const offer = (from: string) =>
+    v4.receive({
+      type: "signal",
+      from,
+      data: { kind: "offer", offerId: newOfferId(), sdp: sdpWithPrint("cd") },
+    });
+  offer("a");
+  offer("c");
+  offer("b");
+  await until(() => signals(v4, "b").length > 0);
+  const [a, c, b] = fake.peers;
+  const line = "Nearby: closed a connection after an error: Error: teardown failed";
+
+  // In an offer: replacing a's session throws; it ends, and nothing else does.
+  offer("a");
+  expect(log.at(-1)).toBe(line);
+  // In `gone`: likewise for c's.
+  v4.receive({ type: "gone", id: "c" });
+  expect(log.filter((l) => l === line)).toHaveLength(2);
+  expect([a!.closed, c!.closed, b!.closed]).toEqual([true, true, false]);
+  // Neither counts as pending any more: MAX_PENDING - 1 more guests get in besides "b".
+  for (let i = 1; i < MAX_PENDING; i++) offer(`g${i}`);
+  expect(fake.peers).toHaveLength(MAX_PENDING + 2);
+  offer("busy");
+  expect(signals(v4, "busy")).toMatchObject([{ data: { kind: "refused", reason: "busy" } }]);
+});
+
+/** A werift guest that offers through `socket` as peer `from`, and trickles both ways. */
+async function guestOn(socket: FakeSocket, from: string, { resume = false } = {}) {
+  const pc = new RTCPeerConnection({ iceServers: [] });
+  cleanup.push(() => pc.close());
+  const channel = pc.createDataChannel(DATA_CHANNEL_LABEL);
+  const received: HostMessage[] = [];
+  let closed = false;
+  channel.onmessage = ({ data }) => received.push(JSON.parse(String(data)) as HostMessage);
+  channel.stateChanged.subscribe((state) => {
+    if (state === "closed") closed = true;
+  });
+  const offerId = newOfferId();
+  pc.onicecandidate = ({ candidate }) => {
+    if (!candidate) return;
+    const data = { kind: "candidate", offerId, candidate: candidate.toJSON() } as const;
+    socket.receive({ type: "signal", from, data });
+  };
+  await pc.setLocalDescription(await pc.createOffer());
+  const offerSdp = pc.localDescription!.sdp;
+  socket.receive({ type: "signal", from, data: { kind: "offer", offerId, sdp: offerSdp, resume } });
+  let answerSdp = "";
+  let applied = 0;
+  const trickle = setInterval(() => {
+    for (const message of signals(socket, from).slice(applied)) {
+      applied++;
+      if (message.type !== "signal") continue;
+      if (message.data.kind === "answer") {
+        answerSdp = message.data.sdp;
+        void pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+      } else if (message.data.kind === "candidate") void pc.addIceCandidate(message.data.candidate);
+    }
+  }, 20);
+  cleanup.push(() => clearInterval(trickle));
+  await until(() => channel.readyState === "open");
+  return {
+    offerId,
+    received,
+    send: (message: object) => channel.send(JSON.stringify(message)),
+    prints: () => ({ guest: sdpFingerprint(offerSdp)!, host: sdpFingerprint(answerSdp)! }),
+    get closed() {
+      return closed;
+    },
+  };
+}
+
+test("during a lockout, an offer that says it resumes but sends a pake is refused", async () => {
+  const before = Date.now();
+  const { log, last } = host({ pairingBudget: 1 });
+  const v4 = last(4)!;
+  welcome(v4, "h4");
+  const codes = () => log.filter((line) => /code \d{6}$/.test(line));
+
+  // The one attempt of the budget: a wrong code, answered.
+  const first = await guestOn(v4, "a");
+  await until(() => codes().length === 1);
+  first.send(guestStart("000000", first.prints()).message);
+  await until(() => first.received.length === 1);
+  expect(first.received[0]).toMatchObject({ t: "pake" });
+  const lockouts = log.filter((line) => line.includes("guessing codes"));
+  expect(lockouts).toHaveLength(1);
+  const until_ = [before, Date.now()].map((t) => lockoutLine(t + PAIRING_WINDOW));
+  expect(until_).toContain(lockouts[0]);
+
+  // An offer that doesn't resume is refused as such.
+  const offerId = newOfferId();
+  v4.receive({ type: "signal", from: "b", data: { kind: "offer", offerId, sdp: "v=0" } });
+  expect(signals(v4, "b")).toEqual([
+    { type: "signal", to: "b", data: { kind: "refused", offerId, reason: "pairing-locked" } },
+  ]);
+
+  // One that says it resumes gets a channel, and no code.
+  const guest = await guestOn(v4, "b", { resume: true });
+  // Garbage on the rendezvous socket: dropped, and the session stays.
+  v4.receive("not json");
+  v4.receive({ type: "signal", from: "b", data: { kind: "candidate", offerId: guest.offerId } });
+  v4.receive({ type: "signal", from: "b", data: { kind: "nonsense", offerId: guest.offerId } });
+  v4.receive({ type: "signal", from: "b", data: { kind: "refused", offerId, reason: "?" } });
+  v4.receive({ type: "error", code: "from-the-future", message: "new\u0007 error" });
+  expect(log.at(-1)).toBe("Nearby: the rendezvous service reported: new error (unknown)");
+  expect(guest.closed).toBe(false);
+
+  // It sends a pake instead of resuming: refused unanswered, and the channel closes.
+  guest.send(guestStart("000000", guest.prints()).message);
+  await until(() => guest.closed);
+  expect(guest.received).toEqual([{ t: "auth-fail", attemptsLeft: 0 }]);
+  expect(codes()).toHaveLength(1);
+  expect(log.filter((line) => line.includes("guessing codes"))).toHaveLength(1);
 });

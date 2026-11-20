@@ -9,8 +9,8 @@ import {
   AUTH_ATTEMPTS,
   type ChannelMessage,
   type ClientMessage,
-  ERROR_CODES,
-  type ErrorCode,
+  isErrorCode,
+  isRefusalReason,
   type Fingerprint,
   type GuestMessage,
   HOST_KEY,
@@ -23,8 +23,6 @@ import {
   OFFER_ID,
   parseChunk,
   PEER_ID,
-  REFUSAL_REASONS,
-  type RefusalReason,
   RENDEZVOUS_PATH,
   type ServerMessage,
   type SignalData,
@@ -166,9 +164,11 @@ export function decodeSignal(value: unknown): SignalData {
     }
     case "candidate":
       return { kind: "candidate", offerId, candidate: decodeCandidate(data.candidate) };
-    case "refused":
-      if (!REFUSAL_REASONS.includes(data.reason as RefusalReason)) return fail("invalid reason");
-      return { kind: "refused", offerId, reason: data.reason as RefusalReason };
+    case "refused": {
+      // A reason this version doesn't know is a newer host's: still a refusal.
+      const reason = string(data.reason, "reason");
+      return { kind: "refused", offerId, reason: isRefusalReason(reason) ? reason : "unknown" };
+    }
     default:
       return fail("unknown signal kind");
   }
@@ -216,10 +216,10 @@ export function decodeServerMessage(text: string): ServerMessage {
         data: decodeSignal(message.data),
       };
     case "error": {
-      const code = message.code as ErrorCode;
-      if (!ERROR_CODES.includes(code)) return fail("invalid error code");
+      // A code this version doesn't know is a newer rendezvous's: still an error.
+      const code = string(message.code, "error code");
       const text = string(message.message, "error message").slice(0, 500);
-      return { type: "error", code, message: text };
+      return { type: "error", code: isErrorCode(code) ? code : "unknown", message: text };
     }
     case "pong":
       return { type: "pong" };

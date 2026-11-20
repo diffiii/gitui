@@ -6,11 +6,11 @@
 // socket its offer came on, which carries all its signals and its `gone`.
 import net from "node:net";
 import { HOSTED_ORIGIN, hostKey, type SignalData, STUN_URLS } from "@gitui/shared";
-import { BUDGET_LINE, newHostSecret, PairingBudget, Tokens } from "./auth.ts";
+import { lockoutLine, newHostSecret, PairingBudget, Tokens } from "./auth.ts";
 import type { Fetch } from "./bridge.ts";
 import { guardWerift } from "./guard.ts";
 import { OfferLimiter } from "./offers.ts";
-import { GuestSession } from "./peer.ts";
+import { errorLine, type GuestOptions, GuestSession } from "./peer.ts";
 import {
   BACKOFF,
   type Family,
@@ -43,9 +43,12 @@ export interface NearbyOptions {
   name: string;
   /** Answers authenticated guests' requests: an app built with the nearby listener. */
   fetch: Fetch;
+  /** Prints a line; every line comes without control characters (`printable`). */
   log: (line: string) => void;
-  /** For tests: how sockets open, and timings. */
+  /** For tests: how sockets and peer connections open, the pairing budget, and timings. */
   open?: SocketFactory;
+  peer?: GuestOptions["peer"];
+  pairingBudget?: number;
   backoff?: typeof BACKOFF;
   keepalive?: typeof KEEPALIVE;
   statusDelay?: number;
@@ -53,12 +56,17 @@ export interface NearbyOptions {
 
 /** Starts listing this machine and answering guests; `stop` ends every connection. */
 export function startNearby(options: NearbyOptions) {
-  const { url, name, fetch, log } = options;
+  const { url, name, fetch } = options;
+  // Lines quote what others sent (errors, names): none may drive the terminal.
+  const log = (line: string) => options.log(printable(line));
   const secret = newHostSecret();
   /** What guests see: the service lists this host under it. */
   const key = hostKey(secret);
   const tokens = new Tokens();
-  const budget = new PairingBudget({ onExhausted: () => log(BUDGET_LINE) });
+  const budget = new PairingBudget({
+    limit: options.pairingBudget,
+    onLockout: (until) => log(lockoutLine(until)),
+  });
   const limiter = new OfferLimiter(budget);
   /** Sessions by socket family and the guest's peer id on it. */
   const sessions = new Map<string, GuestSession>();
@@ -82,7 +90,7 @@ export function startNearby(options: NearbyOptions) {
   const report = (event: StatusEvent) => {
     const [next, line] = nextStatus(status, event);
     status = next;
-    if (status.announced) clearTimeout(statusTimer);
+    if (status.phase !== "starting") clearTimeout(statusTimer);
     if (line) log(lines[line]());
   };
   const statusTimer = setTimeout(
@@ -95,10 +103,15 @@ export function startNearby(options: NearbyOptions) {
     try {
       fn();
     } catch (e) {
-      const line = `Nearby: closed a connection after an error: ${String(e)}`;
+      const line = errorLine(e);
       const session = sessions.get(sessionKey(family, id));
-      if (session) session.close(line);
-      else log(line);
+      try {
+        if (session) session.close(line);
+        else log(line);
+      } catch (again) {
+        // Ending the session threw, but it still ended (GuestSession.close).
+        log(errorLine(again));
+      }
     }
   };
 
@@ -142,7 +155,7 @@ export function startNearby(options: NearbyOptions) {
         error(code, message) {
           if (code === "host-limit") return report({ type: "no-room", why: "hosts" });
           if (code === "key-limit") return report({ type: "no-room", why: "sockets" });
-          log(`Nearby: the rendezvous service reported: ${printable(message)} (${code})`);
+          log(`Nearby: the rendezvous service reported: ${message} (${code})`);
         },
       },
     });
@@ -176,6 +189,7 @@ export function startNearby(options: NearbyOptions) {
       tokens,
       budget,
       log,
+      peer: options.peer,
       onEnd: () => {
         if (sessions.get(at) === session) sessions.delete(at);
       },

@@ -161,6 +161,21 @@ test("signals go between a guest and a host", () => {
   });
 });
 
+test("a refusal with a reason this version doesn't know is relayed, as unknown", () => {
+  const { send, guest, host } = setup();
+  const g = guest();
+  const h = host();
+  g.take();
+  const offerId = OFFER.offerId;
+  send(h, { type: "signal", to: g.id, data: { kind: "refused", offerId, reason: "too-new" } });
+  expect(g.take()).toEqual([
+    { type: "signal", from: h.id, data: { kind: "refused", offerId, reason: "unknown" } },
+  ]);
+  // The host that sent it is still here.
+  expect(h.closed).toBeNull();
+  expect(h.take()).toEqual([]);
+});
+
 test("a signal to another guest gets Unknown peer, like an unknown id", () => {
   const { send, guest } = setup();
   const a = guest();

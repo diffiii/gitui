@@ -13,6 +13,7 @@ import {
   HOST_SECRET,
   hostKey,
   type HostMessage,
+  MAX_LOCAL_CANDIDATES,
   parseChunk,
   resumeStart,
   resumeVerify,
@@ -28,7 +29,8 @@ import {
   PairingBudget,
   Tokens,
 } from "./auth.ts";
-import { GuestSession } from "./peer.ts";
+import { fakePeers, sdpWithPrint } from "./fake-peer.ts";
+import { GuestSession, type GuestOptions, MAX_REMOTE_CANDIDATES } from "./peer.ts";
 
 const sessions: GuestSession[] = [];
 const peers: RTCPeerConnection[] = [];
@@ -339,7 +341,7 @@ test("secrets, keys, tokens and codes have their formats", () => {
 
 test("the pairing budget spans sessions; once out, a pake is refused unanswered", async () => {
   const lines: string[] = [];
-  const budget = new PairingBudget({ limit: 2, onExhausted: () => lines.push("out") });
+  const budget = new PairingBudget({ limit: 2, onLockout: () => lines.push("out") });
   const first = await connect({ budget });
   await first.opened();
   expect(await first.pake(wrongCode(await first.shownCode()))).toBe(false);
@@ -381,4 +383,87 @@ test("tokens are capped", () => {
   for (let i = 0; i < MAX_TOKENS; i++) tokens.issue();
   expect(tokens.list()).toHaveLength(MAX_TOKENS);
   expect(tokens.list()).not.toContain(first);
+});
+
+/** A session on a fake peer: what it signals and logs, and whether it ended. */
+async function fakeSession(options: Partial<GuestOptions> = {}) {
+  const signals: Parameters<GuestOptions["signal"]>[0][] = [];
+  const log: string[] = [];
+  let ended = 0;
+  const session = new GuestSession({
+    offerSdp: sdpWithPrint("cd"),
+    offerId: OFFER_ID,
+    stunUrls: [],
+    tokens: new Tokens(),
+    budget: new PairingBudget(),
+    signal: (data) => signals.push(data),
+    fetch: () => new Response(),
+    log: (line) => log.push(line),
+    onEnd: () => ended++,
+    ...options,
+  });
+  sessions.push(session);
+  await until(() => signals.length > 0);
+  return {
+    session,
+    signals,
+    log,
+    get ended() {
+      return ended;
+    },
+  };
+}
+
+test("candidates are capped each way, and a guest's for another offer are dropped", async () => {
+  const fake = fakePeers();
+  const { session, signals } = await fakeSession({ peer: fake.peer });
+  const [peer] = fake.peers;
+  const candidate = (n: number) => ({ candidate: `candidate:${n}`, sdpMid: "0", sdpMLineIndex: 0 });
+  for (let n = 0; n < MAX_LOCAL_CANDIDATES + 5; n++) peer!.events.candidate(candidate(n));
+  expect(signals.filter((s) => s.kind === "candidate")).toHaveLength(MAX_LOCAL_CANDIDATES);
+
+  session.addCandidate("offer-of-another-time", candidate(-1));
+  for (let n = 0; n < MAX_REMOTE_CANDIDATES + 5; n++) session.addCandidate(OFFER_ID, candidate(n));
+  await sleep(10);
+  expect(peer!.added).toEqual([...Array(MAX_REMOTE_CANDIDATES).keys()].map(candidate));
+});
+
+test("a session whose teardown throws still ends, and says why", async () => {
+  const fake = fakePeers({ closeThrows: () => true });
+  const guest = await fakeSession({ peer: fake.peer });
+  // As werift reports an error in one of the session's callbacks (webrtc.ts).
+  expect(() => fake.peers[0]!.events.error(new Error("boom"))).toThrow("teardown failed");
+  expect(guest.ended).toBe(1);
+  expect(guest.log).toEqual(["Nearby: closed a connection after an error: Error: boom"]);
+  guest.session.close();
+  expect(guest.ended).toBe(1);
+});
+
+test("an error in a callback werift calls closes the session, through PeerEvents.error", async () => {
+  const pc = new RTCPeerConnection({ iceServers: [] });
+  peers.push(pc);
+  pc.createDataChannel(DATA_CHANNEL_LABEL);
+  await pc.setLocalDescription(await pc.createOffer());
+  const log: string[] = [];
+  let ended = false;
+  const session = new GuestSession({
+    offerSdp: pc.localDescription!.sdp,
+    offerId: OFFER_ID,
+    stunUrls: [],
+    tokens: new Tokens(),
+    budget: new PairingBudget(),
+    // werift trickles this side's candidates from its own code.
+    signal: (data) => {
+      if (data.kind === "candidate") throw new Error("boom");
+    },
+    fetch: () => new Response(),
+    log: (line) => log.push(line),
+    onEnd: () => {
+      ended = true;
+    },
+  });
+  sessions.push(session);
+  await until(() => ended);
+  await sleep(50);
+  expect(log).toEqual(["Nearby: closed a connection after an error: Error: boom"]);
 });
