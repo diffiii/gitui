@@ -53,6 +53,9 @@ curl -fsS "$base/" | grep -q '<div id="root">' || fail "--local did not serve th
 curl -fsS -H 'x-gitui: 1' "$base/api/config" | grep -q '"recent"' || fail "/api/config failed"
 [ "$(status -H 'x-gitui: 1' "$base/api/nope")" = 404 ] || fail "unknown API route is not a 404"
 [ "$(status "$base/assets/missing.js")" = 404 ] || fail "missing asset is not a 404"
+curl -fsSI "$base/" | grep -qi "^content-security-policy: script-src 'self'" ||
+  fail "--local did not send the CSP"
+curl -s "$base/_headers" | grep -q 'Content-Security-Policy' && fail "--local served _headers"
 grep -q "running at $base/" "$tmp/out.log" || fail "--local did not print its URL"
 stop
 

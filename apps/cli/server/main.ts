@@ -13,13 +13,30 @@ export interface StartOptions extends AppOptions {
 }
 
 /**
+ * Headers of the UI's responses, as `apps/web/public/_headers` sets them for the hosted app,
+ * except that this UI only calls its own origin.
+ */
+export const UI_HEADERS: Record<string, string> = {
+  "Content-Security-Policy":
+    "script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+  "Referrer-Policy": "no-referrer",
+  "X-Content-Type-Options": "nosniff",
+};
+
+/**
  * Serves the built UI in `root`: files as they are (serveStatic refuses `..` segments), and
  * index.html for extension-less paths, which are client-side routes. A missing asset 404s.
  */
 export function serveUi(app: ReturnType<typeof createApp>, root: string) {
   const index = serveStatic({ root, path: "index.html" });
-  app.get("*", serveStatic({ root }), (c, next) =>
-    path.extname(c.req.path) ? next() : index(c, next),
+  app.get(
+    "*",
+    (c, next) => {
+      for (const [name, value] of Object.entries(UI_HEADERS)) c.header(name, value);
+      return next();
+    },
+    serveStatic({ root }),
+    (c, next) => (path.extname(c.req.path) ? next() : index(c, next)),
   );
 }
 
