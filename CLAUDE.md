@@ -27,10 +27,12 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   with `uiSecurityHeaders` (`bin/gitui.ts` passes `dist/web` only with `--local` and `--lan`;
   by default the hosted app is the UI), `bin/args.ts` parses the command line, `dev.ts` is the
   dev API entry, `lan.ts` picks the `--lan` address. `server/nearby/` is `--nearby`, the host
-  side of `@gitui/shared`'s nearby protocol: `rendezvous.ts` (the WebSocket client), `peer.ts`
-  (one guest: answer, trickle, code check from `auth.ts`), `bridge.ts` (HTTP over the data
-  channel, pure and unit-tested), `host.ts` (wires them up) and `webrtc.ts`, the only file that
-  imports werift. `bun run build`
+  side of `@gitui/shared`'s nearby protocol: `rendezvous.ts` (one `ws` socket, pinned to IPv4
+  or IPv6, with pings and reconnects), `peer.ts` (one guest: answer, trickle, code or resume
+  check from `auth.ts`), `bridge.ts` (HTTP over the data channel, pure and unit-tested),
+  `host.ts` (wires them up: two sockets, sessions bound to theirs), `guard.ts` (survives
+  werift's unhandled rejections on malformed SCTP packets; werift callbacks go through
+  `isolate`) and `webrtc.ts`, the only file that imports werift. `bun run build`
   (`scripts/build.ts`) bundles `bin/gitui.ts` for Node into `dist/gitui.js`, copies
   `apps/web/dist` to `dist/web` (`scripts/local-ui.ts` adds the `LOCAL_UI_META` tag to that copy
   only, never to `apps/web/dist`, which is the hosted app, and leaves `_headers` out) and the root `LICENSE` into the package; with `README.md` that is all the package ships, with no runtime dependencies.

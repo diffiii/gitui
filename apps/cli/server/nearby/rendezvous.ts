@@ -1,19 +1,52 @@
 // The host's connection to the rendezvous service (the contract's step 1): announces this
-// machine to guests on the same network and relays WebRTC signals. Reconnects with backoff.
+// machine to guests on the same network and relays WebRTC signals. One RendezvousClient keeps
+// one socket, pinned to an IP family, alive: it pings, and reconnects with backoff.
 import type { ClientMessage, ServerMessage, SignalData } from "@gitui/shared";
+import { WebSocket } from "ws";
 
 /**
- * Keepalive the host sends every PING_INTERVAL. The rendezvous object answers it without waking
- * (a Durable Object auto-response); any reply is ignored, as is every non-JSON message.
+ * Keepalive: a WebSocket protocol ping every PING_INTERVAL, which the service answers without
+ * waking. A socket with no pong PONG_TIMEOUT later is dead (e.g. half-open after the network
+ * changed) and is replaced.
  */
-export const PING = "ping";
-export const PING_INTERVAL = 30_000;
+export const KEEPALIVE = { interval: 30_000, timeout: 10_000 };
 
 /** Reconnection delays double from the first to the last, with jitter. */
 export const BACKOFF = { first: 1000, max: 60_000 };
 
+/** How long opening a socket may take. */
+const HANDSHAKE_TIMEOUT = 15_000;
+
+/** The largest message taken from the service; signals are a few kilobytes. */
+const MAX_PAYLOAD = 256 * 1024;
+
 /** The largest SDP the host accepts from a guest; a data-channel offer is a few kilobytes. */
 const MAX_SDP = 64 * 1024;
+
+export type Family = 4 | 6;
+
+/** What the client needs of a WebSocket: the part of `ws`'s that it uses. */
+export interface RendezvousSocket {
+  readonly readyState: number;
+  send(data: string): void;
+  ping(): void;
+  /** Drops the connection at once, without a closing handshake. */
+  terminate(): void;
+  close(): void;
+  on(event: "open" | "pong", listener: () => void): unknown;
+  on(event: "message", listener: (data: unknown, isBinary: boolean) => void): unknown;
+  on(event: "close", listener: () => void): unknown;
+  on(event: "error", listener: (error: Error) => void): unknown;
+}
+
+/** Opens a socket to `url` over IP family `family`. */
+export type SocketFactory = (url: string, family: Family) => RendezvousSocket;
+
+export const openSocket: SocketFactory = (url, family) =>
+  new WebSocket(url, { family, handshakeTimeout: HANDSHAKE_TIMEOUT, maxPayload: MAX_PAYLOAD });
+
+/** WebSocket.OPEN. */
+const OPEN = 1;
 
 export interface RendezvousEvents {
   /** The service took the `hello`; the host is listed under `id` until the socket drops. */
@@ -76,7 +109,7 @@ export function parseServerMessage(text: string): ServerMessage | null {
     case "error":
       return { type, message: String(message.message) };
     default:
-      // Hosts get no `hosts` lists.
+      // Hosts get no `hosts` lists, and send no text pings to get `pong`s for.
       return null;
   }
 }
@@ -86,21 +119,29 @@ export function backoffDelay(attempt: number, { first, max } = BACKOFF) {
   return Math.min(max, first * 2 ** attempt) * (0.5 + Math.random() / 2);
 }
 
+export interface RendezvousOptions {
+  url: string;
+  family: Family;
+  /** The `hello`'s name and key. */
+  name: string;
+  key: string;
+  events: RendezvousEvents;
+  backoff?: typeof BACKOFF;
+  keepalive?: typeof KEEPALIVE;
+  open?: SocketFactory;
+}
+
 export class RendezvousClient {
-  readonly #url: string;
-  readonly #name: string;
-  readonly #events: RendezvousEvents;
-  readonly #backoff: typeof BACKOFF;
-  #socket: WebSocket | null = null;
+  readonly family: Family;
+  readonly #options: RendezvousOptions;
+  #socket: RendezvousSocket | null = null;
   #attempt = 0;
   #timer: ReturnType<typeof setTimeout> | undefined;
   #stopped = false;
 
-  constructor(url: string, name: string, events: RendezvousEvents, backoff = BACKOFF) {
-    this.#url = url;
-    this.#name = name;
-    this.#events = events;
-    this.#backoff = backoff;
+  constructor(options: RendezvousOptions) {
+    this.family = options.family;
+    this.#options = options;
   }
 
   start() {
@@ -119,40 +160,58 @@ export class RendezvousClient {
   }
 
   #send(message: ClientMessage) {
-    if (this.#socket?.readyState === WebSocket.OPEN) this.#socket.send(JSON.stringify(message));
+    if (this.#socket?.readyState === OPEN) this.#socket.send(JSON.stringify(message));
   }
 
   #connect() {
-    const socket = new WebSocket(this.#url);
+    const { url, family, name, key, events } = this.#options;
+    const { interval, timeout } = this.#options.keepalive ?? KEEPALIVE;
+    const socket = (this.#options.open ?? openSocket)(url, family);
     this.#socket = socket;
     let ping: ReturnType<typeof setInterval> | undefined;
+    let pong: ReturnType<typeof setTimeout> | undefined;
 
-    socket.onopen = () => {
-      this.#send({ type: "hello", role: "host", name: this.#name });
-      ping = setInterval(() => socket.send(PING), PING_INTERVAL);
-    };
-    socket.onmessage = ({ data }) => {
-      const message = typeof data === "string" ? parseServerMessage(data) : null;
+    socket.on("open", () => {
+      this.#send({ type: "hello", role: "host", name, key });
+      ping = setInterval(() => {
+        // One ping at a time: the timeout ends the socket before the next is due.
+        if (pong !== undefined) return;
+        socket.ping();
+        pong = setTimeout(() => socket.terminate(), timeout);
+      }, interval);
+    });
+    socket.on("pong", () => {
+      clearTimeout(pong);
+      pong = undefined;
+    });
+    socket.on("message", (data, isBinary) => {
+      if (this.#socket !== socket) return;
+      const message = isBinary ? null : parseServerMessage(String(data));
       switch (message?.type) {
         case "welcome":
           this.#attempt = 0;
-          return this.#events.welcome(message.id);
+          return events.welcome(message.id);
         case "signal":
-          return this.#events.signal(message.from, message.data);
+          return events.signal(message.from, message.data);
         case "gone":
-          return this.#events.gone(message.id);
+          return events.gone(message.id);
         case "error":
-          return this.#events.error(message.message);
+          return events.error(message.message);
       }
-    };
-    // A socket that fails to open fires `error` then `close`, so `close` covers both.
-    socket.onclose = () => {
+    });
+    // A socket that fails to open emits `error`, then `close`, so `close` covers both.
+    socket.on("error", () => {});
+    socket.on("close", () => {
       clearInterval(ping);
+      clearTimeout(pong);
       if (this.#socket !== socket) return;
       this.#socket = null;
       if (this.#stopped) return;
-      this.#events.down();
-      this.#timer = setTimeout(() => this.#connect(), backoffDelay(this.#attempt++, this.#backoff));
-    };
+      events.down();
+      this.#timer = setTimeout(
+        () => this.#connect(),
+        backoffDelay(this.#attempt++, this.#options.backoff),
+      );
+    });
   }
 }

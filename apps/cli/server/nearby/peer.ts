@@ -1,18 +1,26 @@
 // One guest's connection, from its offer to its end: answers the offer, trickles candidates,
-// takes the guest's data channel, checks its code (auth.ts) and then hands the channel to the
-// bridge. Nothing reaches the bridge before the guest proved it knows the code.
+// takes the guest's data channel, checks its code or resume token (auth.ts) and then hands the
+// channel to the bridge. Nothing reaches the bridge before the guest proved itself.
 import {
   AUTH_ATTEMPTS,
+  authProof,
   type ChannelMessage,
   DATA_CHANNEL_LABEL,
   type SignalData,
 } from "@gitui/shared";
-import { expectedProof, newCode, parseAuth, proofChecker, type Verdict } from "./auth.ts";
+import { safeEqual } from "../access.ts";
+import { Attempts, findProof, fingerprints, newCode, parseOpening, type Tokens } from "./auth.ts";
 import { Bridge, type Fetch } from "./bridge.ts";
 import { type AnsweringPeer, createAnsweringPeer, type DataChannel } from "./webrtc.ts";
 
-/** How long a guest has, from its offer, to enter the code. */
+/** How long a guest has, from its offer, to prove itself. */
 export const AUTH_TIMEOUT = 60_000;
+
+/**
+ * How long after its channel opens a guest may `resume` before the code is printed. A resuming
+ * guest sends its proof at once; waiting this long keeps reconnections from printing codes.
+ */
+export const RESUME_GRACE = 1000;
 
 export interface GuestOptions {
   offerSdp: string;
@@ -21,23 +29,37 @@ export interface GuestOptions {
   signal: (data: SignalData) => void;
   /** Answers the guest's requests once it is authenticated. */
   fetch: Fetch;
+  /** This run's resume tokens: checked for `resume`, added to after a code. */
+  tokens: Tokens;
   /** Prints a line for the person at this machine. */
   log: (line: string) => void;
   /** Called once, when the session ends for any reason. */
   onEnd: () => void;
   authTimeout?: number;
+  resumeGrace?: number;
 }
 
 type State = "answering" | "authenticating" | "open" | "closed";
+
+/** What the guest's opening is checked against, once the answer is made. */
+interface Expected {
+  code: string;
+  codeProof: string;
+  /** The live tokens when the offer came, and their proofs for this connection. */
+  tokens: readonly string[];
+  tokenProofs: string[];
+}
 
 export class GuestSession {
   readonly #options: GuestOptions;
   readonly #peer: AnsweringPeer;
   readonly #answered: Promise<void>;
   readonly #timer: ReturnType<typeof setTimeout>;
+  readonly #attempts = new Attempts();
+  #grace: ReturnType<typeof setTimeout> | undefined;
   #state: State = "answering";
-  #code = "";
-  #check: ((proof: string) => Verdict) | null = null;
+  #expected: Expected | null = null;
+  #codeShown = false;
   #channel: DataChannel | null = null;
   #bridge: Bridge | null = null;
 
@@ -49,13 +71,14 @@ export class GuestSession {
       closed: () => this.close(),
     });
     this.#timer = setTimeout(
-      () => this.close(this.#code ? `Nearby: code ${this.#code} expired` : undefined),
+      () =>
+        this.close(this.#codeShown ? `Nearby: code ${this.#expected?.code} expired` : undefined),
       options.authTimeout ?? AUTH_TIMEOUT,
     );
     this.#answered = this.#answer();
   }
 
-  /** Whether the guest entered the right code. */
+  /** Whether the guest entered the right code or resumed. */
   get authenticated() {
     return this.#state === "open";
   }
@@ -73,6 +96,7 @@ export class GuestSession {
     const wasOpen = this.#state === "open";
     this.#state = "closed";
     clearTimeout(this.#timer);
+    clearTimeout(this.#grace);
     this.#bridge?.close();
     this.#channel?.close();
     this.#peer.close();
@@ -82,21 +106,31 @@ export class GuestSession {
   }
 
   async #answer() {
-    const { offerSdp, signal, log } = this.#options;
+    const { offerSdp, signal, tokens } = this.#options;
     try {
       const answerSdp = await this.#peer.answer(offerSdp);
+      const prints = fingerprints(offerSdp, answerSdp);
+      // (A session closed meanwhile stays closed, and quiet.)
+      if (!prints) return this.close("Nearby: refused an offer without a DTLS fingerprint");
       const code = newCode();
-      const proof = await expectedProof(code, offerSdp, answerSdp);
+      const live = [...tokens.list()];
+      const [codeProof, ...tokenProofs] = await Promise.all(
+        [code, ...live].map((secret) => authProof(secret, prints.guest, prints.host)),
+      );
       if (this.#state === "closed") return;
-      if (!proof) return this.close("Nearby: refused an offer without a DTLS fingerprint");
-      this.#code = code;
-      this.#check = proofChecker(proof);
+      this.#expected = { code, codeProof, tokens: live, tokenProofs };
       this.#state = "authenticating";
       signal({ kind: "answer", sdp: answerSdp });
-      log(`Nearby: a device wants to connect — code ${code}`);
     } catch (e) {
       this.close(`Nearby: couldn't answer a device: ${(e as Error).message}`);
     }
+  }
+
+  /** Prints the code, once, while the guest may still enter it. */
+  #showCode() {
+    if (this.#codeShown || this.#state !== "authenticating" || !this.#expected) return;
+    this.#codeShown = true;
+    this.#options.log(`Nearby: a device wants to connect — code ${this.#expected.code}`);
   }
 
   #take(channel: DataChannel) {
@@ -108,28 +142,45 @@ export class GuestSession {
       message: (data) => this.#receive(channel, data),
       close: () => this.close(),
     });
+    this.#grace = setTimeout(() => this.#showCode(), this.#options.resumeGrace ?? RESUME_GRACE);
   }
 
   #receive(channel: DataChannel, data: string | Uint8Array) {
     if (this.#bridge) return this.#bridge.receive(data);
-    if (this.#state !== "authenticating" || !this.#check) return;
-    const proof = parseAuth(data);
-    if (proof === null) return this.close("Nearby: a device sent requests before its code");
+    const expected = this.#expected;
+    if (this.#state !== "authenticating" || !expected) return;
+    const opening = parseOpening(data);
+    if (opening === null) return this.close("Nearby: a device sent requests before its code");
 
-    const verdict = this.#check(proof);
+    // The token this guest resumes with, if it is a live one.
+    let resumed: string | null = null;
+    if (opening.t === "resume") {
+      const at = findProof(opening.proof, expected.tokenProofs);
+      resumed = at >= 0 ? expected.tokens[at] : null;
+    }
+    const verdict = this.#attempts.check(
+      opening.t === "auth" ? safeEqual(opening.proof, expected.codeProof) : resumed !== null,
+    );
     const send = (message: ChannelMessage) => channel.send(JSON.stringify(message));
     if (verdict.ok) {
       clearTimeout(this.#timer);
+      clearTimeout(this.#grace);
       this.#state = "open";
       this.#bridge = new Bridge(channel, this.#options.fetch);
+      // A resumed guest keeps its token: it is as good as it was.
       send({ t: "auth-ok" });
-      this.#options.log("Nearby: device connected");
+      send({ t: "session", token: resumed ?? this.#options.tokens.issue() });
+      this.#options.log(resumed ? "Nearby: a device reconnected" : "Nearby: device connected");
       return;
     }
     send({ t: "auth-fail", attemptsLeft: verdict.attemptsLeft });
-    if (verdict.attemptsLeft > 0) return;
+    if (verdict.attemptsLeft > 0) {
+      // A guest whose resume failed asks for the code next.
+      this.#showCode();
+      return;
+    }
     // Let the last auth-fail leave before the channel closes.
-    this.#check = null;
+    this.#expected = null;
     void channel
       .drain(0)
       .then(() =>

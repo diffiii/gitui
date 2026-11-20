@@ -214,7 +214,7 @@ test("an app that throws, or a body that fails midway, aborts the request", asyn
   expect(all.get(2)!.ended).toBe(false);
 });
 
-test("the guest's abort stops a response and frees its id", async () => {
+test("the guest's cancel stops a response and frees its id", async () => {
   const channel = new FakeChannel();
   let cancelled = false;
   const bridge = new Bridge(channel, () => {
@@ -228,7 +228,7 @@ test("the guest's abort stops a response and frees its id", async () => {
   });
   request(bridge, 1, "/forever");
   await settle();
-  bridge.receive(JSON.stringify({ t: "abort", id: 1 }));
+  bridge.receive(JSON.stringify({ t: "cancel", id: 1 }));
   channel.flush();
   await settle();
   expect(cancelled).toBe(true);
@@ -238,9 +238,18 @@ test("the guest's abort stops a response and frees its id", async () => {
   expect(channel.sent.length).toBe(sent);
   expect(replies(channel).get(1)!.ended).toBe(false);
   expect(replies(channel).get(1)!.aborted).toBeUndefined();
+
+  // The id is free again.
+  channel.sent = [];
+  request(bridge, 1, "/again");
+  await settle();
+  const again = replies(channel).get(1)!;
+  expect(again.head?.status).toBe(200);
+  expect(again.aborted).toBeUndefined();
+  bridge.close();
 });
 
-test("an abort before the end drops the request unanswered", async () => {
+test("a cancel before the end drops the request unanswered", async () => {
   const channel = new FakeChannel();
   let calls = 0;
   const bridge = new Bridge(channel, () => {
@@ -249,7 +258,7 @@ test("an abort before the end drops the request unanswered", async () => {
   });
   bridge.receive(JSON.stringify({ t: "req", id: 4, method: "POST", path: "/x", headers: [] }));
   bridge.receive(frameChunk(4, new Uint8Array(3)));
-  bridge.receive(JSON.stringify({ t: "abort", id: 4 }));
+  bridge.receive(JSON.stringify({ t: "cancel", id: 4 }));
   bridge.receive(JSON.stringify({ t: "end", id: 4 }));
   await settle();
   expect(calls).toBe(0);
@@ -303,6 +312,8 @@ test("garbage is dropped, or aborts the request it names", async () => {
     [head({ headers: [["a"]] }), "invalid headers"],
     [head({ headers: { a: "b" } }), "invalid headers"],
     [JSON.stringify({ t: "res", id: 9, status: 200, headers: [] }), 'unexpected message "res"'],
+    // `abort` only goes from the host to the guest.
+    [JSON.stringify({ t: "abort", id: 9, message: "x" }), 'unexpected message "abort"'],
   ];
   for (const [data, reason] of refused) {
     channel.sent = [];

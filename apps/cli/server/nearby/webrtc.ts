@@ -4,7 +4,11 @@
 // werift is pure TypeScript: it bundles into dist/gitui.js and runs on Node and Bun with no
 // native binaries. It resolves the mDNS (`.local`) host candidates browsers send, so a phone on
 // the same network connects directly.
+//
+// Every callback werift gets goes through `isolate` (guard.ts): werift's SCTP code calls most of
+// them while it handles a packet, and an error of ours must not pass for one of werift's there.
 import { type RTCDataChannel, RTCPeerConnection } from "werift";
+import { isolate } from "./guard.ts";
 
 /** An ICE candidate as browsers' RTCIceCandidateInit carries it. */
 export interface IceCandidate {
@@ -50,16 +54,18 @@ export interface AnsweringPeer {
 
 export function createAnsweringPeer(stunUrls: string[], events: PeerEvents): AnsweringPeer {
   const pc = new RTCPeerConnection({ iceServers: stunUrls.map((urls) => ({ urls })) });
-  pc.onicecandidate = ({ candidate }) => {
+  pc.onicecandidate = isolate(({ candidate }) => {
     if (candidate) {
       const { sdpMid, sdpMLineIndex } = candidate;
       events.candidate({ candidate: candidate.candidate, sdpMid, sdpMLineIndex });
     }
-  };
-  pc.onDataChannel.subscribe((channel) => events.channel(wrapChannel(channel)));
-  pc.connectionStateChange.subscribe((state) => {
-    if (state === "failed" || state === "closed") events.closed();
   });
+  pc.onDataChannel.subscribe(isolate((channel) => events.channel(wrapChannel(channel))));
+  pc.connectionStateChange.subscribe(
+    isolate((state) => {
+      if (state === "failed" || state === "closed") events.closed();
+    }),
+  );
 
   return {
     async answer(offerSdp) {
@@ -67,7 +73,7 @@ export function createAnsweringPeer(stunUrls: string[], events: PeerEvents): Ans
       const answer = await pc.createAnswer();
       // setLocalDescription waits for gathering, which trickles each candidate as it is found
       // (up to the STUN timeout); the answer needn't wait for that.
-      pc.setLocalDescription(answer).catch(() => events.closed());
+      pc.setLocalDescription(answer).catch(isolate(() => events.closed()));
       return answer.sdp;
     },
     async addCandidate(candidate) {
@@ -82,11 +88,13 @@ export function createAnsweringPeer(stunUrls: string[], events: PeerEvents): Ans
 function wrapChannel(dc: RTCDataChannel): DataChannel {
   let closed = false;
   const onClose = new Set<() => void>();
-  dc.stateChanged.subscribe((state) => {
-    if (state !== "closed") return;
-    closed = true;
-    for (const callback of onClose) callback();
-  });
+  dc.stateChanged.subscribe(
+    isolate((state) => {
+      if (state !== "closed") return;
+      closed = true;
+      for (const callback of onClose) callback();
+    }),
+  );
 
   return {
     label: dc.label,
@@ -110,12 +118,12 @@ function wrapChannel(dc: RTCDataChannel): DataChannel {
           onClose.delete(done);
           resolve();
         };
-        const low = dc.bufferedAmountLow.subscribe(done);
+        const low = dc.bufferedAmountLow.subscribe(isolate(done));
         onClose.add(done);
       });
     },
     listen({ message, close }) {
-      dc.onMessage.subscribe(message);
+      dc.onMessage.subscribe(isolate(message));
       if (closed) close();
       else onClose.add(close);
     },

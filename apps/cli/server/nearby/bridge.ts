@@ -1,7 +1,8 @@
 // HTTP over an authenticated data channel (the contract's step 4). The guest sends a `req` head,
 // binary body frames and an `end`; the bridge builds a Request, hands it to the app and streams
 // the Response back as a `res` head, body frames of at most CHUNK_SIZE bytes and an `end`, or an
-// `abort` if the app fails. Requests interleave by id. Nothing here knows about WebRTC.
+// `abort` if the app fails. A guest's `cancel` stops a response. Requests interleave by id.
+// Nothing here knows about WebRTC.
 import { type ChannelMessage, chunks, frameChunk, parseChunk } from "@gitui/shared";
 import { NEARBY_HOST } from "../access.ts";
 
@@ -38,7 +39,7 @@ export type Incoming =
   | { kind: "req"; head: RequestHead }
   | { kind: "chunk"; id: number; payload: Uint8Array }
   | { kind: "end"; id: number }
-  | { kind: "abort"; id: number }
+  | { kind: "cancel"; id: number }
   /** Not a message the guest may send; `id` is the request it names, if it names one. */
   | { kind: "invalid"; id: number | null; reason: string };
 
@@ -86,7 +87,7 @@ export function decode(data: string | Uint8Array): Incoming {
       if (!isHeaders(headers)) return { kind: "invalid", id, reason: "invalid headers" };
       return { kind: "req", head: { t, id, method, path, headers } };
     case "end":
-    case "abort":
+    case "cancel":
       return { kind: t, id };
     default:
       return { kind: "invalid", id, reason: `unexpected message ${JSON.stringify(t)}` };
@@ -155,7 +156,7 @@ export class Bridge {
         if (open?.body) this.#dispatch(message.id, open, open.body);
         return;
       }
-      case "abort":
+      case "cancel":
         this.#cancel(message.id);
         return;
       case "invalid":

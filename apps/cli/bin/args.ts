@@ -1,6 +1,6 @@
 // The `gitui` command line, parsed without side effects so it can be tested.
 import net from "node:net";
-import { DEFAULT_PORT, HOSTED_ORIGIN } from "@gitui/shared";
+import { DEFAULT_PORT, HOSTED_ORIGIN, MAX_NAME_LENGTH } from "@gitui/shared";
 import { parseOrigin } from "../server/access.ts";
 
 export const HELP = `gitui — git in your browser
@@ -42,9 +42,6 @@ export type Mode =
 export interface Nearby {
   name: string | null;
 }
-
-/** The longest `--name`, in characters: enough for a hostname, short enough for a phone. */
-export const MAX_NAME_LENGTH = 63;
 
 /** The name `--nearby` uses without `--name`: the hostname, without `.local` (macOS adds it). */
 export function hostnameAsName(hostname: string) {
