@@ -47,13 +47,13 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   the CLI and where requests go (its store reads `window` lazily; `initConnection` does the
   startup wiring), and `ConnectionGate` gates the app until the CLI answers. Its `nearby` kind
   is a `gitui --nearby` found through the rendezvous: `src/lib/nearby/` holds the guest
-  (`session.ts` runs the session the connection names, `initNearby` wires it, and `api.ts` sends
-  its requests over the data channel; `state.ts` and `tokens.ts` are its pure parts). `wrangler.jsonc` builds the repo (its `build` command,
+  (`createSession` in `session.ts` is the state machine, with its dependencies injected; the
+  connection opens one per nearby host in `update()`, and `apiTransport` sends requests over its
+  data channel; `peer.ts` loads CPace lazily from `@gitui/shared/nearby-pake`; `state.ts` and
+  `tokens.ts` are its pure parts). `wrangler.jsonc` builds the repo (its `build` command,
   with the production rendezvous) and deploys `dist/` as Cloudflare Workers static assets, with the `_headers` file that a `vite.config.ts` plugin writes into the
   build from `hostedHeadersFile` (its CSP follows `VITE_GITUI_RENDEZVOUS_URL`), on the custom
-  domain `gitui.diffiii.dev` (`HOSTED_ORIGIN`). `wrangler.nearby-test.jsonc` (`bun run
-  deploy:nearby-test`) is a test copy at `gitui-test.diffiii.dev` for trying nearby on a phone
-  first (`apps/rendezvous/README.md`).
+  domain `gitui.diffiii.dev` (`HOSTED_ORIGIN`).
 - `apps/rendezvous/` (`@gitui/rendezvous`): the "nearby" rendezvous Worker (protocol in
   `packages/shared/src/nearby.ts`). `src/route.ts` checks the upgrade and Origin and names the
   caller's network with an HMAC keyed by the `NETWORK_KEY_SECRET` secret (500 without it),

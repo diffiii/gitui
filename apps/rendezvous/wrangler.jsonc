@@ -8,10 +8,6 @@
   "preview_urls": false,
   // No Workers Logs: requests carry the caller's address.
   "observability": { "enabled": false },
-  // Guest origins besides HOSTED_ORIGIN: the web app's nearby test copy
-  // (apps/web/wrangler.nearby-test.jsonc). Drop it once nearby ships on gitui.diffiii.dev
-  // (README.md, "First test on a phone"). `bun run dev` overrides it with --var.
-  "vars": { "ALLOWED_ORIGINS": "https://gitui-test.diffiii.dev" },
   "durable_objects": {
     "bindings": [{ "name": "RENDEZVOUS", "class_name": "Rendezvous" }],
   },
