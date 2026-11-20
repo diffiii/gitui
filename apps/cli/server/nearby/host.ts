@@ -6,9 +6,10 @@
 // socket its offer came on, which carries all its signals and its `gone`.
 import net from "node:net";
 import { HOSTED_ORIGIN, type SignalData, STUN_URLS } from "@gitui/shared";
-import { newHostKey, Tokens } from "./auth.ts";
+import { BUDGET_LINE, newHostKey, PairingBudget, Tokens } from "./auth.ts";
 import type { Fetch } from "./bridge.ts";
 import { guardWerift } from "./guard.ts";
+import { OfferLimiter } from "./offers.ts";
 import { GuestSession } from "./peer.ts";
 import {
   BACKOFF,
@@ -17,13 +18,7 @@ import {
   RendezvousClient,
   type SocketFactory,
 } from "./rendezvous.ts";
-
-/**
- * Brute-force limits: every offer gets a fresh code and AUTH_ATTEMPTS tries, so offers are
- * capped, both those still waiting for their code and those per minute.
- */
-export const MAX_PENDING = 4;
-export const MAX_OFFERS_PER_MINUTE = 12;
+import { initialStatus, nextStatus, type StatusEvent, type StatusLine } from "./status.ts";
 
 /** How long the first status line waits for a family that hasn't connected or failed yet. */
 export const STATUS_DELAY = 3000;
@@ -67,40 +62,47 @@ export function startNearby(options: NearbyOptions) {
   const { url, name, fetch, log } = options;
   const key = newHostKey();
   const tokens = new Tokens();
+  const budget = new PairingBudget({ onExhausted: () => log(BUDGET_LINE) });
+  const limiter = new OfferLimiter(budget);
   /** Sessions by socket family and the guest's peer id on it. */
   const sessions = new Map<string, GuestSession>();
   const sessionKey = (family: Family, id: string) => `${family}/${id}`;
-  /** When the offers of the last minute arrived. */
-  const offerTimes: number[] = [];
-  let limited = false;
 
-  // Status: one line once every family connected or failed (or STATUS_DELAY passed), then a
-  // line when the last family drops and when one is back. A missing family stays quiet.
   const families = familiesFor(url);
-  const visible = new Set<Family>();
-  const settled = new Set<Family>();
-  let announced = false;
-  let lost = false;
-  const visibleLine = () => {
-    const list = families.filter((f) => visible.has(f)).map((f) => `IPv${f}`);
-    return `Nearby: visible as '${name}' (${list.join(", ")}) on this network — open ${HOSTED_ORIGIN} on your phone`;
+  let status = initialStatus(families);
+  const lines: Record<StatusLine, () => string> = {
+    visible: () => {
+      const list = families.filter((f) => status.visible.includes(f)).map((f) => `IPv${f}`);
+      return `Nearby: visible as '${name}' (${list.join(", ")}) on this network — open ${HOSTED_ORIGIN} on your phone`;
+    },
+    unreachable: () => `Nearby: can't reach the rendezvous service at ${url}, retrying`,
+    lost: () => "Nearby: lost the rendezvous service, reconnecting",
+    reconnected: () => "Nearby: reconnected to the rendezvous service",
+    "no-room": () =>
+      "Nearby: too many computers on this network use gitui nearby already, retrying",
   };
-  const announce = () => {
-    if (announced) return;
-    announced = true;
-    clearTimeout(statusTimer);
-    if (visible.size) return log(visibleLine());
-    lost = true;
-    log(`Nearby: can't reach the rendezvous service at ${url}, retrying`);
+  const report = (event: StatusEvent) => {
+    const [next, line] = nextStatus(status, event);
+    status = next;
+    if (status.announced) clearTimeout(statusTimer);
+    if (line) log(lines[line]());
   };
-  const settle = (family: Family) => {
-    settled.add(family);
-    if (settled.size === families.length) announce();
+  const statusTimer = setTimeout(
+    () => report({ type: "timeout" }),
+    options.statusDelay ?? STATUS_DELAY,
+  );
+
+  /** Runs `fn` about guest `id`; an error of ours there ends its session, not the process. */
+  const forGuest = (family: Family, id: string, fn: () => void) => {
+    try {
+      fn();
+    } catch (e) {
+      const line = `Nearby: closed a connection after an error: ${String(e)}`;
+      const session = sessions.get(sessionKey(family, id));
+      if (session) session.close(line);
+      else log(line);
+    }
   };
-  const statusTimer = setTimeout(announce, options.statusDelay ?? STATUS_DELAY);
-  let everVisible = false;
-  /** Whether the service's lack of room was said since the last welcome. */
-  let noRoomSaid = false;
 
   const clients = families.map((family) => {
     const client: RendezvousClient = new RendezvousClient({
@@ -113,14 +115,7 @@ export function startNearby(options: NearbyOptions) {
       keepalive: options.keepalive,
       events: {
         welcome() {
-          visible.add(family);
-          settle(family);
-          if (announced && lost) {
-            log(everVisible ? "Nearby: reconnected to the rendezvous service" : visibleLine());
-          }
-          lost = false;
-          everVisible = true;
-          noRoomSaid = false;
+          report({ type: "welcome", family });
         },
         down() {
           // Guests still signaling on this socket can't reach this host any more: the service
@@ -128,33 +123,24 @@ export function startNearby(options: NearbyOptions) {
           for (const [id, session] of [...sessions]) {
             if (id.startsWith(`${family}/`) && !session.authenticated) session.close();
           }
-          const was = visible.delete(family);
-          settle(family);
-          if (announced && was && visible.size === 0 && !lost) {
-            lost = true;
-            log("Nearby: lost the rendezvous service, reconnecting");
-          }
+          report({ type: "down", family });
         },
         signal(from, data) {
-          if (data.kind === "offer") offer(client, from, data);
-          else if (data.kind === "candidate") {
-            sessions.get(sessionKey(family, from))?.addCandidate(data.offerId, data.candidate);
-          }
+          forGuest(family, from, () => {
+            if (data.kind === "offer") offer(client, from, data);
+            else if (data.kind === "candidate") {
+              sessions.get(sessionKey(family, from))?.addCandidate(data.offerId, data.candidate);
+            }
+          });
         },
         // A guest keeps its socket while connected. A closed tab sends nothing on the data
         // channel, whose end WebRTC only notices after ICE consent expires (about 30s); `gone`
         // comes at once. Peer ids are the socket's own, so only its sessions are concerned.
         gone(id) {
-          sessions.get(sessionKey(family, id))?.close();
+          forGuest(family, id, () => sessions.get(sessionKey(family, id))?.close());
         },
         error(message) {
-          if (NO_ROOM.test(message)) {
-            if (!noRoomSaid) {
-              log("Nearby: too many computers on this network use gitui nearby already, retrying");
-            }
-            noRoomSaid = true;
-            return;
-          }
+          if (NO_ROOM.test(message)) return report({ type: "no-room" });
           log(`Nearby: the rendezvous service reported: ${printable(message)}`);
         },
       },
@@ -168,24 +154,14 @@ export function startNearby(options: NearbyOptions) {
     { offerId, sdp: offerSdp, resume }: Extract<SignalData, { kind: "offer" }>,
   ) {
     const at = sessionKey(client.family, from);
-    const now = Date.now();
-    while (offerTimes.length && offerTimes[0] <= now - 60_000) offerTimes.shift();
     const pending = [...sessions].filter(([id, s]) => id !== at && !s.authenticated).length;
-    const refusal =
-      pending >= MAX_PENDING
-        ? "busy"
-        : offerTimes.length >= MAX_OFFERS_PER_MINUTE
-          ? "rate-limited"
-          : null;
-    if (refusal) {
+    const admission = limiter.admit(pending, resume === true);
+    if (!admission.ok) {
       // Said, so the guest needn't wait for an answer that won't come.
-      client.send(from, { kind: "refused", offerId, reason: refusal });
-      if (!limited) log("Nearby: ignoring connection requests, too many at once");
-      limited = true;
+      client.send(from, { kind: "refused", offerId, reason: admission.reason });
+      if (admission.line) log(admission.line);
       return;
     }
-    limited = false;
-    offerTimes.push(now);
     // A new offer from the same guest replaces its connection.
     sessions.get(at)?.close();
     const session: GuestSession = new GuestSession({
@@ -196,6 +172,7 @@ export function startNearby(options: NearbyOptions) {
       signal: (data) => client.send(from, data),
       fetch,
       tokens,
+      budget,
       log,
       onEnd: () => {
         if (sessions.get(at) === session) sessions.delete(at);

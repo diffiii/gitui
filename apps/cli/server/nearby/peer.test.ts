@@ -18,12 +18,12 @@ import {
 } from "@gitui/shared";
 import { RTCPeerConnection } from "werift";
 import {
-  Attempts,
   fingerprints,
   MAX_TOKENS,
   newCode,
   newHostKey,
   newToken,
+  PairingBudget,
   Tokens,
 } from "./auth.ts";
 import { GuestSession } from "./peer.ts";
@@ -47,6 +47,7 @@ async function connect({
   label = DATA_CHANNEL_LABEL,
   authTimeout = 10_000,
   tokens = new Tokens(),
+  budget = new PairingBudget(),
   resuming = false,
 } = {}) {
   const pc = new RTCPeerConnection({ iceServers: [] });
@@ -72,6 +73,7 @@ async function connect({
     authTimeout,
     resuming,
     tokens,
+    budget,
     signal: (data) => {
       expect(data.offerId).toBe(OFFER_ID);
       if (data.kind === "answer") {
@@ -328,21 +330,45 @@ test("keys, tokens and codes have their formats", () => {
   expect(fingerprints("v=0", "v=0")).toBeNull();
 });
 
-test("attempts run out; tokens are capped", () => {
-  const attempts = new Attempts();
-  expect(attempts.check(false)).toEqual({ ok: false, attemptsLeft: 2 });
-  expect(attempts.check(true)).toEqual({ ok: true });
-  expect(attempts.check(false)).toEqual({ ok: false, attemptsLeft: 1 });
-  expect(attempts.check(false)).toEqual({ ok: false, attemptsLeft: 0 });
-  expect(attempts.check(true)).toEqual({ ok: false, attemptsLeft: 0 });
+test("the pairing budget spans sessions; once out, a pake is refused unanswered", async () => {
+  const lines: string[] = [];
+  const budget = new PairingBudget({ limit: 2, onExhausted: () => lines.push("out") });
+  const first = await connect({ budget });
+  await first.opened();
+  expect(await first.pake(wrongCode(await first.shownCode()))).toBe(false);
+  expect(await first.next()).toEqual({ t: "auth-fail", attemptsLeft: 2 });
 
-  const spent = new Attempts();
-  expect(spent.spend()).toBe(2);
-  expect(spent.check(true)).toEqual({ ok: true });
-  expect(spent.spend()).toBe(1);
-  expect(spent.spend()).toBe(0);
-  expect(spent.spend()).toBe(0);
+  // A new connection gets new attempts, but not a new budget.
+  const second = await connect({ budget });
+  await second.opened();
+  const code = await second.shownCode();
+  expect(await second.pake(code)).toBe(true);
+  expect(await second.next()).toEqual({ t: "auth-ok" });
+  expect(lines).toEqual(["out"]);
 
+  // Even the right code gets no answer now.
+  first.send(guestStart(first.code(), first.prints()).message);
+  await until(() => first.ended && first.closed);
+  expect(first.received.at(-1)).toEqual({ t: "auth-fail", attemptsLeft: 0 });
+  expect(first.received.filter((m) => !(m instanceof Uint8Array) && m.t === "pake")).toHaveLength(
+    1,
+  );
+  // The budget's line said why; the session adds none.
+  expect(first.log.at(-1)).toMatch(/code \d{6}$/);
+});
+
+test("with the budget out, a failed first resume is refused without showing the code", async () => {
+  const budget = new PairingBudget({ limit: 1 });
+  budget.spend();
+  const guest = await connect({ budget, resuming: true });
+  await guest.opened();
+  guest.send(resumeStart(newToken(), guest.prints()));
+  await until(() => guest.ended && guest.closed);
+  expect(guest.received).toEqual([{ t: "auth-fail", attemptsLeft: 0 }]);
+  expect(guest.code()).toBe("");
+});
+
+test("tokens are capped", () => {
   const tokens = new Tokens();
   const first = tokens.issue();
   for (let i = 0; i < MAX_TOKENS; i++) tokens.issue();

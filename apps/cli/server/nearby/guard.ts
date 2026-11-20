@@ -7,10 +7,10 @@
 // RangeError from Buffer). werift has dropped the packet by then, so the process can go on.
 //
 // So the guard takes the unhandled rejections thrown under `handleData`, which names that path
-// bundled or not. Our own code never throws there: webrtc.ts rethrows anything our callbacks
-// throw on a task of its own, where it crashes the process as an uncaught exception. Every other
-// unhandled rejection is rethrown from the listener, which crashes the process with it just as
-// if there were no listener.
+// bundled or not. Our own code never throws there: webrtc.ts hands anything our callbacks throw
+// to `isolate`'s `onError` on a task of its own, which closes that session and says so. Every
+// other unhandled rejection is rethrown from the listener, which crashes the process with it
+// just as if there were no listener.
 
 /** The function name of each "    at …" line of `stack`; null for anonymous frames. */
 export function stackFunctions(stack: string): (string | null)[] {
@@ -53,16 +53,25 @@ export function guardWerift(onCaught: (error: Error) => void): () => void {
 }
 
 /**
- * `fn`, for werift to call: an error it throws is rethrown on a task of its own, so it never
- * surfaces inside werift (where the guard would take it for werift's) and crashes as usual.
+ * `fn`, for werift to call: an error it throws goes to `onError` on a task of its own, so it never
+ * surfaces inside werift (where the guard would take it for werift's). `onError` closes the
+ * session the callback belongs to; should it throw too, the error is logged, and the process
+ * goes on either way.
  */
-export function isolate<A extends unknown[]>(fn: (...args: A) => void): (...args: A) => void {
+export function isolate<A extends unknown[]>(
+  fn: (...args: A) => void,
+  onError: (error: unknown) => void,
+): (...args: A) => void {
   return (...args) => {
     try {
       fn(...args);
     } catch (error) {
       setImmediate(() => {
-        throw error;
+        try {
+          onError(error);
+        } catch (again) {
+          console.error("gitui: nearby: an error while closing a connection:", again);
+        }
       });
     }
   };

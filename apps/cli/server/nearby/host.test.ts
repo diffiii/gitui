@@ -8,13 +8,15 @@ import {
   guestStart,
   HOST_KEY,
   type HostMessage,
+  MAX_PENDING,
   resumeStart,
   sdpFingerprint,
   type SignalData,
 } from "@gitui/shared";
 import { RTCPeerConnection } from "werift";
 import { type FakeSocket, fakeSockets } from "./fake-socket.ts";
-import { familiesFor, MAX_OFFERS_PER_MINUTE, MAX_PENDING, startNearby } from "./host.ts";
+import { familiesFor, startNearby } from "./host.ts";
+import { MAX_OFFERS_PER_MINUTE } from "./offers.ts";
 
 const until = async (condition: () => boolean, ms = 5000) => {
   for (let t = 0; t < ms && !condition(); t += 10) await new Promise((r) => setTimeout(r, 10));
@@ -307,6 +309,19 @@ test("offers over the limits are refused, with the reason", async () => {
     offerId: "offer-late".padEnd(16, "x"),
     reason: "rate-limited",
   });
+});
+
+test("an offer the host can't use is refused as such", async () => {
+  const { log, last } = host();
+  const v4 = last(4)!;
+  welcome(v4, "h4");
+  const offerId = "offer-bad-0123456789";
+  v4.receive({ type: "signal", from: "g1", data: { kind: "offer", offerId, sdp: "v=0" } });
+  await until(() => signals(v4, "g1").length > 0);
+  expect(signals(v4, "g1")).toEqual([
+    { type: "signal", to: "g1", data: { kind: "refused", offerId, reason: "bad-offer" } },
+  ]);
+  expect(log.at(-1)).toStartWith("Nearby: ");
 });
 
 test("the werift guard is on while nearby runs", async () => {

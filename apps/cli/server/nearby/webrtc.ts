@@ -7,6 +7,7 @@
 //
 // Every callback werift gets goes through `isolate` (guard.ts): werift's SCTP code calls most of
 // them while it handles a packet, and an error of ours must not pass for one of werift's there.
+// Such an error goes to PeerEvents.error instead, which closes the session.
 import { type RTCDataChannel, RTCPeerConnection } from "werift";
 import { isolate } from "./guard.ts";
 
@@ -38,6 +39,8 @@ export interface PeerEvents {
   channel: (channel: DataChannel) => void;
   /** The connection failed or closed; the peer is of no further use. */
   closed: () => void;
+  /** One of these callbacks threw; the session should end. */
+  error: (error: unknown) => void;
 }
 
 /** A peer connection that answers a guest's offer. */
@@ -54,15 +57,16 @@ export interface AnsweringPeer {
 
 export function createAnsweringPeer(stunUrls: string[], events: PeerEvents): AnsweringPeer {
   const pc = new RTCPeerConnection({ iceServers: stunUrls.map((urls) => ({ urls })) });
-  pc.onicecandidate = isolate(({ candidate }) => {
+  const guard: Guard = (fn) => isolate(fn, events.error);
+  pc.onicecandidate = guard(({ candidate }) => {
     if (candidate) {
       const { sdpMid, sdpMLineIndex } = candidate;
       events.candidate({ candidate: candidate.candidate, sdpMid, sdpMLineIndex });
     }
   });
-  pc.onDataChannel.subscribe(isolate((channel) => events.channel(wrapChannel(channel))));
+  pc.onDataChannel.subscribe(guard((channel) => events.channel(wrapChannel(channel, guard))));
   pc.connectionStateChange.subscribe(
-    isolate((state) => {
+    guard((state) => {
       if (state === "failed" || state === "closed") events.closed();
     }),
   );
@@ -73,7 +77,7 @@ export function createAnsweringPeer(stunUrls: string[], events: PeerEvents): Ans
       const answer = await pc.createAnswer();
       // setLocalDescription waits for gathering, which trickles each candidate as it is found
       // (up to the STUN timeout); the answer needn't wait for that.
-      pc.setLocalDescription(answer).catch(isolate(() => events.closed()));
+      pc.setLocalDescription(answer).catch(guard(() => events.closed()));
       return answer.sdp;
     },
     async addCandidate(candidate) {
@@ -85,11 +89,14 @@ export function createAnsweringPeer(stunUrls: string[], events: PeerEvents): Ans
   };
 }
 
-function wrapChannel(dc: RTCDataChannel): DataChannel {
+/** `fn`, isolated (guard.ts) with the peer's `error` event. */
+type Guard = <A extends unknown[]>(fn: (...args: A) => void) => (...args: A) => void;
+
+function wrapChannel(dc: RTCDataChannel, guard: Guard): DataChannel {
   let closed = false;
   const onClose = new Set<() => void>();
   dc.stateChanged.subscribe(
-    isolate((state) => {
+    guard((state) => {
       if (state !== "closed") return;
       closed = true;
       for (const callback of onClose) callback();
@@ -118,12 +125,12 @@ function wrapChannel(dc: RTCDataChannel): DataChannel {
           onClose.delete(done);
           resolve();
         };
-        const low = dc.bufferedAmountLow.subscribe(isolate(done));
+        const low = dc.bufferedAmountLow.subscribe(guard(done));
         onClose.add(done);
       });
     },
     listen({ message, close }) {
-      dc.onMessage.subscribe(isolate(message));
+      dc.onMessage.subscribe(guard(message));
       if (closed) close();
       else onClose.add(close);
     },

@@ -112,7 +112,7 @@ function runGuarded(body: string) {
     script,
     [
       `import { guardWerift, isolate } from ${at("guard.ts")};`,
-      `import { Tokens } from ${at("auth.ts")};`,
+      `import { PairingBudget, Tokens } from ${at("auth.ts")};`,
       `import { GuestSession } from ${at("peer.ts")};`,
       `import { crc32c, RTCPeerConnection } from ${JSON.stringify(import.meta.resolve("werift"))};`,
       `guardWerift((e) => console.log("caught", e.name, JSON.stringify(e.message)));`,
@@ -130,8 +130,10 @@ test("a hostile guest's packets that werift chokes on are caught, and the host g
     await pc.setLocalDescription(await pc.createOffer());
     const session = new GuestSession({
       offerSdp: pc.localDescription.sdp,
+      offerId: "offer-0123456789ab",
       stunUrls: [],
       tokens: new Tokens(),
+      budget: new PairingBudget(),
       resuming: true, // no code line
       signal: (data) => {
         if (data.kind === "answer") void pc.setRemoteDescription({ type: "answer", sdp: data.sdp });
@@ -141,7 +143,8 @@ test("a hostile guest's packets that werift chokes on are caught, and the host g
       log: (line) => console.log(line),
       onEnd: () => console.log("session ended"),
     });
-    pc.onicecandidate = ({ candidate }) => candidate && session.addCandidate(candidate.toJSON());
+    pc.onicecandidate = ({ candidate }) =>
+      candidate && session.addCandidate("offer-0123456789ab", candidate.toJSON());
     await new Promise((resolve) => channel.stateChanged.subscribe((s) => s === "open" && resolve()));
     // An SCTP packet with a valid checksum around \`chunks\`.
     const packet = (chunks) => {
@@ -181,9 +184,9 @@ test("a hostile guest's packets that werift chokes on are caught, and the host g
   expect(run.code).toBe(0);
 });
 
-// ── What isn't werift's still crashes the process ──────────────────────────────────────────
+// ── What isn't werift's still crashes the process, unless it is a session's ─────────────────
 
-test("in a real process: werift's errors are survived, other rejections and our errors crash", () => {
+test("in a real process: werift's errors are survived, other rejections crash", () => {
   const later = `setTimeout(() => console.log("still running"), 100);\n`;
   const werift = runGuarded(
     `${later}const e = new Error("channel not found");\n` +
@@ -199,12 +202,13 @@ test("in a real process: werift's errors are survived, other rejections and our 
   expect(other.err).toContain("a bug of ours");
   expect(other.out).not.toContain("still running");
 
-  // A callback of ours that throws while werift calls it crashes too, not as werift's error.
+  // A callback of ours that throws while werift calls it goes to its session's onError, not
+  // to the guard as werift's error; the process goes on, even if onError throws too.
   const ours = runGuarded(
-    `${later}async function handleData() { isolate(() => { throw new Error("our handler"); })(); }\n` +
+    `${later}const onError = (e) => { console.log("closed after", e.message); throw e; };\n` +
+      `async function handleData() { isolate(() => { throw new Error("our handler"); }, onError)(); }\n` +
       `void handleData();`,
   );
-  expect(ours.code).toBe(1);
+  expect(ours).toMatchObject({ code: 0, out: "closed after our handler\nstill running\n" });
   expect(ours.err).toContain("our handler");
-  expect(ours.out).not.toContain("caught");
 });
