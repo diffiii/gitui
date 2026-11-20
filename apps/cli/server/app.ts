@@ -52,6 +52,13 @@ function filePath(value: unknown, field = "path"): string {
   return value;
 }
 
+/** A path to read from the working copy: relative, and never stepping up with `..`. */
+function workingPath(value: unknown): string {
+  const p = filePath(value);
+  if (path.isAbsolute(p) || p.split(/[/\\]/).includes("..")) invalid("path");
+  return p;
+}
+
 /** `undefined` means "all files"; otherwise a non-empty list of paths. */
 function pathList(value: unknown): string[] | undefined {
   if (value === undefined) return undefined;
@@ -176,6 +183,12 @@ export function createApp(opts: AppOptions) {
 
   repo.get("/commit/:hash", async (c) =>
     c.json(await g.showCommit(c.var.repo, ref(c.req.param("hash"), "hash"))),
+  );
+
+  repo.get("/files", async (c) => c.json(await g.workingFiles(c.var.repo)));
+
+  repo.get("/file", async (c) =>
+    c.json(await g.workingFile(c.var.repo, workingPath(c.req.query("path")))),
   );
 
   repo.get("/branches", async (c) => c.json({ branches: await g.branches(c.var.repo) }));

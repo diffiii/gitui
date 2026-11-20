@@ -1,10 +1,29 @@
 import { spawn } from "node:child_process";
-import { stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, readlink, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
-import type { HeadInfo, FileStatus, Status, Commit, CommitDetail, Branch } from "@gitui/shared";
+import type {
+  HeadInfo,
+  FileStatus,
+  Status,
+  Commit,
+  CommitDetail,
+  Branch,
+  WorkingFiles,
+  WorkingFile,
+} from "@gitui/shared";
 
-export type { HeadInfo, FileStatus, Status, Commit, CommitDetail, Branch };
+export type {
+  HeadInfo,
+  FileStatus,
+  Status,
+  Commit,
+  CommitDetail,
+  Branch,
+  WorkingFiles,
+  WorkingFile,
+};
 
 export class GitError extends Error {
   constructor(
@@ -460,6 +479,80 @@ export async function createBranch(repo: string, name: string, from?: string, do
 
 export async function deleteBranch(repo: string, name: string, force: boolean) {
   return git(repo, ["branch", force ? "-D" : "-d", name]);
+}
+
+// ---------------------------------------------------------------- working copy
+
+/** Tracked files and untracked ones that aren't ignored, NUL-separated. */
+const LIST_FILES = ["ls-files", "--cached", "--others", "--exclude-standard", "-z"];
+
+/** The paths in `ls-files -z` output, less the `dir/` entries it lists for nested repos. */
+function lsFilesPaths(tokens: string[]) {
+  return tokens.filter((p) => p && !p.endsWith("/"));
+}
+
+/** The working copy's files, up to `limit` of them. */
+export async function workingFiles(repo: string, limit = 50_000): Promise<WorkingFiles> {
+  const [listed, deleted] = await Promise.all([
+    run(repo, LIST_FILES, {}),
+    git(repo, ["ls-files", "--deleted", "-z"]),
+  ]);
+  const tokens = listed.stdout.split("\0");
+  // Output cut at the byte cap ends partway through a path.
+  if (listed.truncated) tokens.pop();
+  const gone = new Set(lsFilesPaths(deleted.split("\0")));
+  // A conflicted path is listed once for each of its stages.
+  const paths = [...new Set(lsFilesPaths(tokens))].filter((p) => !gone.has(p));
+  return {
+    paths: paths.slice(0, limit),
+    truncated: listed.truncated || paths.length > limit,
+  };
+}
+
+/** Files larger than this are reported by size rather than read. */
+export const MAX_FILE_BYTES = 1024 * 1024;
+/** Like git, a file is binary when a NUL byte appears in its first 8000 bytes. */
+const BINARY_SNIFF_BYTES = 8000;
+
+const notFound = (file: string): never => {
+  throw new GitError(`Not a file in the working copy: ${file}`, null, "");
+};
+
+/**
+ * Reads `file`, a repo-relative path, from the working copy. It must be one of `workingFiles`'
+ * paths, exactly, and resolve inside the repo: a symlink is never followed (its target is
+ * returned as its content), nor is a symlinked directory leading out of the repo.
+ */
+export async function workingFile(
+  repo: string,
+  file: string,
+  maxBytes = MAX_FILE_BYTES,
+): Promise<WorkingFile> {
+  // `:(literal)`: wildcards and pathspec magic in the name are plain characters.
+  const listed = await git(repo, [...LIST_FILES, "--", `:(literal)${file}`]);
+  if (!listed.split("\0").includes(file)) notFound(file);
+
+  const root = await realpath(repo);
+  const dir = await realpath(path.join(root, path.dirname(file))).catch(() => notFound(file));
+  const rel = path.relative(root, dir);
+  if (rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+    throw new GitError(`Outside the repository: ${file}`, null, "");
+  }
+  const abs = path.join(dir, path.basename(file));
+  const st = await lstat(abs).catch(() => notFound(file));
+  if (st.isSymbolicLink()) {
+    return { size: st.size, content: await readlink(abs), symlink: true };
+  }
+  // Not a FIFO, which would block the read, nor a directory (a submodule).
+  if (!st.isFile()) throw new GitError(`Not a regular file: ${file}`, null, "");
+  if (st.size > maxBytes) return { size: st.size, tooLarge: true };
+
+  // O_NOFOLLOW: a symlink swapped in since the lstat fails rather than being followed.
+  const handle = await open(abs, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  const buf = await handle.readFile().finally(() => handle.close());
+  if (buf.length > maxBytes) return { size: buf.length, tooLarge: true };
+  if (buf.subarray(0, BINARY_SNIFF_BYTES).includes(0)) return { size: buf.length, binary: true };
+  return { size: buf.length, content: buf.toString("utf8") };
 }
 
 // ---------------------------------------------------------------- remotes
