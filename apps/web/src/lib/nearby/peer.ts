@@ -36,6 +36,14 @@ export class HostUnverifiedError extends NearbyError {
   override name = "HostUnverifiedError";
 }
 
+/**
+ * The host refused the offer (`refused`): too many guests proving themselves at once, or too
+ * many offers lately. Trying again at once would only add to them, so the user decides when.
+ */
+export class RefusedError extends NearbyError {
+  override name = "RefusedError";
+}
+
 export type AuthResult = { ok: true } | { ok: false; attemptsLeft: number };
 
 export interface GuestPeer {
@@ -120,7 +128,7 @@ export async function connectToHost(
     try {
       if (data.kind === "refused") {
         failSetup(
-          new NearbyError(
+          new RefusedError(
             data.reason === "busy"
               ? `${host.name} is busy with other devices connecting. Try again in a moment.`
               : `${host.name} got too many connection requests. Try again in a minute.`,
