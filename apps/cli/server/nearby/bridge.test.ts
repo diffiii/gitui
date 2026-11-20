@@ -8,6 +8,7 @@ import {
   type Fetch,
   HIGH_WATER,
   LOW_WATER,
+  MAX_BODIES_IN_FLIGHT,
   MAX_OPEN_REQUESTS,
   MAX_REQUEST_BODY,
 } from "./bridge.ts";
@@ -334,7 +335,7 @@ test("garbage is dropped, or aborts the request it names", async () => {
   expect(calls).toBe(0);
 });
 
-test("an id in use, too many open requests and an oversized body are refused", async () => {
+test("an id in use and too many open requests are refused", async () => {
   const channel = new FakeChannel();
   const bridge = new Bridge(channel, echo);
   const head = (id: number) =>
@@ -349,16 +350,57 @@ test("an id in use, too many open requests and an oversized body are refused", a
   expect(channel.sent).toEqual([]);
   bridge.receive(head(999));
   expect(replies(channel).get(999)?.aborted).toBe("too many open requests");
+});
 
-  channel.sent = [];
+/** Sends `bytes` of body for request `id`, in frames. */
+const feed = (bridge: Bridge, id: number, bytes: number) => {
   const piece = new Uint8Array(CHUNK_SIZE);
-  for (let sent = 0; sent <= MAX_REQUEST_BODY; sent += CHUNK_SIZE) {
-    bridge.receive(frameChunk(100, piece));
-  }
-  expect(replies(channel).get(100)?.aborted).toBe("request body too large");
-  bridge.receive(JSON.stringify({ t: "end", id: 100 }));
+  for (let sent = 0; sent < bytes; sent += CHUNK_SIZE) bridge.receive(frameChunk(id, piece));
+};
+
+/** Expects request `id` to have been answered 413, and nothing else. */
+const expectTooLarge = (channel: FakeChannel, id: number) => {
+  const reply = replies(channel).get(id)!;
+  expect(reply.head?.status).toBe(413);
+  expect(JSON.parse(text(reply.body))).toEqual({ error: "Request body too large" });
+  expect(reply.ended).toBe(true);
+  expect(reply.aborted).toBeUndefined();
+};
+
+test("a body over the limit is answered 413; the session goes on", async () => {
+  const channel = new FakeChannel();
+  let calls = 0;
+  const bridge = new Bridge(channel, (req) => {
+    calls++;
+    return echo(req);
+  });
+  bridge.receive(JSON.stringify({ t: "req", id: 1, method: "POST", path: "/x", headers: [] }));
+  feed(bridge, 1, MAX_REQUEST_BODY + CHUNK_SIZE);
+  bridge.receive(JSON.stringify({ t: "end", id: 1 }));
   await settle();
-  expect(replies(channel).get(100)?.head).toBeUndefined();
+  expectTooLarge(channel, 1);
+  expect(calls).toBe(0);
+  // A body of exactly the limit is fine, on the same bridge.
+  request(bridge, 2, "/x", { method: "POST", body: new Uint8Array(MAX_REQUEST_BODY) });
+  await settle();
+  expect(replies(channel).get(2)?.head?.status).toBe(200);
+});
+
+test("the bodies a bridge holds at once are capped, and the room comes back", async () => {
+  const channel = new FakeChannel();
+  const bridge = new Bridge(channel, echo);
+  const open = MAX_BODIES_IN_FLIGHT / MAX_REQUEST_BODY;
+  for (let id = 1; id <= open + 1; id++) {
+    bridge.receive(JSON.stringify({ t: "req", id, method: "POST", path: "/x", headers: [] }));
+  }
+  for (let id = 1; id <= open; id++) feed(bridge, id, MAX_REQUEST_BODY);
+  feed(bridge, open + 1, CHUNK_SIZE);
+  expectTooLarge(channel, open + 1);
+  // Ending a request frees its room.
+  bridge.receive(JSON.stringify({ t: "cancel", id: 1 }));
+  request(bridge, 99, "/x", { method: "POST", body: new Uint8Array(CHUNK_SIZE) });
+  await settle();
+  expect(replies(channel).get(99)?.head?.status).toBe(200);
 });
 
 test("decode reads frames and heads", () => {

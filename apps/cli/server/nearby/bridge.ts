@@ -1,7 +1,8 @@
 // HTTP over an authenticated data channel (the contract's step 4). The guest sends a `req` head,
 // binary body frames and an `end`; the bridge builds a Request, hands it to the app and streams
 // the Response back as a `res` head, body frames of at most CHUNK_SIZE bytes and an `end`, or an
-// `abort` if the app fails. A guest's `cancel` stops a response. Requests interleave by id.
+// `abort` if the app fails. A body over MAX_REQUEST_BODY, or over MAX_BODIES_IN_FLIGHT with the
+// others, gets a 413 instead. A guest's `cancel` stops a response. Requests interleave by id.
 // Nothing here knows about WebRTC.
 import {
   CHANNEL_HIGH_WATER,
@@ -35,7 +36,12 @@ export const LOW_WATER = CHANNEL_LOW_WATER;
 /** The most requests a channel may have open (not yet answered) at once. */
 export const MAX_OPEN_REQUESTS = 64;
 /** The largest request body; the API only takes small JSON bodies. */
-export const MAX_REQUEST_BODY = 16 * 1024 * 1024;
+export const MAX_REQUEST_BODY = 1024 * 1024;
+/**
+ * The most request body bytes a channel may hold at once, over all its open requests (a body
+ * is held from its first frame until its request ends).
+ */
+export const MAX_BODIES_IN_FLIGHT = 16 * 1024 * 1024;
 
 const ORIGIN = `http://${NEARBY_HOST}`;
 
@@ -91,6 +97,8 @@ export class Bridge {
   readonly #channel: BridgeChannel;
   readonly #fetch: Fetch;
   readonly #open = new Map<number, OpenRequest>();
+  /** The body bytes of every open request. */
+  #bodyBytes = 0;
   #closed = false;
 
   constructor(channel: BridgeChannel, fetch: Fetch) {
@@ -118,8 +126,15 @@ export class Bridge {
       case "chunk": {
         const open = this.#open.get(message.id);
         if (!open?.body) return;
-        open.size += message.payload.byteLength;
-        if (open.size > MAX_REQUEST_BODY) return this.#fail(message.id, "request body too large");
+        const { byteLength } = message.payload;
+        if (
+          open.size + byteLength > MAX_REQUEST_BODY ||
+          this.#bodyBytes + byteLength > MAX_BODIES_IN_FLIGHT
+        ) {
+          return this.#tooLarge(message.id);
+        }
+        open.size += byteLength;
+        this.#bodyBytes += byteLength;
         // A copy: the frame's buffer belongs to the channel.
         open.body.push(message.payload.slice());
         return;
@@ -222,6 +237,24 @@ export class Bridge {
     }
   }
 
+  /**
+   * Answers request `id` with a 413 and drops its body; the rest of its frames, and its `end`,
+   * name no open request any more and are dropped.
+   */
+  #tooLarge(id: number) {
+    this.#cancel(id);
+    const body = new TextEncoder().encode(JSON.stringify({ error: "Request body too large" }));
+    const head: HostMessage = {
+      t: "res",
+      id,
+      status: 413,
+      headers: [["content-type", "application/json"]],
+    };
+    this.#send(JSON.stringify(head));
+    this.#send(frameChunk(id, body));
+    this.#send(JSON.stringify({ t: "end", id } satisfies HostMessage));
+  }
+
   /** Ends request `id` with an `abort` to the guest. */
   #fail(id: number, message: string) {
     this.#cancel(id);
@@ -232,11 +265,13 @@ export class Bridge {
   #cancel(id: number) {
     const open = this.#open.get(id);
     if (!open) return;
-    this.#open.delete(id);
+    this.#forget(id, open);
     open.controller.abort();
   }
 
   #forget(id: number, open: OpenRequest) {
-    if (this.#open.get(id) === open) this.#open.delete(id);
+    if (this.#open.get(id) !== open) return;
+    this.#open.delete(id);
+    this.#bodyBytes -= open.size;
   }
 }
