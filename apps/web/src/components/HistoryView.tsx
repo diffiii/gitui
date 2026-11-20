@@ -23,7 +23,7 @@ import { useListChoice } from "@/lib/listChoice";
 import { COARSE, NARROW, useMediaQuery } from "@/lib/media";
 import { useHistoryDetails } from "@/lib/prefs";
 import { useGitMutation, useRepo } from "@/lib/repo";
-import { closeDetail, select, useUrl } from "@/lib/url";
+import { select, useUrl } from "@/lib/url";
 import { cn } from "@/lib/utils";
 import { useWindowedRows } from "@/lib/windowing";
 import { Age } from "./Age";
@@ -62,7 +62,13 @@ export function HistoryPane({
     refetchInterval: 10000,
   });
   const commits = useMemo(() => data?.commits ?? [], [data]);
-  const { stacked, shown } = useListChoice(NARROW, commit, commits[0]?.hash ?? null);
+  const choice = useListChoice({
+    param: "commit",
+    breakpoint: NARROW,
+    chosen: commit,
+    first: commits[0]?.hash ?? null,
+  });
+  const { stacked, shown } = choice;
   const details = usePanelRef();
   const [detailsPref, setDetailsPref] = useHistoryDetails();
   const closed = detailsPref === "closed";
@@ -74,12 +80,10 @@ export function HistoryPane({
     if (panel.getSize().inPixels < 400) panel.resize("45%");
   };
   const toggleDetails = () => (closed ? openDetails() : details.current?.collapse());
-  const choose = (hash: string) =>
-    select({ commit: hash }, stacked && !shown ? "commit" : undefined);
 
   return (
     <ListDetail
-      breakpoint={NARROW}
+      choice={choice}
       listPanel={{ defaultSize: closed ? "100%" : "55%", minSize: "320px" }}
       detailPanel={{
         panelRef: details,
@@ -89,7 +93,6 @@ export function HistoryPane({
         collapsedSize: "0%",
         onResize: (size) => setDetailsPref(size.asPercentage === 0 ? "closed" : "open"),
       }}
-      detailCollapsed={closed}
       list={
         <>
           {/* With no toolbar, a phone has nothing to show here: the details toggle is for panels. */}
@@ -126,9 +129,9 @@ export function HistoryPane({
             <CommitList
               commits={commits}
               selected={shown}
-              onSelect={choose}
+              onSelect={(hash) => choice.choose({ commit: hash })}
               onOpen={(hash) => {
-                choose(hash);
+                choice.choose({ commit: hash });
                 openDetails();
               }}
               footer={
@@ -155,10 +158,14 @@ export function HistoryPane({
         shown === null
           ? null
           : {
-              content: <CommitDetail hash={shown} onSelect={(hash) => select({ commit: hash })} />,
+              // Side by side, a collapsed panel shows nothing.
+              content:
+                closed && !stacked ? null : (
+                  <CommitDetail hash={shown} onSelect={(hash) => select({ commit: hash })} />
+                ),
               title: <span className="font-mono text-sm">{shown.slice(0, 7)}</span>,
+              label: `Commit ${shown.slice(0, 7)}`,
               backLabel: "Back to commits",
-              onBack: () => closeDetail("commit"),
             }
       }
       empty={<EmptyState icon={GitCommitHorizontal} title="Select a commit" />}
@@ -205,7 +212,10 @@ function CommitList({
         {commits.slice(start, end).map((c, k) => (
           <li
             key={c.hash}
+            // Focusable, so focus can return to the row when its detail closes.
+            tabIndex={0}
             onClick={() => onSelect(c.hash)}
+            onKeyDown={(e) => e.target === e.currentTarget && e.key === "Enter" && onSelect(c.hash)}
             onDoubleClick={() => onOpen(c.hash)}
             style={{ height: rowH }}
             className={cn(

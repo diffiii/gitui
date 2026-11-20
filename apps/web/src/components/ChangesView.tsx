@@ -20,7 +20,7 @@ import { splitPath } from "@/lib/format";
 import { useListChoice } from "@/lib/listChoice";
 import { NARROW } from "@/lib/media";
 import { useGitMutation, useRepo } from "@/lib/repo";
-import { closeDetail, select, useUrl } from "@/lib/url";
+import { useUrl } from "@/lib/url";
 import { DiffView } from "./DiffView";
 import { EmptyState } from "./EmptyState";
 import { ListDetail } from "./ListDetail";
@@ -48,67 +48,72 @@ export function ChangesView() {
     staged,
     unstaged,
   );
-  const { stacked, shown } = useListChoice(NARROW, chosen, firstChange(staged, unstaged));
-  const choose = (path: string, staged: boolean) =>
-    select({ file: path, staged }, stacked && !shown ? "file" : undefined);
-  const close = () => closeDetail("file");
+  const choice = useListChoice({
+    param: "file",
+    breakpoint: NARROW,
+    chosen,
+    first: firstChange(staged, unstaged),
+  });
+  const { shown } = choice;
+  const choose = (path: string, staged: boolean) => choice.choose({ file: path, staged });
 
   return (
-    <ListDetail
-      breakpoint={NARROW}
-      listPanel={{ defaultSize: "30%", minSize: "260px" }}
-      detailPanel={{ minSize: "400px" }}
-      list={
-        <>
-          <div className="flex min-h-0 flex-1 flex-col">
-            <FileSection
-              title="Staged"
-              files={staged}
-              staged
-              selected={shown?.staged ? shown.file.path : null}
-              onSelect={(path) => choose(path, true)}
-              onDiscard={setDiscarding}
-              empty="Nothing staged"
-            />
-            <FileSection
-              title="Changes"
-              files={unstaged}
-              staged={false}
-              selected={shown && !shown.staged ? shown.file.path : null}
-              onSelect={(path) => choose(path, false)}
-              onDiscard={setDiscarding}
-              empty="Working tree clean"
-            />
-          </div>
-          <CommitBox stagedCount={staged.length} />
-        </>
-      }
-      detail={
-        shown && {
-          content: <FileDiffPane file={shown.file} staged={shown.staged} />,
-          title: <FileTitle path={shown.file.path} />,
-          backLabel: "Back to changes",
-          onBack: close,
-          actions: <FileActions shown={shown} onDone={close} onDiscard={setDiscarding} />,
+    <>
+      <ListDetail
+        choice={choice}
+        listPanel={{ defaultSize: "30%", minSize: "260px" }}
+        detailPanel={{ minSize: "400px" }}
+        list={
+          <>
+            <div className="flex min-h-0 flex-1 flex-col">
+              <FileSection
+                title="Staged"
+                files={staged}
+                staged
+                selected={shown?.staged ? shown.file.path : null}
+                onSelect={(path) => choose(path, true)}
+                onDiscard={setDiscarding}
+                empty="Nothing staged"
+              />
+              <FileSection
+                title="Changes"
+                files={unstaged}
+                staged={false}
+                selected={shown && !shown.staged ? shown.file.path : null}
+                onSelect={(path) => choose(path, false)}
+                onDiscard={setDiscarding}
+                empty="Working tree clean"
+              />
+            </div>
+            <CommitBox stagedCount={staged.length} />
+          </>
         }
-      }
-      empty={
-        <EmptyState
-          icon={CheckCheck}
-          title="All clean"
-          description="No changes in the working tree."
-        />
-      }
-    >
+        detail={
+          shown && {
+            content: <FileDiffPane file={shown.file} staged={shown.staged} />,
+            title: <FileTitle path={shown.file.path} />,
+            label: shown.file.path,
+            backLabel: "Back to changes",
+            actions: <FileActions shown={shown} onDone={choice.close} onDiscard={setDiscarding} />,
+          }
+        }
+        empty={
+          <EmptyState
+            icon={CheckCheck}
+            title="All clean"
+            description="No changes in the working tree."
+          />
+        }
+      />
       <DiscardDialog
         files={discarding}
         onClose={() => setDiscarding(null)}
         onConfirm={(files) => {
           // A discarded file has nothing left to show.
-          if (chosen && files.some((f) => f.path === chosen.file.path)) close();
+          if (chosen && files.some((f) => f.path === chosen.file.path)) choice.close();
         }}
       />
-    </ListDetail>
+    </>
   );
 }
 

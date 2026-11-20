@@ -31,7 +31,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import type { Branch } from "@/lib/api";
 import { relativeTime } from "@/lib/format";
 import { useGitMutation, useRepo } from "@/lib/repo";
-import { closeDetail, select, useUrl } from "@/lib/url";
+import { useUrl } from "@/lib/url";
 import { useListChoice } from "@/lib/listChoice";
 import { BELOW_LG } from "@/lib/media";
 import { cn } from "@/lib/utils";
@@ -60,11 +60,13 @@ export function BranchesView() {
   // Keyed by full refname: a tag can share a branch's short name, and git prefers the tag.
   const chosen = branches.find((b) => b.ref === url.branch) ?? null;
   // Below lg the branch list and the branch's history (itself two panes) don't fit side by side.
-  const { stacked, shown } = useListChoice(
-    BELOW_LG,
+  const choice = useListChoice({
+    param: "branch",
+    breakpoint: BELOW_LG,
     chosen,
-    branches.find((b) => b.current) ?? branches[0] ?? null,
-  );
+    first: branches.find((b) => b.current) ?? branches[0] ?? null,
+  });
+  const { stacked, shown } = choice;
 
   const checkout = useGitMutation(
     (api, b: Branch) => api.checkout(b.name, b.remote),
@@ -76,9 +78,7 @@ export function BranchesView() {
       key={b.ref}
       branch={b}
       active={shown?.ref === b.ref}
-      onSelect={() =>
-        select({ branch: b.ref, commit: null }, stacked && !shown ? "branch" : undefined)
-      }
+      onSelect={() => choice.choose({ branch: b.ref, commit: null })}
       onCheckout={() => checkout.mutate(b)}
       onCreate={() => setCreating({ from: b.name })}
       onDelete={() => setDeleting(b)}
@@ -92,67 +92,68 @@ export function BranchesView() {
   );
 
   return (
-    <ListDetail
-      breakpoint={BELOW_LG}
-      listPanel={{ defaultSize: "26%", minSize: "240px" }}
-      detailPanel={{ minSize: "680px" }}
-      list={
-        <>
-          <div className="flex shrink-0 items-center gap-2 border-b p-2">
-            <div className="relative flex-1">
-              <Search className="absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-                placeholder="Filter branches"
-                className="h-8 pl-8 pointer-coarse:h-10"
-              />
+    <>
+      <ListDetail
+        choice={choice}
+        listPanel={{ defaultSize: "26%", minSize: "240px" }}
+        detailPanel={{ minSize: "680px" }}
+        list={
+          <>
+            <div className="flex shrink-0 items-center gap-2 border-b p-2">
+              <div className="relative flex-1">
+                <Search className="absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={filter}
+                  onChange={(e) => setFilter(e.target.value)}
+                  placeholder="Filter branches"
+                  className="h-8 pl-8 pointer-coarse:h-10"
+                />
+              </div>
+              <Button
+                size="icon-sm"
+                variant="outline"
+                onClick={() => setCreating({})}
+                title="New branch"
+                aria-label="New branch"
+                className="touch-target"
+              >
+                <GitBranchPlus />
+              </Button>
             </div>
-            <Button
-              size="icon-sm"
-              variant="outline"
-              onClick={() => setCreating({})}
-              title="New branch"
-              aria-label="New branch"
-              className="touch-target"
-            >
-              <GitBranchPlus />
-            </Button>
-          </div>
-          <ScrollArea className="min-h-0 flex-1">
-            <div className="flex flex-col gap-4 p-2">
-              <BranchGroup title="Local" count={local.length}>
-                {local.map(row)}
-              </BranchGroup>
-              {remote.length > 0 && (
-                <BranchGroup title="Remote" count={remote.length}>
-                  {remote.map(row)}
+            <ScrollArea className="min-h-0 flex-1">
+              <div className="flex flex-col gap-4 p-2">
+                <BranchGroup title="Local" count={local.length}>
+                  {local.map(row)}
                 </BranchGroup>
-              )}
-            </div>
-          </ScrollArea>
-        </>
-      }
-      detail={
-        shown && {
-          // Stacked, the bar above names the branch.
-          content: (
-            <HistoryPane
-              key={shown.ref}
-              gitRef={shown.ref}
-              all={false}
-              toolbar={stacked ? undefined : branchName(shown)}
-            />
-          ),
-          title: branchName(shown),
-          backLabel: "Back to branches",
-          onBack: () => closeDetail("branch"),
+                {remote.length > 0 && (
+                  <BranchGroup title="Remote" count={remote.length}>
+                    {remote.map(row)}
+                  </BranchGroup>
+                )}
+              </div>
+            </ScrollArea>
+          </>
         }
-      }
-    >
+        detail={
+          shown && {
+            // Stacked, the bar above names the branch.
+            content: (
+              <HistoryPane
+                key={shown.ref}
+                gitRef={shown.ref}
+                all={false}
+                toolbar={stacked ? undefined : branchName(shown)}
+              />
+            ),
+            title: branchName(shown),
+            label: shown.name,
+            backLabel: "Back to branches",
+          }
+        }
+      />
       <CreateBranchDialog state={creating} onClose={() => setCreating(null)} />
       <DeleteBranchDialog branch={deleting} onClose={() => setDeleting(null)} />
-    </ListDetail>
+    </>
   );
 }
 
@@ -198,7 +199,10 @@ function BranchRow({
   const Icon = b.remote ? Cloud : GitBranch;
   return (
     <li
+      // Focusable, so focus can return to the row when its history closes.
+      tabIndex={0}
       onClick={onSelect}
+      onKeyDown={(e) => e.target === e.currentTarget && e.key === "Enter" && onSelect()}
       onDoubleClick={() => !b.current && onCheckout()}
       className={cn(
         "group flex cursor-default items-center gap-2 rounded-md px-2 py-1.5 select-none",
