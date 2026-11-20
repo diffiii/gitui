@@ -250,7 +250,8 @@ export async function log(
   repo: string,
   opts: { limit: number; all: boolean; ref?: string },
 ): Promise<Commit[]> {
-  if (!(await hasHead(repo)) && !opts.all) return [];
+  const head = await hasHead(repo);
+  if (!head && !opts.all && !opts.ref) return [];
   const args = [
     "log",
     "--topo-order",
@@ -260,8 +261,10 @@ export async function log(
   ];
   if (opts.ref) args.push(opts.ref, "--");
   // Not --all: that would include tool-internal refs (refs/t3/*, refs/codex/*, refs/original/*, stash).
-  else if (opts.all) args.push("--branches", "--remotes", "--tags", "HEAD");
-  return parseLog(await git(repo, args).catch(() => ""));
+  // With no matching refs (an unborn repo) git walks nothing and prints nothing; HEAD is only
+  // added when it resolves, since an unborn HEAD would make git fail.
+  else if (opts.all) args.push("--branches", "--remotes", "--tags", ...(head ? ["HEAD"] : []));
+  return parseLog(await git(repo, args));
 }
 
 export async function showCommit(repo: string, hash: string): Promise<CommitDetail> {
