@@ -22,6 +22,7 @@
     "vite-plus": "1.6.0"
   },
   "overrides": {
+    "mediabunny": "1.65.2",
     "vite": "npm:@voidzero-dev/vite-plus-core@1.6.0"
   },
   "devEngines": {
