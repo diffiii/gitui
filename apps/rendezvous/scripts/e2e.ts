@@ -1,8 +1,12 @@
 // End-to-end check of the rendezvous under `wrangler dev`: host keys, listing a key once, both
-// keepalives and per-network routing. `wrangler dev` takes CF-Connecting-IP from the request, so
-// the peers pick their addresses. Starts and stops its own servers on PORT and PORT + 1.
+// keepalives, per-network routing, refusals and limits. `wrangler dev` takes CF-Connecting-IP
+// from the request, so the peers pick their addresses (each step its own network). Starts and
+// stops its own servers on free ports between 5100 and 5199.
 //
-//   bun scripts/e2e.ts            # PORT defaults to 5187
+//   bun scripts/e2e.ts
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   RENDEZVOUS_PATH,
   RENDEZVOUS_PING,
@@ -10,43 +14,97 @@ import {
   type HostInfo,
   type ServerMessage,
 } from "@gitui/shared";
+import { MAX_MESSAGE_LENGTH } from "../src/messages.ts";
+import { HELLO_TIMEOUT, MAX_ERRORS, MAX_HOSTS, MAX_SOCKETS, RATE_LIMIT } from "../src/network.ts";
 
-const PORT = Number(process.env.PORT ?? 5187);
 const ORIGIN = "http://localhost:5181";
 const TIMEOUT = 5000;
 
 type Server = { url: string; stop: () => Promise<void> };
+const running = new Set<Server>();
+const taken = new Set<number>();
 
-async function startServer(port: number, secret: string | null): Promise<Server> {
-  const vars = [`ALLOWED_ORIGINS:${ORIGIN}`, ...(secret ? [`NETWORK_KEY_SECRET:${secret}`] : [])];
-  const proc = Bun.spawn(
-    [
-      `${import.meta.dir}/../node_modules/.bin/wrangler`,
-      "dev",
-      "--port",
-      String(port),
-      "--ip",
-      "127.0.0.1",
-    ].concat(vars.flatMap((v) => ["--var", v])),
-    { cwd: `${import.meta.dir}/..`, stdout: "ignore", stderr: "ignore" },
-  );
-  const url = `http://127.0.0.1:${port}`;
-  const stop = async () => {
-    proc.kill();
-    await proc.exited;
-  };
+/** A port between 5100 and 5199 that nothing listens on now (and this script hasn't used). */
+async function freePort(): Promise<number> {
+  const first = 5100 + Math.floor(Math.random() * 100);
   for (let i = 0; i < 100; i++) {
-    if (
-      await fetch(url).then(
+    const port = 5100 + ((first - 5100 + i) % 100);
+    if (taken.has(port)) continue;
+    let probe;
+    try {
+      probe = Bun.serve({ port, hostname: "127.0.0.1", fetch: () => new Response() });
+    } catch {
+      continue;
+    }
+    await probe.stop(true);
+    taken.add(port);
+    return port;
+  }
+  throw new Error("no free port between 5100 and 5199");
+}
+
+/** Starts `wrangler dev` with its own state directory, retrying on other ports if it fails. */
+async function startServer(secret: string | null): Promise<Server> {
+  let output = "";
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const port = await freePort();
+    const state = mkdtempSync(join(tmpdir(), "rendezvous-e2e-"));
+    const vars = [`ALLOWED_ORIGINS:${ORIGIN}`, ...(secret ? [`NETWORK_KEY_SECRET:${secret}`] : [])];
+    const proc = Bun.spawn(
+      [
+        `${import.meta.dir}/../node_modules/.bin/wrangler`,
+        "dev",
+        ...["--port", String(port), "--ip", "127.0.0.1"],
+        ...["--inspector-port", String(await freePort()), "--inspector-ip", "127.0.0.1"],
+        ...["--persist-to", state, "--show-interactive-dev-session=false"],
+      ].concat(vars.flatMap((v) => ["--var", v])),
+      {
+        cwd: `${import.meta.dir}/..`,
+        env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
+        stdout: "pipe",
+        stderr: "pipe",
+      },
+    );
+    output = "";
+    for (const stream of [proc.stdout, proc.stderr]) {
+      void (async () => {
+        for await (const chunk of stream.pipeThrough(new TextDecoderStream())) output += chunk;
+      })();
+    }
+    const url = `http://127.0.0.1:${port}`;
+    const server: Server = {
+      url,
+      stop: async () => {
+        running.delete(server);
+        proc.kill("SIGTERM");
+        const exited = await Promise.race([proc.exited.then(() => true), Bun.sleep(5000)]);
+        if (!exited) {
+          proc.kill("SIGKILL");
+          await proc.exited;
+        }
+        rmSync(state, { recursive: true, force: true });
+      },
+    };
+    running.add(server);
+    for (let i = 0; i < 150 && proc.exitCode === null; i++) {
+      const up = await fetch(url).then(
         () => true,
         () => false,
-      )
-    )
-      return { url, stop };
-    await Bun.sleep(200);
+      );
+      if (up) return server;
+      await Bun.sleep(200);
+    }
+    await server.stop();
   }
-  await stop();
-  throw new Error(`wrangler dev didn't start on ${port}`);
+  console.error(output);
+  throw new Error("wrangler dev didn't start");
+}
+
+// Don't leave servers behind when interrupted.
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.on(signal, () => {
+    void Promise.all([...running].map((server) => server.stop())).finally(() => process.exit(130));
+  });
 }
 
 /** A rendezvous socket that queues what it receives. */
@@ -203,9 +261,122 @@ async function run(base: string): Promise<void> {
   });
 
   for (const peer of [guest, v6]) peer.ws.close();
+
+  await step("a bad Origin gets a 403", async () => {
+    equal((await upgrade(base, net(), "https://evil.example")).status, 403, "status");
+  });
+
+  await step("a guest leaving sends gone to every host", async () => {
+    const ip = net();
+    const hosts = [await Peer.open(base, ip), await Peer.open(base, ip)];
+    for (const [i, host] of hosts.entries()) await host.hello("host", "box", `${KEY}-${i}`);
+    const leaving = await Peer.open(base, ip, true);
+    const id = await leaving.hello("guest");
+    leaving.ws.close();
+    for (const host of hosts) equal(await host.next("gone"), { type: "gone", id }, "gone");
+    for (const host of hosts) host.ws.close();
+  });
+
+  await step("refusals: no Origin, a second hello, a guest signaling a guest", async () => {
+    const ip = net();
+    const cli = await Peer.open(base, ip);
+    cli.send({ type: "hello", role: "guest" });
+    equal(await cli.next("error"), { type: "error", message: "Origin required" }, "no Origin");
+    equal(await cli.closed, 1008, "close code");
+
+    const [a, b] = [await Peer.open(base, ip, true), await Peer.open(base, ip, true)];
+    await a.hello("guest");
+    await a.next("hosts");
+    const bId = await b.hello("guest");
+    await b.next("hosts");
+    a.send({ type: "signal", to: bId, data: { kind: "offer", sdp: "v=0" } });
+    equal(await a.next("error"), { type: "error", message: "Unknown peer" }, "guest to guest");
+    b.send({ type: "hello", role: "guest" });
+    equal(await b.next("error"), { type: "error", message: "Already said hello" }, "hello");
+    equal(await b.closed, 1008, "close code");
+    a.ws.close();
+  });
+
+  await step("binary messages close with 1003, oversized ones with 1009", async () => {
+    const binary = await Peer.open(base, net(), true);
+    binary.ws.send(new Uint8Array([1, 2, 3]));
+    equal(await binary.closed, 1003, "binary");
+    const large = await Peer.open(base, net(), true);
+    large.send("x".repeat(MAX_MESSAGE_LENGTH + 1));
+    equal(await large.closed, 1009, "oversized");
+  });
+
+  await step(`over ${RATE_LIMIT} messages in a window closes with 1008`, async () => {
+    const ip = net();
+    const host = await Peer.open(base, ip);
+    const hostId = await host.hello("host", "box", KEY);
+    const flood = await Peer.open(base, ip, true);
+    await flood.hello("guest");
+    for (let i = 0; i < RATE_LIMIT; i++) {
+      flood.send({ type: "signal", to: hostId, data: { kind: "offer", sdp: `${i}` } });
+    }
+    equal(await flood.closed, 1008, "close code");
+    const relayed = flood.queue.filter((text) => text.includes("Too many messages"));
+    equal(relayed.length, 1, "error before the close");
+    host.ws.close();
+  });
+
+  await step(`${MAX_ERRORS} Unknown peer errors, then a close`, async () => {
+    const guest = await Peer.open(base, net(), true);
+    await guest.hello("guest");
+    await guest.next("hosts");
+    for (let i = 0; i <= MAX_ERRORS; i++) {
+      guest.send({ type: "signal", to: "nobody", data: { kind: "offer", sdp: "v=0" } });
+    }
+    equal(await guest.closed, 1008, "close code");
+    equal(guest.queue.filter((text) => text.includes("Unknown peer")).length, MAX_ERRORS, "errors");
+  });
+
+  await step(`host ${MAX_HOSTS + 1} gets 1013, and guests still get in`, async () => {
+    const ip = net();
+    const hosts: Peer[] = [];
+    for (let i = 0; i < MAX_HOSTS; i++) {
+      const host = await Peer.open(base, ip);
+      await host.hello("host", "box", `${KEY}-${i}`);
+      hosts.push(host);
+    }
+    const extra = await Peer.open(base, ip);
+    extra.send({ type: "hello", role: "host", name: "box", key: OTHER_KEY });
+    equal(await extra.closed, 1013, "close code");
+    const guest = await Peer.open(base, ip, true);
+    await guest.hello("guest");
+    equal((await guest.next("hosts")).hosts.length, MAX_HOSTS, "hosts listed");
+    for (const peer of [...hosts, guest]) peer.ws.close();
+  });
+
+  await step(`past ${MAX_SOCKETS} sockets a 503, until silent ones time out`, async () => {
+    const ip = net();
+    const silent = await Promise.all(
+      Array.from({ length: MAX_SOCKETS }, () => Peer.open(base, ip, true)),
+    );
+    equal((await upgrade(base, ip, ORIGIN)).status, 503, "status when full");
+    await Bun.sleep(HELLO_TIMEOUT + 500);
+    const late = await Peer.open(base, ip, true);
+    for (const peer of silent) equal(await peer.closed, 1008, "silent socket closed");
+    await late.hello("guest");
+    late.ws.close();
+  });
 }
 
-const server = await startServer(PORT, "e2e-secret");
+let nets = 0;
+/** A network no other step uses. */
+function net(): string {
+  return `203.0.113.${++nets}`;
+}
+
+/** A WebSocket upgrade request with fetch, for its status. */
+function upgrade(base: string, ip: string, origin?: string): Promise<Response> {
+  const headers: Record<string, string> = { Upgrade: "websocket", "CF-Connecting-IP": ip };
+  if (origin) headers.Origin = origin;
+  return fetch(`${base}${RENDEZVOUS_PATH}`, { headers });
+}
+
+const server = await startServer("e2e-secret");
 try {
   await run(server.url);
 } finally {
@@ -213,12 +384,10 @@ try {
 }
 
 // Started with no secret (and no .dev.vars), it must refuse every connection.
-const misconfigured = await startServer(PORT + 1, null);
+const misconfigured = await startServer(null);
 try {
   await step("no NETWORK_KEY_SECRET: 500", async () => {
-    const response = await fetch(`${misconfigured.url}${RENDEZVOUS_PATH}`, {
-      headers: { Upgrade: "websocket", "CF-Connecting-IP": NET_A },
-    });
+    const response = await upgrade(misconfigured.url, NET_A);
     equal(response.status, 500, "status");
     check((await response.text()).includes("NETWORK_KEY_SECRET"), "message names the secret");
   });
