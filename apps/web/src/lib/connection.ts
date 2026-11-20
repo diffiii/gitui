@@ -1,6 +1,6 @@
 import {
   CLIENT_HEADER,
-  isLoopbackHost,
+  LOCAL_UI_META,
   pairingFragment,
   parsePairing,
   type Pairing,
@@ -9,9 +9,10 @@ import type { QueryClient } from "@tanstack/react-query";
 import { useSyncExternalStore } from "react";
 
 /**
- * Where API requests go. A page served from a loopback host (by the CLI, or Vite's dev proxy)
- * is `local` and calls its own origin. Anywhere else is the hosted app, which calls the CLI on
- * 127.0.0.1 once it is paired with it, until the CLI rejects the pairing's token.
+ * Where API requests go. A page served by gitui itself (the CLI, or the Vite dev server with its
+ * `/api` proxy) carries the `LOCAL_UI_META` tag and is `local`: it calls its own origin, whatever
+ * its host. Any other page is the hosted app, which calls the CLI on 127.0.0.1 once it is paired
+ * with it, until the CLI rejects the pairing's token.
  */
 export type Connection =
   | { kind: "local" }
@@ -33,9 +34,12 @@ export class ApiError extends Error {
 
 const isApiError = (e: unknown, kind: ApiError["kind"]) => e instanceof ApiError && e.kind === kind;
 
-/** The connection a page on `hostname` starts with, given the saved pairing fragment. */
-export function initialConnection(hostname: string, saved: string): Connection {
-  if (isLoopbackHost(hostname)) return { kind: "local" };
+/**
+ * The connection a page starts with: `local` if gitui served it (it has the `LOCAL_UI_META`
+ * tag), else the saved pairing fragment's.
+ */
+export function initialConnection(servedByGitui: boolean, saved: string): Connection {
+  if (servedByGitui) return { kind: "local" };
   const pairing = parsePairing(saved);
   return pairing ? { kind: "paired", pairing } : { kind: "unpaired" };
 }
@@ -97,7 +101,7 @@ export function connectionStatus(
   }
 }
 
-// The store reads `location` and localStorage on first use, so importing it is safe anywhere.
+// The store reads the document and localStorage on first use, so importing it is safe anywhere.
 const KEY = "gitui-pairing";
 let connection: Connection | undefined;
 const listeners = new Set<() => void>();
@@ -110,8 +114,10 @@ function savedPairing(): string {
   }
 }
 
+const hasLocalUiMeta = () => document.querySelector(`meta[name="${LOCAL_UI_META}"]`) !== null;
+
 export function getConnection(): Connection {
-  connection ??= initialConnection(location.hostname, savedPairing());
+  connection ??= initialConnection(hasLocalUiMeta(), savedPairing());
   return connection;
 }
 

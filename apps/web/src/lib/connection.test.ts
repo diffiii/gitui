@@ -19,12 +19,12 @@ import {
 const pairing = { port: 4778, token: "s3cret" };
 const paired: Connection = { kind: "paired", pairing };
 
-test("initialConnection is local on loopback and uses the saved pairing elsewhere", () => {
+test("initialConnection is local in a page gitui served and uses the saved pairing elsewhere", () => {
   const saved = pairingFragment(pairing);
-  expect(initialConnection("localhost", saved)).toEqual({ kind: "local" });
-  expect(initialConnection("gitui.example", saved)).toEqual(paired);
-  expect(initialConnection("gitui.example", "")).toEqual({ kind: "unpaired" });
-  expect(initialConnection("gitui.example", "garbage")).toEqual({ kind: "unpaired" });
+  expect(initialConnection(true, saved)).toEqual({ kind: "local" });
+  expect(initialConnection(false, saved)).toEqual(paired);
+  expect(initialConnection(false, "")).toEqual({ kind: "unpaired" });
+  expect(initialConnection(false, "garbage")).toEqual({ kind: "unpaired" });
 });
 
 test("apiTarget stays same-origin for the local UI", () => {
@@ -117,8 +117,9 @@ test("the gate stays connected after an error response, across refetches", async
   gate.stop();
 });
 
+// A hosted copy on a loopback host (e.g. `vp preview`): without the marker it pairs all the same.
 describe("the connection store in the hosted app", () => {
-  const url = new URL("https://gitui.example/?repo=%2Fr&view=history#port=4778&token=s3cret");
+  const url = new URL("http://localhost:4173/?repo=%2Fr&view=history#port=4778&token=s3cret");
   const storage = new Map<string, string>();
   const events: Record<string, () => void> = {};
   let respond: () => Promise<Response> = () => Promise.reject(new TypeError("Failed to fetch"));
@@ -131,6 +132,7 @@ describe("the connection store in the hosted app", () => {
 
   beforeAll(() => {
     stub("location", url);
+    stub("document", { querySelector: () => null }); // no LOCAL_UI_META tag
     stub("history", {
       state: null,
       replaceState: (_state: unknown, _title: string, to: string) =>
@@ -157,7 +159,7 @@ describe("the connection store in the hosted app", () => {
 
   test("adopts the pairing link it was opened with and strips it from the address", () => {
     expect(getConnection()).toEqual(paired);
-    expect(url.href).toBe("https://gitui.example/?repo=%2Fr&view=history");
+    expect(url.href).toBe("http://localhost:4173/?repo=%2Fr&view=history");
     expect(storage.get("gitui-pairing")).toBe(pairingFragment(pairing));
   });
 
@@ -165,7 +167,7 @@ describe("the connection store in the hosted app", () => {
     url.hash = "#garbage";
     events.hashchange!();
     expect(getConnection()).toEqual(paired);
-    expect(url.href).toBe("https://gitui.example/?repo=%2Fr&view=history");
+    expect(url.href).toBe("http://localhost:4173/?repo=%2Fr&view=history");
   });
 
   test("an unreachable CLI leaves the pairing alone", async () => {
