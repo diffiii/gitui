@@ -64,7 +64,8 @@ export function RefBadges({
             className={cn(
               "inline-flex h-[18px] max-w-48 items-center gap-1 rounded-md border px-1.5 text-[11px] leading-none font-medium",
               STYLE[r.kind],
-              switchable && "cursor-pointer hover:brightness-110 hover:ring-1 hover:ring-current/40",
+              switchable &&
+                "cursor-pointer hover:brightness-110 hover:ring-1 hover:ring-current/40",
             )}
           >
             <Icon className="size-3 shrink-0" />
