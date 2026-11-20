@@ -8,6 +8,7 @@ import { useDiffStyle, useTheme, type Theme } from "@/lib/prefs";
 import { useRepo } from "@/lib/repo";
 import { useStatus } from "./ChangesView";
 import { BranchSwitcher } from "./BranchSwitcher";
+import { DisconnectButton } from "./ConnectionGate";
 import { RepoSwitcher } from "./RepoPicker";
 
 export type View = "changes" | "history" | "branches";
@@ -54,6 +55,7 @@ export function AppHeader({
         <div className="mx-1 h-5 w-px bg-border" />
         <DiffStyleToggle />
         <ThemeToggle />
+        <DisconnectButton />
       </div>
     </header>
   );

@@ -1,27 +1,27 @@
-import {
-  CLIENT_HEADER,
-  type Branch,
-  type Commit,
-  type CommitDetail,
-  type FileStatus,
-  type Status,
-} from "@gitui/shared";
+import type { Branch, Commit, CommitDetail, FileStatus, Status } from "@gitui/shared";
+import { ApiError, apiTarget, getConnection, rejectPairing } from "./connection.ts";
 
 export type { Branch, Commit, CommitDetail, FileStatus, Status };
 
-export class ApiError extends Error {}
-
-async function request<T>(method: "GET" | "POST", url: string, body?: unknown): Promise<T> {
-  const res = await fetch(url, {
+async function request<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
+  const connection = getConnection();
+  const { base, headers } = apiTarget(connection);
+  const res = await fetch(base + path, {
     method,
     headers: {
-      [CLIENT_HEADER]: "1",
+      ...headers,
       ...(body !== undefined ? { "content-type": "application/json" } : {}),
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
+  }).catch(() => {
+    throw new ApiError("Can't reach gitui", "unreachable");
   });
   const data = await res.json().catch(() => ({ error: res.statusText }));
-  if (!res.ok) throw new ApiError(data.error ?? res.statusText);
+  if (res.status === 401) {
+    rejectPairing(connection);
+    throw new ApiError(data.error ?? res.statusText, "unauthorized");
+  }
+  if (!res.ok) throw new ApiError(data.error ?? res.statusText, "http");
   return data as T;
 }
 

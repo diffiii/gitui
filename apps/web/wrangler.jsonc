@@ -1,0 +1,14 @@
+// Cloudflare Workers static assets for the hosted web app (no Worker code).
+{
+  "name": "gitui",
+  "compatibility_date": "2026-11-01",
+  // Served at HOSTED_ORIGIN only: the CLI accepts no other origin, so a workers.dev URL or a
+  // preview deployment couldn't pair.
+  "routes": [{ "pattern": "gitui.diffiii.dev", "custom_domain": true }],
+  "workers_dev": false,
+  "preview_urls": false,
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application",
+  },
+}

@@ -12,6 +12,7 @@ bun test                    # bun:test; server tests run against real temp repos
 ./node_modules/.bin/tsc -b  # type check every tsconfig project
 vp check                    # format, lint (type-aware), type check
 vp build                    # build apps/web into apps/web/dist (`bun run build` adds tsc -b)
+cd apps/web && bun run deploy  # build and deploy the hosted UI to Cloudflare (needs wrangler login)
 ```
 
 ## Layout
@@ -25,9 +26,14 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
 - `apps/web/` (`@gitui/web`): React app. `src/lib/` holds the API client, graph layout and
   prefs, `src/components/` the views, and `src/components/ui/` the shadcn components. Unit
   tests sit next to their module (`src/**/*.test.ts`, type-checked by `tsconfig.test.json`).
-  `@/` maps to `apps/web/src`.
+  `@/` maps to `apps/web/src`. Served from a non-loopback host it is the hosted app:
+  `src/lib/connection.ts` holds the pairing with the CLI and where requests go (its store reads
+  `window` lazily; `initConnection` does the startup wiring), and `ConnectionGate` gates the app
+  until the CLI answers. `wrangler.jsonc` and `public/_headers` deploy `dist/` as Cloudflare
+  Workers static assets on the custom domain `gitui.diffiii.dev` (`HOSTED_ORIGIN`).
 - `packages/shared/` (`@gitui/shared`): API types and the connection contract (default port,
-  client header, hosted origin, pairing links) used by both sides, imported as `@gitui/shared`.
+  client header, hosted origin, loopback hosts, pairing links) used by both sides, imported as
+  `@gitui/shared`.
 - Root: `scripts/dev.ts` (runs both apps), `vite.config.ts` (workspace fmt/lint/type check
   config, `defaultPackage` points `vp dev`/`vp build` at `apps/web`), `tsconfig.json`
   (project references to every package).
