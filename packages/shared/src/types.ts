@@ -57,3 +57,20 @@ export interface Branch {
   subject: string;
   current: boolean;
 }
+
+/** The working copy's files: tracked ones still on disk, and untracked ones that aren't ignored. */
+export interface WorkingFiles {
+  paths: string[];
+  /** The repo has more files than the server lists; `paths` holds the first of them. */
+  truncated: boolean;
+}
+
+/**
+ * One working-copy file as it is on disk. `size` is in bytes. A symbolic link isn't followed: it
+ * comes back as its target.
+ */
+export type WorkingFile =
+  | { kind: "text"; size: number; content: string }
+  | { kind: "symlink"; target: string }
+  | { kind: "binary"; size: number }
+  | { kind: "tooLarge"; size: number };

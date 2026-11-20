@@ -1,8 +1,8 @@
 import { useRemoteAction } from "@/lib/remote";
 import { useRepo } from "@/lib/repo";
+import { useStatus } from "@/lib/status";
 import type { View } from "@/lib/views";
 import { BranchSwitcher } from "./BranchSwitcher";
-import { useStatus } from "./ChangesView";
 import { HeaderActions, MoreMenu } from "./HeaderActions";
 import { RepoSwitcher } from "./RepoPicker";
 import { ViewTabs } from "./ViewTabs";

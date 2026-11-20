@@ -38,7 +38,7 @@ export async function git(cwd: string, args: string[], opts: RunOptions = {}): P
  * line (the diff parser accepts the shortened final hunk). Content lines start with ' ', '+', '-'
  * or '\\', so "\ndiff --git " only matches real file headers.
  */
-async function gitPatch(
+export async function gitPatch(
   cwd: string,
   args: string[],
   opts: RunOptions = {},
@@ -52,10 +52,11 @@ async function gitPatch(
   };
 }
 
-function run(
+/** Like `git()`, but says whether stdout was cut at `maxBytes` rather than dropping it silently. */
+export function run(
   cwd: string,
   args: string[],
-  opts: RunOptions,
+  opts: RunOptions = {},
 ): Promise<{ stdout: string; truncated: boolean }> {
   const { okCodes = [0], maxBytes = MAX_OUTPUT, timeoutMs } = opts;
   return new Promise((resolve, reject) => {
@@ -202,56 +203,34 @@ async function hasHead(repo: string) {
 
 // ---------------------------------------------------------------- diff
 
+/**
+ * A file's diff against the index, or with `staged`, the index's against HEAD. An untracked file
+ * has neither: `untrackedDiff` in `files.ts` diffs it.
+ */
 export async function fileDiff(
   repo: string,
   opts: {
     path: string;
     origPath?: string;
     staged: boolean;
-    untracked: boolean;
     /** Output cap; defaults to 8 MB. */
     maxBytes?: number;
   },
 ): Promise<{ diff: string; truncated: boolean }> {
-  const { maxBytes } = opts;
-  // `diff --no-index` reads any path it's given, inside the repo or not, so only diff a path
-  // git itself lists as an untracked file of this repo.
-  if (opts.untracked) await assertUntracked(repo, opts.path);
-  const { patch, truncated } = opts.untracked
-    ? await gitPatch(repo, ["diff", "--no-index", "--no-color", "--", "/dev/null", opts.path], {
-        okCodes: [0, 1],
-        maxBytes,
-      })
-    : await gitPatch(
-        repo,
-        [
-          "diff",
-          "--no-color",
-          "-M",
-          "--no-ext-diff",
-          ...(opts.staged ? ["--cached"] : []),
-          "--",
-          ...(opts.origPath ? [opts.origPath, opts.path] : [opts.path]),
-        ],
-        { maxBytes },
-      );
+  const { patch, truncated } = await gitPatch(
+    repo,
+    [
+      "diff",
+      "--no-color",
+      "-M",
+      "--no-ext-diff",
+      ...(opts.staged ? ["--cached"] : []),
+      "--",
+      ...(opts.origPath ? [opts.origPath, opts.path] : [opts.path]),
+    ],
+    { maxBytes: opts.maxBytes },
+  );
   return { diff: patch, truncated };
-}
-
-/** Throws unless `path` is exactly an untracked, non-ignored file git lists in `repo`. */
-async function assertUntracked(repo: string, path: string) {
-  // `:(literal)` turns off pathspec magic; an absolute path outside the repo makes git fail.
-  const listed = await git(repo, [
-    "ls-files",
-    "--others",
-    "--exclude-standard",
-    "-z",
-    "--",
-    `:(literal)${path}`,
-  ]).catch(() => "");
-  if (!listed.split("\0").includes(path)) {
-    throw new GitError(`Not an untracked file in this repository: ${path}`, null, "");
-  }
 }
 
 // ---------------------------------------------------------------- staging & commit

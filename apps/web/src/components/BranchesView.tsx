@@ -6,7 +6,6 @@ import {
   GitBranch,
   GitBranchPlus,
   MoreHorizontal,
-  Search,
   Trash2,
 } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -35,6 +34,7 @@ import { useUrl } from "@/lib/url";
 import { useListChoice } from "@/lib/listChoice";
 import { BELOW_LG } from "@/lib/media";
 import { cn } from "@/lib/utils";
+import { FilterInput } from "./FilterInput";
 import { HistoryPane } from "./HistoryView";
 import { ListDetail } from "./ListDetail";
 
@@ -100,15 +100,7 @@ export function BranchesView() {
         list={
           <>
             <div className="flex shrink-0 items-center gap-2 border-b p-2">
-              <div className="relative flex-1">
-                <Search className="absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  value={filter}
-                  onChange={(e) => setFilter(e.target.value)}
-                  placeholder="Filter branches"
-                  className="h-8 pl-8 pointer-coarse:h-10"
-                />
-              </div>
+              <FilterInput value={filter} onChange={setFilter} placeholder="Filter branches" />
               <Button
                 size="icon-sm"
                 variant="outline"

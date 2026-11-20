@@ -10,6 +10,7 @@ test("parseUrl defaults the view and ignores unknown ones", () => {
     staged: false,
     commit: null,
     branch: null,
+    path: null,
   });
   expect(parseUrl("?view=nope").view).toBe("changes");
   expect(parseUrl("?view=branches").view).toBe("branches");
@@ -24,6 +25,7 @@ test("urlSearch round-trips through parseUrl and leaves out defaults", () => {
     staged: false,
     commit: "abc123",
     branch: "refs/heads/feat/x",
+    path: null,
   };
   expect(parseUrl(urlSearch(state))).toEqual(state);
   expect(urlSearch(parseUrl(""))).toBe("");
@@ -31,6 +33,9 @@ test("urlSearch round-trips through parseUrl and leaves out defaults", () => {
   expect(file).toMatchObject({ repo: "/r", file: "src/a.ts", staged: true });
   expect(urlSearch(file)).toBe("?repo=%2Fr&file=src%2Fa.ts&staged=1");
   expect(urlSearch({ ...parseUrl(""), staged: true })).toBe("");
+  const path = parseUrl("?view=files&path=docs%2Fread+me+%E2%9C%93.md");
+  expect(path).toMatchObject({ view: "files", path: "docs/read me ✓.md" });
+  expect(parseUrl(urlSearch(path))).toEqual(path);
 });
 
 test("closeSteps goes back past the entry that opened the detail and any opened after it", () => {
@@ -94,6 +99,25 @@ test("opening a detail pushes an entry that its back control and system Back bot
   b.store.select({ commit: "a" }, "commit");
   b.back();
   expect(b.url().commit).toBeNull();
+});
+
+test("a working-copy file opens and closes like any detail, and a view switch drops it", () => {
+  const b = fakeBrowser("?view=files");
+  b.store.select({ path: "src/a.ts" }, "path");
+  expect(b.url()).toMatchObject({ view: "files", path: "src/a.ts" });
+  expect(b.at()).toEqual({ index: 1, length: 2 });
+  b.back();
+  expect(b.url().path).toBeNull();
+
+  b.store.select({ path: "src/a.ts" }, "path");
+  b.store.closeDetail("path");
+  expect(b.url().path).toBeNull();
+  expect(b.at().index).toBe(0);
+
+  b.store.select({ path: "src/a.ts" }, "path");
+  b.store.setView(null, "changes");
+  expect(b.url()).toMatchObject({ view: "changes", path: null });
+  expect(b.at().index).toBe(0);
 });
 
 test("a branch's commit closes on its own, and closing the branch closes both", () => {

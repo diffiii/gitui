@@ -3,7 +3,8 @@
 import { afterAll, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { commitFile, initRepo, removeTempDirs, testApp, tmpDir, write } from "./test-repo.ts";
+import { untrackedDiff as diffUntracked } from "./files.ts";
+import { commitFile, git, initRepo, removeTempDirs, testApp, tmpDir, write } from "./test-repo.ts";
 
 afterAll(removeTempDirs);
 
@@ -16,6 +17,12 @@ write(repo, "new file.txt", "fresh\n");
 write(repo, ".gitignore", "ignored.txt\n");
 write(repo, "ignored.txt", "ignored\n");
 fs.symlinkSync(outside, path.join(repo, "linked"));
+// A nested repo, which `ls-files -o` lists as `nested/`; `diff --no-index /dev/null nested/`
+// would diff `nested/null`, inside it.
+fs.mkdirSync(path.join(repo, "nested"));
+const nested = initRepo(path.join(repo, "nested"));
+commitFile(nested, "null", "nested secret\n");
+git(nested, "config", "remote.origin.url", "https://user:token@example.com/r.git");
 
 async function untrackedDiff(file: string) {
   const res = await testApp().request(
@@ -48,4 +55,16 @@ test("refuses ignored, tracked and missing files", async () => {
   for (const file of ["ignored.txt", "tracked.txt", "missing.txt", "*.txt", ":(glob)*"]) {
     expect({ file, status: (await untrackedDiff(file)).status }).toEqual({ file, status: 400 });
   }
+});
+
+test("refuses a nested repo's folder and the paths into it", async () => {
+  for (const file of ["nested/", "nested", "nested/null", "nested//null", "nested/.git/config"]) {
+    const { status, body } = await untrackedDiff(file);
+    expect({ file, status }).toEqual({ file, status: 400 });
+    expect(body).not.toContain("secret");
+    expect(body).not.toContain("token");
+  }
+  // The diff checks for itself, whoever calls it.
+  const err = await diffUntracked(repo, "nested/").catch((e: Error) => e);
+  expect((err as Error).message).toBe("Not an untracked file in this repository: nested/");
 });

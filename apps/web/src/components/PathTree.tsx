@@ -1,7 +1,8 @@
 import type { ContextMenuItem, ContextMenuOpenContext, GitStatusEntry } from "@pierre/trees";
 import { FileTree, useFileTree } from "@pierre/trees/react";
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { COARSE, useMediaQuery } from "@/lib/media";
+import { dirsOf, treePaths, updatePaths } from "@/lib/pathTree";
 import { useTheme } from "@/lib/prefs";
 import { cn } from "@/lib/utils";
 
@@ -19,6 +20,13 @@ interface PathTreeProps {
   onSelect?: (path: string) => void;
   /** Row actions shown in the context menu (right-click or the row button). */
   actions?: (item: ContextMenuItem) => TreeAction[];
+  /**
+   * Folders start closed, but for the selected path's; without it, every folder starts open. Either
+   * way, a folder stays as the user left it when the paths change.
+   */
+  collapsed?: boolean;
+  /** Shows only the paths that contain this text, with their folders open. */
+  search?: string;
   className?: string;
 }
 
@@ -30,15 +38,18 @@ export function PathTree(props: PathTreeProps) {
 }
 
 function FileTreeView({
-  paths,
+  paths: listed,
   gitStatus,
   selected,
   onSelect,
   actions,
+  collapsed = false,
+  search = "",
   className,
   coarse,
 }: PathTreeProps & { coarse: boolean }) {
   const { resolved } = useTheme();
+  const paths = useMemo(() => treePaths(listed), [listed]);
   const onSelectRef = useRef(onSelect);
   const files = useRef(new Set(paths));
   useLayoutEffect(() => {
@@ -49,7 +60,8 @@ function FileTreeView({
   const { model } = useFileTree({
     paths,
     gitStatus,
-    initialExpansion: "open",
+    initialExpansion: collapsed ? "closed" : "open",
+    initialExpandedPaths: collapsed && selected ? dirsOf([selected]) : undefined,
     flattenEmptyDirectories: true,
     // Taller rows under a finger.
     density: coarse ? "relaxed" : "compact",
@@ -70,13 +82,17 @@ function FileTreeView({
     },
   });
 
-  const pathsKey = paths.join("\0");
-  const prevKey = useRef(pathsKey);
+  const pathsKey = useMemo(() => paths.join("\0"), [paths]);
+  const prev = useRef({ key: pathsKey, paths });
   useEffect(() => {
-    if (prevKey.current === pathsKey) return;
-    prevKey.current = pathsKey;
-    model.resetPaths(paths, { initialExpandedPaths: dirsOf(paths) });
+    if (prev.current.key === pathsKey) return;
+    updatePaths(model, prev.current.paths, paths);
+    prev.current = { key: pathsKey, paths };
   }, [model, pathsKey, paths]);
+
+  useEffect(() => {
+    model.setSearch(search || null);
+  }, [model, search]);
 
   useEffect(() => {
     model.setGitStatus(gitStatus);
@@ -115,15 +131,6 @@ function FileTreeView({
       }
     />
   );
-}
-
-function dirsOf(paths: string[]) {
-  const dirs = new Set<string>();
-  for (const p of paths) {
-    const parts = p.split("/");
-    for (let i = 1; i < parts.length; i++) dirs.add(parts.slice(0, i).join("/") + "/");
-  }
-  return [...dirs];
 }
 
 function TreeMenu({

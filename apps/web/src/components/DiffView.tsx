@@ -1,5 +1,5 @@
 import { parsePatchFiles, type FileDiffMetadata } from "@pierre/diffs";
-import { FileDiff } from "@pierre/diffs/react";
+import { File, FileDiff } from "@pierre/diffs/react";
 import { useMemo } from "react";
 import { NARROW, useMediaQuery } from "@/lib/media";
 import { PALETTES } from "@/lib/palettes";
@@ -24,22 +24,29 @@ export function DiffView({ raw, className }: { raw: string; className?: string }
   return <DiffFiles files={files} className={className} />;
 }
 
-export function DiffFiles({ files, className }: { files: FileDiffMetadata[]; className?: string }) {
+/** The options Pierre Diffs' diffs and files share: the palette and light or dark, from the prefs. */
+function useCodeOptions() {
   const { resolved } = useTheme();
   const [palette] = usePalette();
+  return useMemo(
+    () => ({ theme: PALETTES[palette].diffs, themeType: resolved, overflow: "scroll" as const }),
+    [resolved, palette],
+  );
+}
+
+export function DiffFiles({ files, className }: { files: FileDiffMetadata[]; className?: string }) {
+  const code = useCodeOptions();
   const [style] = useDiffStyle();
   // Split columns don't fit a phone screen.
   const diffStyle = useMediaQuery(NARROW) ? "unified" : style;
   const options = useMemo(
     () => ({
-      theme: PALETTES[palette].diffs,
-      themeType: resolved,
+      ...code,
       diffStyle,
-      overflow: "scroll" as const,
       lineDiffType: "word-alt" as const,
       hunkSeparators: "line-info" as const,
     }),
-    [resolved, palette, diffStyle],
+    [code, diffStyle],
   );
 
   if (!files.length) {
@@ -58,6 +65,17 @@ export function DiffFiles({ files, className }: { files: FileDiffMetadata[]; cla
           <FileDiff fileDiff={f} options={options} />
         </div>
       ))}
+    </div>
+  );
+}
+
+/** A whole file, highlighted like a diff's lines, with line numbers. */
+export function CodeFile({ name, contents }: { name: string; contents: string }) {
+  const options = useCodeOptions();
+  const file = useMemo(() => ({ name, contents }), [name, contents]);
+  return (
+    <div className="overflow-clip rounded-lg border bg-card">
+      <File file={file} options={options} />
     </div>
   );
 }

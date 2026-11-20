@@ -5,6 +5,7 @@ A lazygit-inspired git client that runs in your browser on localhost.
 - **Changes**: staged and unstaged files as trees ([@pierre/trees](https://www.npmjs.com/package/@pierre/trees)). Stage, unstage or discard from the row menu (right-click, or the row button); double-click a file to toggle it. Commit or amend with ⌘↵.
 - **History**: commit graph across all branches or just the current one, with commit details, a tree of changed files and syntax-highlighted diffs ([@pierre/diffs](https://diffs.com)).
 - **Branches**: local and remote branches. Checkout (double-click), create, delete, and see each branch's log.
+- **Files**: the working copy as it is on disk, uncommitted edits and untracked files included (ignored ones aren't), with each file syntax-highlighted. Binary files and files over 1 MB show only their size; symlinks show their target.
 - Fetch, pull (`--ff-only`) and push from the header. Push sets an upstream when there isn't one.
 - Unified or split diffs, and light, dark or system theme.
 

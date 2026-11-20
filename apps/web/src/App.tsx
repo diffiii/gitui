@@ -9,6 +9,7 @@ import type { View } from "@/lib/views";
 import { AppHeader } from "./components/AppHeader";
 import { BranchesView } from "./components/BranchesView";
 import { ChangesView } from "./components/ChangesView";
+import { FilesView } from "./components/FilesView";
 import { HistoryPane } from "./components/HistoryView";
 import { RepoWelcome } from "./components/RepoPicker";
 import { Button } from "./components/ui/button";
@@ -34,6 +35,7 @@ export default function App() {
               {view === "changes" && <ChangesView />}
               {view === "history" && <HistoryView />}
               {view === "branches" && <BranchesView />}
+              {view === "files" && <FilesView />}
             </main>
             <ViewTabBar view={view} onView={onView} />
           </div>

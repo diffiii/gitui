@@ -38,6 +38,15 @@ export function fullDate(unixSeconds: number) {
   });
 }
 
+/** A byte count in the largest unit it fills: `512 B`, `2.3 MB`. */
+export function formatBytes(bytes: number) {
+  const units = ["B", "KB", "MB", "GB"];
+  let i = 0;
+  let n = bytes;
+  for (; n >= 1024 && i < units.length - 1; i++) n /= 1024;
+  return i === 0 ? `${n} B` : `${n.toFixed(1)} ${units[i]}`;
+}
+
 export function splitPath(p: string) {
   const i = p.lastIndexOf("/");
   return i === -1 ? { dir: "", name: p } : { dir: p.slice(0, i + 1), name: p.slice(i + 1) };

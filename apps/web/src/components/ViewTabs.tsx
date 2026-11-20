@@ -1,7 +1,7 @@
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useStatus } from "@/lib/status";
 import { cn } from "@/lib/utils";
 import { isView, type View, VIEWS } from "@/lib/views";
-import { useStatus } from "./ChangesView";
 
 /** The views as the header's tabs. */
 export function ViewTabs({

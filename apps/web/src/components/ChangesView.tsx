@@ -16,25 +16,17 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import type { FileStatus } from "@/lib/api";
 import { firstChange, resolveChoice, type ShownFile, splitChanges } from "@/lib/changes";
-import { splitPath } from "@/lib/format";
 import { useListChoice } from "@/lib/listChoice";
 import { NARROW } from "@/lib/media";
 import { useGitMutation, useRepo } from "@/lib/repo";
+import { useStatus } from "@/lib/status";
 import { useUrl } from "@/lib/url";
 import { DiffView } from "./DiffView";
 import { EmptyState } from "./EmptyState";
+import { FileTitle } from "./FileTitle";
 import { ListDetail } from "./ListDetail";
 import { PathTree } from "./PathTree";
 import { TruncatedNotice } from "./TruncatedNotice";
-
-export function useStatus() {
-  const { repo, api } = useRepo();
-  return useQuery({
-    queryKey: [repo, "status"],
-    queryFn: api.status,
-    refetchInterval: 3000,
-  });
-}
 
 export function ChangesView() {
   const { data } = useStatus();
@@ -123,16 +115,6 @@ function useToggleStaged() {
     v.staged ? api.unstage(v.paths) : api.stage(v.paths),
   );
   return (staged: boolean, paths?: string[]) => toggle.mutate({ staged, paths });
-}
-
-function FileTitle({ path }: { path: string }) {
-  const { dir, name } = splitPath(path);
-  return (
-    <div className="flex min-w-0 flex-col leading-tight">
-      <span className="truncate text-sm font-medium">{name}</span>
-      {dir && <span className="truncate text-xs text-muted-foreground">{dir}</span>}
-    </div>
-  );
 }
 
 /**

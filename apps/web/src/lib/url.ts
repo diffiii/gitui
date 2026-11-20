@@ -17,16 +17,19 @@ export interface UrlState {
   commit: string | null;
   /** Branches: the full refname of the branch shown. */
   branch: string | null;
+  /** Files: the working-copy file shown. */
+  path: string | null;
 }
 
 /** A detail that opens over its list on a stacked (narrow) layout, named by its URL parameter. */
-export type DetailParam = "file" | "commit" | "branch";
+export type DetailParam = "file" | "commit" | "branch" | "path";
 
 /** What closing each detail clears; a branch's commit goes with it. */
 const CLEARS: Record<DetailParam, Partial<UrlState>> = {
   file: { file: null, staged: false },
   commit: { commit: null },
   branch: { branch: null, commit: null },
+  path: { path: null },
 };
 
 export function parseUrl(search: string): UrlState {
@@ -40,6 +43,7 @@ export function parseUrl(search: string): UrlState {
     staged: sp.get("staged") === "1",
     commit: sp.get("commit"),
     branch: sp.get("branch"),
+    path: sp.get("path"),
   };
 }
 
@@ -55,6 +59,7 @@ export function urlSearch(state: UrlState): string {
   }
   if (state.branch) sp.set("branch", state.branch);
   if (state.commit) sp.set("commit", state.commit);
+  if (state.path) sp.set("path", state.path);
   return sp.size ? `?${sp}` : "";
 }
 

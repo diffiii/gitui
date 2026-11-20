@@ -3,6 +3,7 @@ import path from "node:path";
 import { Hono } from "hono";
 import { type AccessOptions, installAccess } from "./access.ts";
 import { pushRecent, readRecent } from "./config.ts";
+import { untrackedDiff, workingFile, workingFiles } from "./files.ts";
 import * as g from "./git.ts";
 import { withRepoLock } from "./lock.ts";
 
@@ -50,6 +51,14 @@ function flag(value: unknown, field: string, fallback = false): boolean {
 function filePath(value: unknown, field = "path"): string {
   if (typeof value !== "string" || !value || value.includes("\0")) invalid(field);
   return value;
+}
+
+/** A path to read from the working copy: relative, never stepping up with `..`, and no folder. */
+function workingPath(value: unknown): string {
+  const p = filePath(value);
+  const parts = p.split(/[/\\]/);
+  if (path.isAbsolute(p) || parts.includes("..") || parts.includes("")) invalid("path");
+  return p;
 }
 
 /** `undefined` means "all files"; otherwise a non-empty list of paths. */
@@ -123,11 +132,11 @@ export function createApp(opts: AppOptions) {
 
   repo.get("/diff", async (c) => {
     const q = c.req.query();
+    if (q.untracked === "1") return c.json(await untrackedDiff(c.var.repo, workingPath(q.path)));
     const { diff, truncated } = await g.fileDiff(c.var.repo, {
       path: q.path,
       origPath: q.origPath || undefined,
       staged: q.staged === "1",
-      untracked: q.untracked === "1",
     });
     return c.json({ diff, truncated });
   });
@@ -176,6 +185,12 @@ export function createApp(opts: AppOptions) {
 
   repo.get("/commit/:hash", async (c) =>
     c.json(await g.showCommit(c.var.repo, ref(c.req.param("hash"), "hash"))),
+  );
+
+  repo.get("/files", async (c) => c.json(await workingFiles(c.var.repo)));
+
+  repo.get("/file", async (c) =>
+    c.json(await workingFile(c.var.repo, workingPath(c.req.query("path")))),
   );
 
   repo.get("/branches", async (c) => c.json({ branches: await g.branches(c.var.repo) }));
