@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
 import { DEFAULT_PORT } from "@gitui/shared";
-import { ArgsError, type Options, parseArgs } from "./args.ts";
+import { ArgsError, hostnameAsName, type Options, parseArgs } from "./args.ts";
 
 const defaults: Options = {
   port: DEFAULT_PORT,
   open: true,
-  mode: { kind: "hosted", origins: [] },
+  mode: { kind: "hosted", origins: [], nearby: null },
   target: null,
 };
 
@@ -51,7 +51,7 @@ test("an unknown option is refused with the help", () => {
 
 test("--local and --allow-origin, in either order, keep the origins", () => {
   const origins = ["http://localhost:5173", "https://x.example"];
-  const local: Options = { ...defaults, mode: { kind: "local", origins } };
+  const local: Options = { ...defaults, mode: { kind: "local", origins, nearby: null } };
   expect(
     parseArgs(["--allow-origin", origins[0], "--local", "--allow-origin", origins[1]]),
   ).toEqual(local);
@@ -60,7 +60,7 @@ test("--local and --allow-origin, in either order, keep the origins", () => {
   ).toEqual(local);
   expect(parseArgs(["--allow-origin", origins[0]])).toEqual({
     ...defaults,
-    mode: { kind: "hosted", origins: [origins[0]] },
+    mode: { kind: "hosted", origins: [origins[0]], nearby: null },
   });
 });
 
@@ -143,4 +143,48 @@ test("--allow-origin and --lan can't be combined, in either order", () => {
       "--allow-origin doesn't apply to --lan, which serves its own UI only",
     );
   }
+});
+
+test("--nearby adds the rendezvous to the hosted or local mode, with an optional name", () => {
+  expect(parseArgs(["--nearby"])).toEqual({
+    ...defaults,
+    mode: { kind: "hosted", origins: [], nearby: { name: null } },
+  });
+  const local: Options["mode"] = { kind: "local", origins: [], nearby: { name: "Desk" } };
+  expect(parseArgs(["--local", "--nearby", "--name", "Desk"])).toEqual({
+    ...defaults,
+    mode: local,
+  });
+  expect(parseArgs(["--name", " Desk ", "--nearby", "--local"])).toEqual({
+    ...defaults,
+    mode: local,
+  });
+});
+
+test("--nearby and --lan can't be combined, in either order", () => {
+  for (const argv of [
+    ["--nearby", "--lan"],
+    ["--lan", "--nearby"],
+  ]) {
+    expect(refusal(argv)).toBe("--nearby and --lan can't be combined");
+  }
+});
+
+test("--name needs --nearby and a short printable name", () => {
+  expect(refusal(["--name", "Desk"])).toBe("--name only applies to --nearby");
+  for (const name of [undefined, "", "  ", "a\u001b[2Jb", "x".repeat(64)]) {
+    const argv = name === undefined ? ["--nearby", "--name"] : ["--nearby", "--name", name];
+    expect(refusal(argv)).toBe("--name needs a name of 1 to 63 printable characters");
+  }
+  expect(parseArgs(["--nearby", "--name", "Jan's MacBook ✨"])).toMatchObject({
+    mode: { nearby: { name: "Jan's MacBook ✨" } },
+  });
+});
+
+test("the default --nearby name is the hostname without .local, printable and short", () => {
+  expect(hostnameAsName("Jans-MacBook-Pro.local")).toBe("Jans-MacBook-Pro");
+  expect(hostnameAsName("desk")).toBe("desk");
+  expect(hostnameAsName("a\u001bb")).toBe("ab");
+  expect(hostnameAsName("x".repeat(100))).toHaveLength(63);
+  expect(hostnameAsName(".local")).toBe("gitui");
 });
