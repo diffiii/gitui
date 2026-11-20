@@ -6,6 +6,13 @@ export const DEFAULT_PORT = 4777;
 /** Header every API request carries. Cross-origin pages can't send it without a CORS preflight. */
 export const CLIENT_HEADER = "x-gitui";
 
+/**
+ * Name of a `<meta>` tag in pages served by gitui itself: the CLI's bundled UI (`--local`,
+ * `--lan`) and the Vite dev server. Such a page calls its own `/api`. A page without it is a
+ * hosted copy (HOSTED_ORIGIN, or one allowed with `--allow-origin`) and pairs with the CLI.
+ */
+export const LOCAL_UI_META = "gitui-local-ui";
+
 /** Origin of the hosted web app, the only cross-origin page the CLI accepts by default. */
 export const HOSTED_ORIGIN = "https://gitui.diffiii.dev";
 
