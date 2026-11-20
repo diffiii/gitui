@@ -3,21 +3,23 @@ import { useStatus } from "@/lib/status";
 import { cn } from "@/lib/utils";
 import { isView, type View, VIEWS } from "@/lib/views";
 
-/** The views as the header's tabs. */
+/** The views as the header's tabs; `disabled` until there is a repo to view. */
 export function ViewTabs({
   view,
   onView,
+  disabled = false,
   className,
 }: {
   view: View;
   onView: (v: View) => void;
+  disabled?: boolean;
   className?: string;
 }) {
   return (
     <Tabs value={view} onValueChange={(v) => isView(v) && onView(v)} className={className}>
       <TabsList>
         {VIEWS.map(({ view: v, label }) => (
-          <TabsTrigger key={v} value={v} className="gap-1.5 px-3">
+          <TabsTrigger key={v} value={v} disabled={disabled} className="gap-1.5 px-3">
             {label}
             {v === "changes" && <ChangeCount />}
           </TabsTrigger>
@@ -27,8 +29,12 @@ export function ViewTabs({
   );
 }
 
-/** The views as a tab bar at the bottom of narrow screens, in thumb reach. */
+/**
+ * The views as a tab bar at the bottom of narrow screens, in thumb reach; disabled until the
+ * repo's status loads (it may not be opened on the computer), as ViewTabs is.
+ */
 export function ViewTabBar({ view, onView }: { view: View; onView: (v: View) => void }) {
+  const { data: status } = useStatus();
   return (
     <nav
       aria-label="Views"
@@ -39,9 +45,10 @@ export function ViewTabBar({ view, onView }: { view: View; onView: (v: View) => 
           key={v}
           type="button"
           aria-current={view === v ? "page" : undefined}
+          disabled={status === undefined}
           onClick={() => onView(v)}
           className={cn(
-            "relative flex flex-1 flex-col items-center justify-center gap-0.5 text-[11px] font-medium",
+            "relative flex flex-1 flex-col items-center justify-center gap-0.5 text-[11px] font-medium disabled:opacity-50",
             view === v ? "text-foreground" : "text-muted-foreground",
           )}
         >
