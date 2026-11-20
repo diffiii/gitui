@@ -25,11 +25,14 @@ const rejection = (p: Promise<unknown>) =>
   );
 
 async function post(dir: string, route: string, body: unknown) {
-  return await createApp().request(`/api/repo${route}?repo=${encodeURIComponent(dir)}`, {
-    method: "POST",
-    headers: { host: "localhost", "x-gitui": "1", "content-type": "application/json" },
-    body: typeof body === "string" ? body : JSON.stringify(body),
-  });
+  return await createApp({ allowedOrigins: [], token: "unused" }).request(
+    `/api/repo${route}?repo=${encodeURIComponent(dir)}`,
+    {
+      method: "POST",
+      headers: { host: "localhost", "x-gitui": "1", "content-type": "application/json" },
+      body: typeof body === "string" ? body : JSON.stringify(body),
+    },
+  );
 }
 
 test("stage([]) and unstage([]) throw instead of touching the whole tree", async () => {

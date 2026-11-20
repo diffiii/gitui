@@ -61,9 +61,12 @@ describe("log", () => {
 });
 
 function getLog(params: Record<string, string>) {
-  return createApp().request(`/api/repo/log?${new URLSearchParams(params).toString()}`, {
-    headers: { host: "localhost", "x-gitui": "1" },
-  });
+  return createApp({ allowedOrigins: [], token: "unused" }).request(
+    `/api/repo/log?${new URLSearchParams(params).toString()}`,
+    {
+      headers: { host: "localhost", "x-gitui": "1" },
+    },
+  );
 }
 
 describe("GET /api/repo/log", () => {

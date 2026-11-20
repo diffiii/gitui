@@ -18,21 +18,25 @@ cd apps/cli && bun link   # puts `gitui` on your PATH
 gitui                     # open the repository picker
 gitui .                   # open the repository containing the current directory
 gitui ~/code/x -p 5000 --no-open
+gitui --hosted            # use the hosted app instead of the local build (no `vp build` needed)
 ```
+
+On start, gitui also prints a pairing link to the hosted app at https://gitui.diffiii.workers.dev. The link carries the port and a pairing token (kept in `~/.config/gitui/token`), so a browser stays paired across restarts. `--allow-origin <origin>` (repeatable) lets another web app origin pair too, e.g. a self-hosted copy or a local build.
 
 ## Development
 
 ```sh
 bun run dev [repo-path]   # API on :4777 (bun --watch) + Vite+ dev server with /api proxy
+GITUI_ALLOW_ORIGIN=http://localhost:5173 bun run dev   # also accept that origin cross-origin
 vp check                  # format, lint, type check
 bun test                  # run the tests
 ```
 
 ## How it works
 
-- `apps/cli/`: the `gitui` CLI and a [Hono](https://hono.dev) API (`server/`) that shells out to the `git` CLI (`server/git.ts`). It listens on 127.0.0.1 only, rejects requests whose `Host` isn't localhost, and requires an `x-gitui` header on every API request, so other websites can't drive it.
+- `apps/cli/`: the `gitui` CLI and a [Hono](https://hono.dev) API (`server/`) that shells out to the `git` CLI (`server/git.ts`). It listens on 127.0.0.1 only, rejects requests whose `Host` isn't localhost, and requires an `x-gitui` header on every API request. Cross-origin requests are refused unless they come from an allowed origin (the hosted app, plus any `--allow-origin`), and those must also send the pairing token as a bearer token, so other websites can't drive it.
 - `apps/web/`: React, Tailwind v4, shadcn/ui and TanStack Query. Status polls every 3s, and every mutation refreshes the repo's queries.
 - `packages/shared/` (`@gitui/shared`): API types and connection constants used by both sides.
 - Recent repositories are stored in `~/.config/gitui/recent.json`.
 
-The git backend needs a real filesystem and the `git` binary, so it can't run on Cloudflare Workers. Only the static UI could be hosted there.
+The git backend needs a real filesystem and the `git` binary, so it can't run on Cloudflare Workers. Only the static UI is hosted there, and it calls the CLI on your machine at `http://127.0.0.1:<port>` straight from the browser.
