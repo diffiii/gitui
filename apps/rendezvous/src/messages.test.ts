@@ -1,18 +1,39 @@
 import { expect, test } from "bun:test";
-import { hostName, MAX_NAME_LENGTH, parseClientMessage } from "./messages.ts";
+import { MAX_NAME_LENGTH } from "@gitui/shared";
+import { hostName, parseClientMessage } from "./messages.ts";
 
 const parse = (value: unknown) => parseClientMessage(JSON.stringify(value));
 
+const key = "k3Y_-0123456789ab";
+
 test("parseClientMessage accepts hello from hosts and guests", () => {
   expect(parse({ type: "hello", role: "guest" })).toEqual({ type: "hello", role: "guest" });
-  expect(parse({ type: "hello", role: "host", name: "  Jan's MacBook " })).toEqual({
+  expect(parse({ type: "hello", role: "host", name: "  Jan's MacBook ", key, x: 1 })).toEqual({
     type: "hello",
     role: "host",
     name: "Jan's MacBook",
+    key,
   });
-  expect(parse({ type: "hello", role: "host" })).toBeNull();
+  expect(parse({ type: "hello", role: "host", key })).toBeNull();
+  expect(parse({ type: "hello", role: "host", name: "box" })).toBeNull();
   expect(parse({ type: "hello", role: "admin", name: "x" })).toBeNull();
   expect(parse({ type: "hello" })).toBeNull();
+});
+
+test("parseClientMessage requires a HOST_KEY-shaped key from hosts", () => {
+  const hello = (key: unknown) => parse({ type: "hello", role: "host", name: "box", key });
+  expect(hello("a".repeat(16))).toMatchObject({ key: "a".repeat(16) });
+  expect(hello("a".repeat(64))).toMatchObject({ key: "a".repeat(64) });
+  for (const bad of [
+    "a".repeat(15),
+    "a".repeat(65),
+    `${"a".repeat(16)}.`,
+    "a b".repeat(8),
+    1,
+    null,
+  ]) {
+    expect(hello(bad)).toBeNull();
+  }
 });
 
 test("parseClientMessage accepts signals and keeps only the contract's fields", () => {
@@ -71,8 +92,11 @@ test("parseClientMessage rejects garbage", () => {
 
 test("hostName trims and bounds names and rejects control characters", () => {
   expect(hostName(" box ")).toBe("box");
-  expect(hostName("💻".repeat(MAX_NAME_LENGTH / 2))).toBe("💻".repeat(MAX_NAME_LENGTH / 2));
-  expect(hostName(`${"💻".repeat(MAX_NAME_LENGTH / 2)}a`)).toBeNull();
+  expect(hostName("a".repeat(MAX_NAME_LENGTH))).toBe("a".repeat(MAX_NAME_LENGTH));
+  // Lengths count UTF-16 code units: an emoji is two.
+  const emoji = "💻".repeat(Math.floor(MAX_NAME_LENGTH / 2));
+  expect(hostName(`${emoji}${"a".repeat(MAX_NAME_LENGTH % 2)}`)).not.toBeNull();
+  expect(hostName(`${emoji}💻`)).toBeNull();
   expect(hostName("a".repeat(MAX_NAME_LENGTH + 1))).toBeNull();
   expect(hostName("   ")).toBeNull();
   expect(hostName("")).toBeNull();

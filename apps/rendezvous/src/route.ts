@@ -4,22 +4,34 @@ import { HOSTED_ORIGIN, RENDEZVOUS_PATH } from "@gitui/shared";
 
 export type Route = { network: string } | { status: number; message: string };
 
+/** The Worker's vars and secrets that routing reads. */
+export interface RouteEnv {
+  /** Comma-separated browser origins allowed besides HOSTED_ORIGIN, e.g. a local dev server. */
+  ALLOWED_ORIGINS?: string;
+  /** HMAC key for object names (networkKey); a wrangler secret, or a --var in `bun run dev`. */
+  NETWORK_KEY_SECRET?: string;
+}
+
 /**
  * Routes an upgrade to the object of the caller's network, keyed by `CF-Connecting-IP`. A request
  * with an Origin is a browser, and the Origin must be allowed; one without (the CLI) may connect
- * from anywhere. `allowedOrigins` is the `ALLOWED_ORIGINS` var.
+ * from anywhere. Without NETWORK_KEY_SECRET it fails closed with a 500.
  */
-export async function route(request: Request, allowedOrigins: string | undefined): Promise<Route> {
+export async function route(request: Request, env: RouteEnv): Promise<Route> {
   if (new URL(request.url).pathname !== RENDEZVOUS_PATH)
     return { status: 404, message: "Not found" };
   if (request.method !== "GET" || request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
     return { status: 426, message: "Expected a WebSocket upgrade" };
   }
   const origin = request.headers.get("Origin");
-  if (origin !== null && !isAllowedOrigin(origin, allowedOrigins)) {
+  if (origin !== null && !isAllowedOrigin(origin, env.ALLOWED_ORIGINS)) {
     return { status: 403, message: "Origin not allowed" };
   }
-  const network = await networkKey(request.headers.get("CF-Connecting-IP") ?? "");
+  if (!env.NETWORK_KEY_SECRET) {
+    return { status: 500, message: "Misconfigured: the NETWORK_KEY_SECRET secret is not set" };
+  }
+  const ip = request.headers.get("CF-Connecting-IP") ?? "";
+  const network = await networkKey(ip, env.NETWORK_KEY_SECRET);
   return network ? { network } : { status: 400, message: "Unknown client address" };
 }
 
@@ -30,15 +42,31 @@ export function isAllowedOrigin(origin: string, allowedOrigins: string | undefin
 }
 
 /**
- * A SHA-256 hex digest of the caller's network: the address for IPv4 (IPv4-mapped IPv6 counts as
- * IPv4), the /64 prefix for IPv6. Null if `ip` isn't an address. The hash keeps raw addresses out
- * of object names, though an IPv4 one can be recovered by trying every address.
+ * The HMAC-SHA256 (keyed by `secret`) hex digest of the caller's network: the address for IPv4
+ * (IPv4-mapped IPv6 counts as IPv4), the /64 prefix for IPv6. Null if `ip` isn't an address.
+ * Object names never show the address, and without the secret they can't be reversed by trying
+ * every IPv4 address.
  */
-export async function networkKey(ip: string): Promise<string | null> {
+export async function networkKey(ip: string, secret: string): Promise<string | null> {
   const network = networkOf(ip);
   if (network === null) return null;
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(network));
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  const key = await hmacKey(secret);
+  const mac = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(network));
+  return Array.from(new Uint8Array(mac), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+// The imported key, reused while the secret stays the same (it does for an isolate's lifetime).
+let cached: { secret: string; key: Promise<CryptoKey> } | undefined;
+
+function hmacKey(secret: string): Promise<CryptoKey> {
+  if (cached?.secret !== secret) {
+    const raw = new TextEncoder().encode(secret);
+    const key = crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" }, false, [
+      "sign",
+    ]);
+    cached = { secret, key };
+  }
+  return cached.key;
 }
 
 /** The canonical network of an address: "v4:a.b.c.d" or "v6:a:b:c:d::/64". */

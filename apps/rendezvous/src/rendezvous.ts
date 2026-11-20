@@ -1,16 +1,27 @@
 // One object per network (route.ts). It tells guests which hosts are online and relays signals
 // between guests and hosts. Its only state is the live sockets and their attachments, which
 // survive hibernation, so an idle network costs no duration.
+//
+// Keepalive costs nothing either: the runtime answers WebSocket protocol pings (from hosts)
+// itself, without waking the object or calling webSocketMessage, and the auto-response below
+// answers RENDEZVOUS_PING (from browsers, which can't send protocol pings).
 import { DurableObject } from "cloudflare:workers";
-import type { HostInfo, ServerMessage } from "@gitui/shared";
+import { RENDEZVOUS_PING, RENDEZVOUS_PONG, type HostInfo, type ServerMessage } from "@gitui/shared";
 import type { Env } from "./index.ts";
-import { MAX_MESSAGE_LENGTH, parseClientMessage, PING, PONG } from "./messages.ts";
+import { MAX_MESSAGE_LENGTH, parseClientMessage } from "./messages.ts";
 
 /** Most sockets one network may hold open. */
 export const MAX_SOCKETS = 50;
 
-/** A peer that said hello. */
-type Joined = { role: "guest"; id: string } | { role: "host"; id: string; name: string };
+/**
+ * A peer that said hello. `seq` orders hosts by when they joined: one more than the highest of
+ * the hosts online then. (Date.now() doesn't advance between messages without I/O, so it can't.)
+ */
+type Joined =
+  | { role: "guest"; id: string }
+  | { role: "host"; id: string; name: string; key: string; seq: number };
+
+type Host = Extract<Joined, { role: "host" }>;
 
 /**
  * A socket's attachment. Before `hello`, `browser` says whether the upgrade had an Origin, which
@@ -21,7 +32,9 @@ type Attachment = { role?: undefined; browser: boolean } | Joined;
 export class Rendezvous extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair(PING, PONG));
+    ctx.setWebSocketAutoResponse(
+      new WebSocketRequestResponsePair(RENDEZVOUS_PING, RENDEZVOUS_PONG),
+    );
   }
 
   override fetch(request: Request): Response {
@@ -47,7 +60,9 @@ export class Rendezvous extends DurableObject<Env> {
       if (message.role === "guest" && !peer.browser) return reject(ws, 1008, "Origin required");
       const id = crypto.randomUUID();
       const joined: Joined =
-        message.role === "host" ? { role: "host", id, name: message.name } : { role: "guest", id };
+        message.role === "host"
+          ? { role: "host", id, name: message.name, key: message.key, seq: this.nextSeq() }
+          : { role: "guest", id };
       ws.serializeAttachment(joined);
       send(ws, { type: "welcome", id });
       if (joined.role === "host") this.broadcastHosts();
@@ -85,17 +100,32 @@ export class Rendezvous extends DurableObject<Env> {
   }
 
   private broadcastHosts(leaving?: string): void {
-    const hosts = this.hosts().filter((host) => host.id !== leaving);
+    const hosts = this.hosts(leaving);
     for (const peer of this.peers()) {
       if (peer.role === "guest") send(peer.ws, { type: "hosts", hosts });
     }
   }
 
-  /** Sorted by name, so guests list them in a stable order. */
-  private hosts(): HostInfo[] {
-    return this.peers()
-      .flatMap((peer) => (peer.role === "host" ? [{ id: peer.id, name: peer.name }] : []))
-      .sort((a, b) => a.name.localeCompare(b.name));
+  /**
+   * One entry per key, sorted by name so guests list them in a stable order. A CLI's IPv4 and
+   * IPv6 sockets share a key and land here together when both families map to this network;
+   * the one that joined first is listed (so a later socket can't displace it), and the other
+   * takes its place if it leaves. Both still accept signals.
+   */
+  private hosts(leaving?: string): HostInfo[] {
+    const byKey = new Map<string, Host>();
+    for (const peer of this.peers()) {
+      if (peer.role !== "host" || peer.id === leaving) continue;
+      const listed = byKey.get(peer.key);
+      if (!listed || peer.seq < listed.seq) byKey.set(peer.key, peer);
+    }
+    return [...byKey.values()]
+      .map(({ id, name, key }) => ({ id, name, key }))
+      .sort((a, b) => a.name.localeCompare(b.name) || a.key.localeCompare(b.key));
+  }
+
+  private nextSeq(): number {
+    return Math.max(0, ...this.peers().map((peer) => (peer.role === "host" ? peer.seq : 0))) + 1;
   }
 
   /** Open sockets that said hello. */

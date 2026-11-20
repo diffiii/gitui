@@ -4,8 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev --var ALLOWED_ORIGINS:http://localhost:5173",
-    "deploy": "wrangler deploy"
+    "dev": "wrangler dev --var ALLOWED_ORIGINS:http://localhost:5173 --var NETWORK_KEY_SECRET:dev-only-not-a-secret",
+    "deploy": "wrangler deploy",
+    "e2e": "bun scripts/e2e.ts"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20261101.1",

@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
 import { HOSTED_ORIGIN, RENDEZVOUS_PATH } from "@gitui/shared";
-import { isAllowedOrigin, networkKey, networkOf, route } from "./route.ts";
+import { isAllowedOrigin, networkKey, networkOf, route, type RouteEnv } from "./route.ts";
+
+const SECRET = "test-secret";
+const env = (extra: RouteEnv = {}): RouteEnv => ({ NETWORK_KEY_SECRET: SECRET, ...extra });
 
 test("networkOf keeps the IPv4 address and the IPv6 /64", () => {
   expect(networkOf("203.0.113.7")).toBe("v4:203.0.113.7");
@@ -42,14 +45,24 @@ test("networkOf rejects anything that isn't an address", () => {
   }
 });
 
-test("networkKey hashes the network", async () => {
-  const key = await networkKey("203.0.113.7");
+test("networkKey is the HMAC-SHA256 of the network", async () => {
+  const key = await networkKey("203.0.113.7", SECRET);
   expect(key).toMatch(/^[\da-f]{64}$/);
-  expect(await networkKey("::ffff:203.0.113.7")).toBe(key);
-  expect(await networkKey("203.0.113.8")).not.toBe(key);
-  expect(await networkKey("2001:db8::1")).toBe(await networkKey("2001:db8::ffff:2"));
-  expect(await networkKey("2001:db8::1")).not.toBe(await networkKey("2001:db8:0:1::1"));
-  expect(await networkKey("nope")).toBeNull();
+  expect(await networkKey("::ffff:203.0.113.7", SECRET)).toBe(key);
+  expect(await networkKey("203.0.113.8", SECRET)).not.toBe(key);
+  const v6 = await networkKey("2001:db8::1", SECRET);
+  expect(await networkKey("2001:db8::ffff:2", SECRET)).toBe(v6);
+  expect(await networkKey("2001:db8:0:1::1", SECRET)).not.toBe(v6);
+  expect(await networkKey("nope", SECRET)).toBeNull();
+});
+
+test("networkKey depends on the secret", async () => {
+  const key = await networkKey("203.0.113.7", SECRET);
+  expect(await networkKey("203.0.113.7", "other-secret")).not.toBe(key);
+  // Switching secrets back and forth doesn't reuse the wrong imported key.
+  expect(await networkKey("203.0.113.7", SECRET)).toBe(key);
+  const hmac = new Bun.CryptoHasher("sha256", SECRET).update("v4:203.0.113.7").digest("hex");
+  expect(key).toBe(hmac);
 });
 
 test("isAllowedOrigin accepts the hosted origin and the listed ones", () => {
@@ -73,29 +86,43 @@ function upgrade(ip: string | null, headers: Record<string, string> = {}, path =
 }
 
 test("route sends each network to its own object", async () => {
-  const a = await route(upgrade("198.51.100.1"), undefined);
-  const b = await route(upgrade("198.51.100.2"), undefined);
-  expect(a).toEqual({ network: (await networkKey("198.51.100.1"))! });
-  expect(b).toEqual({ network: (await networkKey("198.51.100.2"))! });
+  const a = await route(upgrade("198.51.100.1"), env());
+  const b = await route(upgrade("198.51.100.2"), env());
+  expect(a).toEqual({ network: (await networkKey("198.51.100.1", SECRET))! });
+  expect(b).toEqual({ network: (await networkKey("198.51.100.2", SECRET))! });
   expect(a).not.toEqual(b);
-  expect(await route(upgrade("2001:db8:1:2::a"), undefined)).toEqual(
-    await route(upgrade("2001:db8:1:2:ffff::b"), undefined),
+  expect(await route(upgrade("2001:db8:1:2::a"), env())).toEqual(
+    await route(upgrade("2001:db8:1:2:ffff::b"), env()),
   );
+  // A dual-stack CLI's two sockets: different networks, so different objects.
+  expect(await route(upgrade("2001:db8:1:2::a"), env())).not.toEqual(a);
+});
+
+test("route fails closed without NETWORK_KEY_SECRET", async () => {
+  for (const secret of [undefined, ""]) {
+    expect(await route(upgrade("198.51.100.1"), { NETWORK_KEY_SECRET: secret })).toMatchObject({
+      status: 500,
+      message: expect.stringContaining("NETWORK_KEY_SECRET"),
+    });
+  }
 });
 
 test("route checks the path, the upgrade, the Origin and the address", async () => {
   const ip = "198.51.100.1";
-  expect(await route(upgrade(ip, {}, "/"), undefined)).toMatchObject({ status: 404 });
-  expect(await route(upgrade(ip, {}, `${RENDEZVOUS_PATH}/x`), undefined)).toMatchObject({
+  expect(await route(upgrade(ip, {}, "/"), env())).toMatchObject({ status: 404 });
+  expect(await route(upgrade(ip, {}, `${RENDEZVOUS_PATH}/x`), env())).toMatchObject({
     status: 404,
   });
-  expect(await route(upgrade(ip, { Upgrade: "h2c" }), undefined)).toMatchObject({ status: 426 });
-  expect(await route(upgrade(ip, { Origin: "https://evil.test" }), undefined)).toMatchObject({
+  expect(await route(upgrade(ip, { Upgrade: "h2c" }), env())).toMatchObject({ status: 426 });
+  expect(await route(upgrade(ip, { Origin: "https://evil.test" }), env())).toMatchObject({
     status: 403,
   });
-  expect(await route(upgrade(ip, { Origin: HOSTED_ORIGIN }), undefined)).toHaveProperty("network");
+  expect(await route(upgrade(ip, { Origin: HOSTED_ORIGIN }), env())).toHaveProperty("network");
   expect(
-    await route(upgrade(ip, { Origin: "http://localhost:5181" }), "http://localhost:5181"),
+    await route(
+      upgrade(ip, { Origin: "http://localhost:5181" }),
+      env({ ALLOWED_ORIGINS: "http://localhost:5181" }),
+    ),
   ).toHaveProperty("network");
-  expect(await route(upgrade(null), undefined)).toMatchObject({ status: 400 });
+  expect(await route(upgrade(null), env())).toMatchObject({ status: 400 });
 });

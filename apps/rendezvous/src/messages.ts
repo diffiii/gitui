@@ -1,19 +1,9 @@
 // Validation of the ClientMessage JSON that peers send to the rendezvous object (nearby.ts).
-import type { ClientMessage, SignalData } from "@gitui/shared";
-
-/**
- * Keepalive: the object answers a text message of exactly PING with PONG without waking up
- * (WebSocket hibernation auto-response). Peers may send it at any time, hello or not; it isn't a
- * ClientMessage and PONG isn't a ServerMessage.
- */
-export const PING = '{"type":"ping"}';
-export const PONG = '{"type":"pong"}';
+// RENDEZVOUS_PING never gets here: the object auto-responds to it.
+import { HOST_KEY, MAX_NAME_LENGTH, type ClientMessage, type SignalData } from "@gitui/shared";
 
 /** Longest accepted message, in UTF-16 code units. An SDP is a few KiB of ASCII. */
 export const MAX_MESSAGE_LENGTH = 64 * 1024;
-
-/** Longest host name, in UTF-16 code units (like `String.length`), after trimming. */
-export const MAX_NAME_LENGTH = 64;
 
 // Control characters, and the bidi controls that could make a name display as another.
 const UNSAFE_NAME = /[\p{Cc}‪-‮⁦-⁩]/u;
@@ -32,8 +22,10 @@ export function parseClientMessage(text: string): ClientMessage | null {
   if (!isRecord(value)) return null;
   if (value.type === "hello") {
     if (value.role === "guest") return { type: "hello", role: "guest" };
-    const name = value.role === "host" ? hostName(value.name) : null;
-    return name === null ? null : { type: "hello", role: "host", name };
+    if (value.role !== "host") return null;
+    const name = hostName(value.name);
+    const key = typeof value.key === "string" && HOST_KEY.test(value.key) ? value.key : null;
+    return name === null || key === null ? null : { type: "hello", role: "host", name, key };
   }
   if (value.type === "signal") {
     const data = signalData(value.data);
@@ -42,7 +34,10 @@ export function parseClientMessage(text: string): ClientMessage | null {
   return null;
 }
 
-/** The trimmed name, if it is 1 to MAX_NAME_LENGTH long and has no control characters. */
+/**
+ * The trimmed name, if it is 1 to MAX_NAME_LENGTH UTF-16 code units long (like `String.length`)
+ * and has no control characters.
+ */
 export function hostName(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const name = value.trim();
