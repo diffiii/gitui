@@ -36,6 +36,77 @@ function ref(value: unknown, field = "ref"): string {
   return value;
 }
 
+function invalid(field: string): never {
+  throw new g.GitError(`Invalid ${field}`, null, "");
+}
+
+/** Parse a JSON object body; malformed JSON or a non-object is a client error, not a 500. */
+async function jsonBody(req: { json(): Promise<unknown> }): Promise<Record<string, unknown>> {
+  const body = await req.json().catch(() => invalid("JSON body"));
+  if (typeof body !== "object" || body === null || Array.isArray(body)) invalid("JSON body");
+  return body as Record<string, unknown>;
+}
+
+function str(value: unknown, field: string): string {
+  if (typeof value !== "string") invalid(field);
+  return value;
+}
+
+function optStr(value: unknown, field: string): string | undefined {
+  return value === undefined ? undefined : str(value, field);
+}
+
+function optBool(value: unknown, field: string): boolean | undefined {
+  if (value !== undefined && typeof value !== "boolean") invalid(field);
+  return value;
+}
+
+/** A single repo-relative path; may not be empty or contain NUL. */
+function filePath(value: unknown, field = "path"): string {
+  if (typeof value !== "string" || !value || value.includes("\0")) invalid(field);
+  return value;
+}
+
+/** `undefined` means "all files"; otherwise a non-empty list of paths. */
+function pathList(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0) invalid("paths");
+  return value.map((p) => filePath(p, "paths"));
+}
+
+function fileStatus(value: unknown): g.FileStatus {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) invalid("file");
+  const f = value as Record<string, unknown>;
+  return {
+    path: filePath(f.path, "file.path"),
+    origPath: f.origPath === undefined ? undefined : filePath(f.origPath, "file.origPath"),
+    x: optStr(f.x, "file.x") ?? ".",
+    y: optStr(f.y, "file.y") ?? ".",
+    untracked: optBool(f.untracked, "file.untracked"),
+    conflicted: optBool(f.conflicted, "file.conflicted"),
+  };
+}
+
+const repoLocks = new Map<string, Promise<void>>();
+
+/** Run `fn` after every earlier call for the same `key` has settled (a per-repo FIFO mutex). */
+export async function withRepoLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  const prev = repoLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const tail = prev.then(() => new Promise<void>((r) => (release = r)));
+  repoLocks.set(key, tail);
+  await prev;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (repoLocks.get(key) === tail) repoLocks.delete(key);
+  }
+}
+
+/** Long-running network operations that don't write the index skip the repo lock. */
+const UNLOCKED_PATHS = /\/remote\/(fetch|push)$/;
+
 type Env = { Variables: { repo: string } };
 
 export function createApp(opts: AppOptions = {}) {
@@ -80,6 +151,14 @@ export function createApp(opts: AppOptions = {}) {
     await next();
   });
 
+  // Serialize mutations per repo so concurrent git commands don't collide on .git/index.lock.
+  repo.use("*", async (c, next) => {
+    if (c.req.method === "GET" || c.req.method === "HEAD" || UNLOCKED_PATHS.test(c.req.path)) {
+      return next();
+    }
+    return withRepoLock(c.var.repo, next);
+  });
+
   repo.get("/status", async (c) => c.json(await g.status(c.var.repo)));
 
   repo.get("/diff", async (c) => {
@@ -94,25 +173,27 @@ export function createApp(opts: AppOptions = {}) {
   });
 
   repo.post("/stage", async (c) => {
-    const { paths } = await c.req.json<{ paths?: string[] }>();
-    await g.stage(c.var.repo, paths);
+    const body = await jsonBody(c.req);
+    await g.stage(c.var.repo, pathList(body.paths));
     return c.json({ ok: true });
   });
 
   repo.post("/unstage", async (c) => {
-    const { paths } = await c.req.json<{ paths?: string[] }>();
-    await g.unstage(c.var.repo, paths);
+    const body = await jsonBody(c.req);
+    await g.unstage(c.var.repo, pathList(body.paths));
     return c.json({ ok: true });
   });
 
   repo.post("/discard", async (c) => {
-    const { file } = await c.req.json<{ file: g.FileStatus }>();
-    await g.discard(c.var.repo, file);
+    const body = await jsonBody(c.req);
+    await g.discard(c.var.repo, fileStatus(body.file));
     return c.json({ ok: true });
   });
 
   repo.post("/commit", async (c) => {
-    const { message, amend } = await c.req.json<{ message: string; amend?: boolean }>();
+    const body = await jsonBody(c.req);
+    const message = str(body.message, "message");
+    const amend = optBool(body.amend, "amend");
     if (!message.trim() && !amend) throw new g.GitError("Commit message is empty", null, "");
     const out = await g.commit(c.var.repo, message, !!amend);
     return c.json({ ok: true, output: out });
@@ -140,29 +221,25 @@ export function createApp(opts: AppOptions = {}) {
   repo.get("/branches", async (c) => c.json({ branches: await g.branches(c.var.repo) }));
 
   repo.post("/checkout", async (c) => {
-    const { name, remote } = await c.req.json<{ name: string; remote?: boolean }>();
-    await g.checkout(c.var.repo, ref(name, "branch"), !!remote);
+    const body = await jsonBody(c.req);
+    const remote = optBool(body.remote, "remote");
+    await g.checkout(c.var.repo, ref(body.name, "branch"), !!remote);
     return c.json({ ok: true });
   });
 
   repo.post("/branch", async (c) => {
-    const { name, from, checkout } = await c.req.json<{
-      name: string;
-      from?: string;
-      checkout?: boolean;
-    }>();
-    await g.createBranch(
-      c.var.repo,
-      ref(name, "branch"),
-      from ? ref(from) : undefined,
-      checkout ?? true,
-    );
+    const body = await jsonBody(c.req);
+    const name = ref(body.name, "branch");
+    const from = body.from === undefined || body.from === "" ? undefined : ref(body.from, "from");
+    const checkout = optBool(body.checkout, "checkout");
+    await g.createBranch(c.var.repo, name, from, checkout ?? true);
     return c.json({ ok: true });
   });
 
   repo.post("/branch/delete", async (c) => {
-    const { name, force } = await c.req.json<{ name: string; force?: boolean }>();
-    await g.deleteBranch(c.var.repo, ref(name, "branch"), !!force);
+    const body = await jsonBody(c.req);
+    const force = optBool(body.force, "force");
+    await g.deleteBranch(c.var.repo, ref(body.name, "branch"), !!force);
     return c.json({ ok: true });
   });
 
