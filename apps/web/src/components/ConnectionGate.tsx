@@ -7,7 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { getConfig } from "@/lib/api";
-import { connectionStatus, setPairing, useConnection } from "@/lib/connection";
+import {
+  connectionStatus,
+  retryWhileUnreachable,
+  setPairing,
+  useConnection,
+  type ConnectionStatus,
+} from "@/lib/connection";
 
 /** Renders the app once gitui answers; until then, in the hosted app, how to connect to it. */
 export function ConnectionGate({ children }: { children: React.ReactNode }) {
@@ -16,23 +22,19 @@ export function ConnectionGate({ children }: { children: React.ReactNode }) {
     queryKey: ["config"],
     queryFn: getConfig,
     enabled: connection.kind === "paired",
-    // Keep trying while gitui isn't running, so the page connects as soon as it starts.
-    refetchInterval: (q) =>
-      connectionStatus(connection, q.state).kind === "unreachable" ? 2000 : false,
+    ...retryWhileUnreachable,
   });
 
   const status = connectionStatus(connection, config);
   switch (status.kind) {
     case "connected":
       return children;
-    case "connecting":
-      return null;
     case "unpaired":
-      return <PairScreen rejected={false} />;
     case "rejected":
-      return <PairScreen rejected />;
+      return <PairScreen rejected={status.kind === "rejected"} />;
+    case "connecting":
     case "unreachable":
-      return <UnreachableScreen port={status.port} />;
+      return <UnreachableScreen status={status} />;
   }
 }
 
@@ -88,9 +90,15 @@ function PairScreen({ rejected }: { rejected: boolean }) {
   );
 }
 
-function UnreachableScreen({ port }: { port: number }) {
+/** Shown while the CLI hasn't answered. It fades in late, so a fast first answer doesn't flash it. */
+function UnreachableScreen({
+  status: { kind, port },
+}: {
+  status: Extract<ConnectionStatus, { port: number }>;
+}) {
   return (
     <CenteredScreen
+      className="animate-in fade-in fill-mode-backwards delay-300 duration-300"
       icon={Terminal}
       title="Start gitui on your computer"
       description={
@@ -113,7 +121,11 @@ function UnreachableScreen({ port }: { port: number }) {
       <div className="mt-4 flex items-center justify-between gap-2 px-1 text-xs text-muted-foreground">
         <span className="flex min-w-0 items-center gap-2">
           <LoaderCircle className="size-3.5 shrink-0 animate-spin" />
-          <span className="truncate">Can't reach gitui on port {port}. Retrying…</span>
+          <span className="truncate">
+            {kind === "connecting"
+              ? `Connecting to gitui on port ${port}…`
+              : `Can't reach gitui on port ${port}. Retrying…`}
+          </span>
         </span>
         <Button variant="link" size="xs" className="px-0" onClick={() => setPairing(null)}>
           Use another link

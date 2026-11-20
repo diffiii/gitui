@@ -1,3 +1,4 @@
+import { cn } from "cn";
 import type { LucideIcon } from "lucide-react";
 
 /** Full-page screen with a centred heading above its content, shown in place of the app. */
@@ -6,14 +7,16 @@ export function CenteredScreen({
   title,
   description,
   children,
+  className,
 }: {
   icon: LucideIcon;
   title: string;
   description: React.ReactNode;
   children: React.ReactNode;
+  className?: string;
 }) {
   return (
-    <div className="flex min-h-svh items-center justify-center bg-background p-4">
+    <div className={cn("flex min-h-svh items-center justify-center bg-background p-4", className)}>
       <div className="w-full max-w-md">
         <div className="mb-8 flex flex-col items-center gap-3 text-center">
           <div className="rounded-2xl border bg-muted/50 p-3">

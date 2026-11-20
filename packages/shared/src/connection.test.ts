@@ -1,7 +1,14 @@
 import { expect, test } from "bun:test";
-import { pairingFragment, pairingUrl, parsePairing } from "./connection.ts";
+import { isLoopbackHost, pairingFragment, pairingUrl, parsePairing } from "./connection.ts";
 
 const pairing = { port: 4778, token: "a+b/c=" };
+
+test("isLoopbackHost accepts only hostnames that reach this machine", () => {
+  for (const h of ["localhost", "127.0.0.1", "[::1]"]) expect(isLoopbackHost(h)).toBe(true);
+  for (const h of ["gitui.diffiii.dev", "192.168.1.20", "localhost.example.com", "::1", ""]) {
+    expect(isLoopbackHost(h)).toBe(false);
+  }
+});
 
 test("pairingUrl puts the pairing in the fragment of the origin's root", () => {
   const url = new URL(pairingUrl("https://gitui.example", pairing));

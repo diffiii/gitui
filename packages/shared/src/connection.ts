@@ -9,6 +9,11 @@ export const CLIENT_HEADER = "x-gitui";
 /** Origin of the hosted web app, the only cross-origin page the CLI accepts by default. */
 export const HOSTED_ORIGIN = "https://gitui.diffiii.workers.dev";
 
+/** Hostnames that only reach this machine, spelled as in `location.hostname` and `Host`. */
+export const LOOPBACK_HOSTS: readonly string[] = ["localhost", "127.0.0.1", "[::1]"];
+
+export const isLoopbackHost = (hostname: string) => LOOPBACK_HOSTS.includes(hostname);
+
 /** What the hosted app needs to reach a CLI: its port and pairing token. */
 export interface Pairing {
   port: number;

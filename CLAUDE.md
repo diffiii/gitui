@@ -32,7 +32,8 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   until the CLI answers. `wrangler.jsonc` and `public/_headers` deploy `dist/` as Cloudflare
   Workers static assets.
 - `packages/shared/` (`@gitui/shared`): API types and the connection contract (default port,
-  client header, hosted origin, pairing links) used by both sides, imported as `@gitui/shared`.
+  client header, hosted origin, loopback hosts, pairing links) used by both sides, imported as
+  `@gitui/shared`.
 - Root: `scripts/dev.ts` (runs both apps), `vite.config.ts` (workspace fmt/lint/type check
   config, `defaultPackage` points `vp dev`/`vp build` at `apps/web`), `tsconfig.json`
   (project references to every package).

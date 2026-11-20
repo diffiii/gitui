@@ -1,10 +1,11 @@
 import type { Branch, Commit, CommitDetail, FileStatus, Status } from "@gitui/shared";
-import { ApiError, apiTarget, getConnection } from "./connection.ts";
+import { ApiError, apiTarget, getConnection, rejectPairing } from "./connection.ts";
 
 export type { Branch, Commit, CommitDetail, FileStatus, Status };
 
 async function request<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
-  const { base, headers } = apiTarget(getConnection());
+  const connection = getConnection();
+  const { base, headers } = apiTarget(connection);
   const res = await fetch(base + path, {
     method,
     headers: {
@@ -16,9 +17,11 @@ async function request<T>(method: "GET" | "POST", path: string, body?: unknown):
     throw new ApiError("Can't reach gitui", "unreachable");
   });
   const data = await res.json().catch(() => ({ error: res.statusText }));
-  if (!res.ok) {
-    throw new ApiError(data.error ?? res.statusText, res.status === 401 ? "unauthorized" : "http");
+  if (res.status === 401) {
+    rejectPairing(connection);
+    throw new ApiError(data.error ?? res.statusText, "unauthorized");
   }
+  if (!res.ok) throw new ApiError(data.error ?? res.statusText, "http");
   return data as T;
 }
 
