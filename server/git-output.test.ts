@@ -8,6 +8,8 @@ afterAll(removeTempDirs);
 
 let repo: string;
 let head: string;
+/** Unique per run, so concurrent runs of this suite can't see each other's sleeper. */
+const SLEEPER = `sleep 37.${process.pid}`;
 
 const lines = (prefix: string, n: number) =>
   Array.from({ length: n }, (_, i) => `${prefix} line ${i}`).join("\n") + "\n";
@@ -18,7 +20,7 @@ const parseStrict = (patch: string) =>
 
 beforeAll(() => {
   repo = initRepo();
-  sh(repo, "config", "alias.hang", "!sleep 37.0421");
+  sh(repo, "config", "alias.hang", `!exec ${SLEEPER}`);
   for (let i = 0; i < 6; i++) write(repo, `f${i}.txt`, lines(`f${i}`, 100));
   sh(repo, "add", ".");
   sh(repo, "commit", "-q", "-m", "six files");
@@ -78,8 +80,9 @@ test("git: timeoutMs kills the child and rejects", async () => {
   expect(err).toBeInstanceOf(GitError);
   expect(err.message).toBe("git hang timed out after 0.2 s");
   expect(Date.now() - started).toBeLessThan(5000);
-  // git forwards SIGTERM to the alias's shell, so the sleep must be gone too.
-  await Bun.sleep(300);
-  const ps = execFileSync("ps", ["-Ao", "command"], { encoding: "utf8" });
-  expect(ps).not.toContain("sleep 37.0421");
+  // git forwards SIGTERM to the alias's child; `exec` makes sleep that child on every /bin/sh.
+  const sleeperAlive = () =>
+    execFileSync("ps", ["-Ao", "command"], { encoding: "utf8" }).includes(SLEEPER);
+  for (let i = 0; i < 30 && sleeperAlive(); i++) await Bun.sleep(100);
+  expect(sleeperAlive()).toBe(false);
 });
