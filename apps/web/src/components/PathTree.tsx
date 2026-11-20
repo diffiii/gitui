@@ -1,7 +1,8 @@
 import type { ContextMenuItem, ContextMenuOpenContext, GitStatusEntry } from "@pierre/trees";
-import { FileTree, useFileTree, type UseFileTreeResult } from "@pierre/trees/react";
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { FileTree, useFileTree } from "@pierre/trees/react";
+import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { COARSE, useMediaQuery } from "@/lib/media";
+import { dirsOf, treeChanges } from "@/lib/pathTree";
 import { useTheme } from "@/lib/prefs";
 import { cn } from "@/lib/utils";
 
@@ -80,17 +81,16 @@ function FileTreeView({
     },
   });
 
-  const pathsKey = paths.join("\0");
+  const pathsKey = useMemo(() => paths.join("\0"), [paths]);
   const prev = useRef({ key: pathsKey, paths });
   useEffect(() => {
     if (prev.current.key === pathsKey) return;
-    // A search opens folders of its own: close it to read the user's, then search the new paths.
-    model.setSearch(null);
-    const expanded = collapsed ? expandedDirs(model, prev.current.paths) : dirsOf(paths);
+    const old = prev.current.paths;
     prev.current = { key: pathsKey, paths };
-    model.resetPaths(paths, { initialExpandedPaths: expanded });
-    model.setSearch(search || null);
-  }, [model, pathsKey, paths, collapsed, search]);
+    // In place, so the folders the user opened and the search stay, and new folders start closed.
+    if (collapsed) model.batch(treeChanges(old, paths));
+    else model.resetPaths(paths, { initialExpandedPaths: dirsOf(paths) });
+  }, [model, pathsKey, paths, collapsed]);
 
   useEffect(() => {
     model.setSearch(search || null);
@@ -133,23 +133,6 @@ function FileTreeView({
       }
     />
   );
-}
-
-/** The folders of `paths` that are open in `model`. */
-function expandedDirs(model: UseFileTreeResult["model"], paths: string[]) {
-  return dirsOf(paths).filter((dir) => {
-    const item = model.getItem(dir);
-    return item && "isExpanded" in item && item.isExpanded();
-  });
-}
-
-function dirsOf(paths: string[]) {
-  const dirs = new Set<string>();
-  for (const p of paths) {
-    const parts = p.split("/");
-    for (let i = 1; i < parts.length; i++) dirs.add(parts.slice(0, i).join("/") + "/");
-  }
-  return [...dirs];
 }
 
 function TreeMenu({

@@ -3,6 +3,7 @@ import path from "node:path";
 import { Hono } from "hono";
 import { type AccessOptions, installAccess } from "./access.ts";
 import { pushRecent, readRecent } from "./config.ts";
+import { assertWorkingFile, workingFile, workingFiles } from "./files.ts";
 import * as g from "./git.ts";
 import { withRepoLock } from "./lock.ts";
 
@@ -130,11 +131,14 @@ export function createApp(opts: AppOptions) {
 
   repo.get("/diff", async (c) => {
     const q = c.req.query();
+    const untracked = q.untracked === "1";
+    // An untracked file's diff reads it from disk, whatever the path: only diff one git lists.
+    if (untracked) await assertWorkingFile(c.var.repo, workingPath(q.path), { untracked });
     const { diff, truncated } = await g.fileDiff(c.var.repo, {
       path: q.path,
       origPath: q.origPath || undefined,
       staged: q.staged === "1",
-      untracked: q.untracked === "1",
+      untracked,
     });
     return c.json({ diff, truncated });
   });
@@ -185,10 +189,10 @@ export function createApp(opts: AppOptions) {
     c.json(await g.showCommit(c.var.repo, ref(c.req.param("hash"), "hash"))),
   );
 
-  repo.get("/files", async (c) => c.json(await g.workingFiles(c.var.repo)));
+  repo.get("/files", async (c) => c.json(await workingFiles(c.var.repo)));
 
   repo.get("/file", async (c) =>
-    c.json(await g.workingFile(c.var.repo, workingPath(c.req.query("path")))),
+    c.json(await workingFile(c.var.repo, workingPath(c.req.query("path")))),
   );
 
   repo.get("/branches", async (c) => c.json({ branches: await g.branches(c.var.repo) }));

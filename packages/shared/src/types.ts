@@ -66,10 +66,11 @@ export interface WorkingFiles {
 }
 
 /**
- * One working-copy file as it is on disk. `size` is in bytes. A symbolic link isn't followed: its
- * `content` is the link's target.
+ * One working-copy file as it is on disk. `size` is in bytes. A symbolic link isn't followed: it
+ * comes back as its target.
  */
 export type WorkingFile =
-  | { size: number; content: string; symlink?: true }
-  | { size: number; binary: true }
-  | { size: number; tooLarge: true };
+  | { kind: "text"; size: number; content: string }
+  | { kind: "symlink"; target: string }
+  | { kind: "binary"; size: number }
+  | { kind: "tooLarge"; size: number };

@@ -7,10 +7,11 @@ import { formatBytes } from "@/lib/format";
 import { useListChoice } from "@/lib/listChoice";
 import { NARROW } from "@/lib/media";
 import { useRepo } from "@/lib/repo";
+import { useStatus } from "@/lib/status";
 import { useUrl } from "@/lib/url";
-import { FileTitle, useStatus } from "./ChangesView";
 import { CodeFile } from "./DiffView";
 import { EmptyState } from "./EmptyState";
+import { FileTitle } from "./FileTitle";
 import { FilterInput } from "./FilterInput";
 import { ListDetail } from "./ListDetail";
 import { PathTree } from "./PathTree";
@@ -25,6 +26,8 @@ function useWorkingFiles() {
     queryFn: api.files,
     enabled: stamp !== undefined,
     placeholderData: keepPreviousData,
+    // Each stamp is its own entry, holding up to 50,000 paths: drop the old ones once unused.
+    gcTime: 0,
   });
 }
 
@@ -91,43 +94,47 @@ export function FilesView() {
   );
 }
 
-/** A working-copy file's contents, highlighted, or why they aren't shown. */
+/** A working-copy file's contents, highlighted, or why they aren't shown. Polled, like a diff. */
 function FileContents({ path }: { path: string }) {
   const { repo, api } = useRepo();
   const { data, error } = useQuery({
     queryKey: [repo, "file", path],
     queryFn: () => api.file(path),
+    refetchInterval: 3000,
+    placeholderData: (prev) => prev,
   });
 
   if (error) return <div className="p-6 text-sm text-destructive">{error.message}</div>;
   if (!data) return null;
-  if ("binary" in data) {
-    return (
-      <EmptyState
-        icon={FileQuestion}
-        title={`Binary file, ${formatBytes(data.size)}`}
-        description={path}
-      />
-    );
+  switch (data.kind) {
+    case "binary":
+      return (
+        <EmptyState
+          icon={FileQuestion}
+          title={`Binary file, ${formatBytes(data.size)}`}
+          description={path}
+        />
+      );
+    case "tooLarge":
+      return (
+        <EmptyState
+          icon={FileX}
+          title={`Too large to show, ${formatBytes(data.size)}`}
+          description={path}
+        />
+      );
+    case "symlink":
+      return <EmptyState icon={Link} title="Symbolic link" description={data.target} />;
+    case "text":
+      if (!data.content) {
+        return <EmptyState icon={FileCode} title="Empty file" description={path} />;
+      }
+      return (
+        <ScrollArea className="h-full">
+          <div className="p-3">
+            <CodeFile name={path} contents={data.content} />
+          </div>
+        </ScrollArea>
+      );
   }
-  if ("tooLarge" in data) {
-    return (
-      <EmptyState
-        icon={FileX}
-        title={`Too large to show, ${formatBytes(data.size)}`}
-        description={path}
-      />
-    );
-  }
-  if (data.symlink) {
-    return <EmptyState icon={Link} title="Symbolic link" description={data.content} />;
-  }
-  if (!data.content) return <EmptyState icon={FileCode} title="Empty file" description={path} />;
-  return (
-    <ScrollArea className="h-full">
-      <div className="p-3">
-        <CodeFile name={path} contents={data.content} />
-      </div>
-    </ScrollArea>
-  );
 }
