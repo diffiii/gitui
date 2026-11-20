@@ -1,5 +1,4 @@
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { getConfig } from "@/lib/api";
@@ -52,7 +51,7 @@ export default function App() {
 }
 
 function HistoryView() {
-  const [all, setAll] = useState(false);
+  const { all } = useUrl();
   return (
     <HistoryPane
       key={String(all)}
@@ -71,11 +70,8 @@ function HistoryView() {
                 "touch-target",
                 all === o.v ? "bg-background shadow-sm" : "text-muted-foreground",
               )}
-              onClick={() => {
-                setAll(o.v);
-                // The other list starts at its newest commit.
-                select({ commit: null });
-              }}
+              // The other list starts at its newest commit.
+              onClick={() => select({ all: o.v, commit: null })}
             >
               {o.label}
             </Button>
