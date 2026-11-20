@@ -62,7 +62,7 @@ One-time setup: create a GitHub environment named `npm` (Settings → Environmen
 The git backend needs a real filesystem and the `git` binary, so only the static UI is hosted on Cloudflare, at https://gitui.diffiii.dev (Workers static assets, `apps/web/wrangler.jsonc`). The page talks to the CLI on `http://127.0.0.1:<port>` straight from the browser:
 
 - `gitui` prints and opens a pairing link (`https://…/#port=…&token=…`). The page saves the pairing fragment in localStorage and drops it from the address bar; API calls then send the token as a bearer token.
-- Pages served from localhost (the CLI itself, or `bun run dev`) skip pairing and call `/api` same-origin, as before.
+- Pages served by gitui itself (the CLI's bundled UI, or the Vite dev server of `bun run dev`) carry a `<meta name="gitui-local-ui">` tag (`LOCAL_UI_META`); they skip pairing and call `/api` same-origin, whatever their host. The production build (`vp build`), which is what gets deployed, has no such tag, so any page served from it pairs, even on localhost.
 - `HOSTED_ORIGIN` in `packages/shared/src/connection.ts` must match the custom domain in `wrangler.jsonc`: the CLI only accepts that origin (plus any `--allow-origin`) and builds pairing links from it.
 
 Deploy once from a machine logged in to Cloudflare (`wrangler login`):
@@ -80,14 +80,14 @@ Or connect the repository in Cloudflare Workers Builds with:
 
 `wrangler deploy` attaches the custom domain `gitui.diffiii.dev` (its zone must be in the same Cloudflare account) and turns off the `workers.dev` and preview URLs: the CLI wouldn't accept their origins.
 
-To try the hosted mode locally, serve the UI on a non-loopback address. With `<lan-ip>` your machine's LAN IP:
+To try the hosted mode locally, serve a production build of the UI, which lacks the marker, and let the dev API accept its origin:
 
 ```sh
-GITUI_ALLOW_ORIGIN=http://<lan-ip>:5173 bun run --cwd apps/cli dev   # API; prints a pairing link for that origin
-cd apps/web && bunx vp dev --host                                      # Vite on all interfaces
+cd apps/web && bunx vp build && bunx vp preview                        # the built UI on http://localhost:4173
+GITUI_ALLOW_ORIGIN=http://localhost:4173 bun run --cwd apps/cli dev   # API; prints a pairing link for that origin
 ```
 
-Then open the printed pairing link (`http://<lan-ip>:5173/#port=…&token=…`). Opening `http://localhost:5173` instead gives the local mode, through Vite's `/api` proxy.
+Then open the printed pairing link (`http://localhost:4173/#port=…&token=…`). Any static server for `apps/web/dist` works the same way, with its origin in `GITUI_ALLOW_ORIGIN`. Rebuild after changing the UI; the Vite dev server (`bun run dev`) is always the local mode.
 
 ## License
 

@@ -33,13 +33,14 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
 - `apps/web/` (`@gitui/web`): React app. `src/lib/` holds the API client, graph layout and
   prefs, `src/components/` the views, and `src/components/ui/` the shadcn components. Unit
   tests sit next to their module (`src/**/*.test.ts`, type-checked by `tsconfig.test.json`).
-  `@/` maps to `apps/web/src`. Served from a non-loopback host it is the hosted app:
-  `src/lib/connection.ts` holds the pairing with the CLI and where requests go (its store reads
-  `window` lazily; `initConnection` does the startup wiring), and `ConnectionGate` gates the app
-  until the CLI answers. `wrangler.jsonc` and `public/_headers` deploy `dist/` as Cloudflare
+  `@/` maps to `apps/web/src`. A page with the `LOCAL_UI_META` tag (served by the CLI, or by the
+  dev server, whose `vite.config.ts` plugin adds it) calls its own `/api`; without it, whatever
+  the host, it is the hosted app: `src/lib/connection.ts` decides this and holds the pairing with
+  the CLI and where requests go (its store reads `window` lazily; `initConnection` does the
+  startup wiring), and `ConnectionGate` gates the app until the CLI answers. `wrangler.jsonc` and `public/_headers` deploy `dist/` as Cloudflare
   Workers static assets on the custom domain `gitui.diffiii.dev` (`HOSTED_ORIGIN`).
 - `packages/shared/` (`@gitui/shared`): API types and the connection contract (default port,
-  client header, hosted origin, loopback hosts, pairing links) used by both sides, imported as
+  client header, local UI marker, hosted origin, loopback hosts, pairing links) used by both sides, imported as
   `@gitui/shared`.
 - Root: `scripts/dev.ts` (runs both apps), `scripts/smoke.sh` (runs the built bundle with node
   in both modes and checks what it serves; CI and release run it), `vite.config.ts` (workspace
