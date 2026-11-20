@@ -1,33 +1,13 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Hono } from "hono";
 import { type AccessOptions, apiAccess } from "./access.ts";
+import { pushRecent, readRecent } from "./config.ts";
 import * as g from "./git.ts";
 import { withRepoLock } from "./lock.ts";
 
 export interface AppOptions extends AccessOptions {
   initialRepo?: string;
-}
-
-export const CONFIG_DIR = path.join(
-  process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config"),
-  "gitui",
-);
-const RECENT_FILE = path.join(CONFIG_DIR, "recent.json");
-
-async function readRecent(): Promise<string[]> {
-  try {
-    return JSON.parse(await readFile(RECENT_FILE, "utf8"));
-  } catch {
-    return [];
-  }
-}
-
-export async function pushRecent(repo: string) {
-  const list = [repo, ...(await readRecent()).filter((r) => r !== repo)].slice(0, 20);
-  await mkdir(CONFIG_DIR, { recursive: true });
-  await writeFile(RECENT_FILE, JSON.stringify(list, null, 2));
 }
 
 /** Refuse anything git could parse as an option. */

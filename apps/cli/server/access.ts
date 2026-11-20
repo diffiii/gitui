@@ -14,6 +14,11 @@ export interface AccessOptions {
   token: string;
 }
 
+/** `value` if it is exactly an origin (scheme://host[:port]), else null. */
+export function parseOrigin(value: string | undefined): string | null {
+  return value && URL.parse(value)?.origin === value ? value : null;
+}
+
 const LOCAL_HOSTS = ["localhost", "127.0.0.1", "[::1]"];
 
 export function apiAccess({ allowedOrigins, token }: AccessOptions) {

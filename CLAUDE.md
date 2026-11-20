@@ -40,7 +40,7 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   `apps/cli/server/app.ts`, which rejects anything git could parse as an option.
 - `/api/*` access policy lives in `apps/cli/server/access.ts`: localhost `Host` and the
   `x-gitui` header always; cross-origin callers only from `allowedOrigins`, with CORS headers
-  and the pairing token (`server/token.ts`) as a bearer token. Don't add checks in routes.
+  and the pairing token (`loadToken` in `server/config.ts`) as a bearer token. Don't add checks in routes.
 - Frontend data goes through TanStack Query with keys that start with the repo:
   `[repo, "status"]`, `[repo, "log", ...]`. Repo mutations use `useGitMutation` from
   `apps/web/src/lib/repo.tsx`, which invalidates `[repo]` when it settles and toasts errors.

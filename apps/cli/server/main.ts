@@ -1,8 +1,9 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { DEFAULT_PORT, pairingUrl } from "@gitui/shared";
-import { type AppOptions, CONFIG_DIR, createApp } from "./app.ts";
-import { loadToken } from "./token.ts";
+import { parseOrigin } from "./access.ts";
+import { type AppOptions, createApp } from "./app.ts";
+import { loadToken } from "./config.ts";
 
 // The built @gitui/web app (a workspace dependency), served in production.
 const DIST = path.join(
@@ -10,15 +11,19 @@ const DIST = path.join(
   "dist",
 );
 
-export interface StartOptions extends AppOptions {
+export interface StartOptions extends Omit<AppOptions, "token"> {
   port: number;
   /** Serve the built frontend from apps/web/dist (production). In dev, Vite serves it. */
   serveStatic: boolean;
 }
 
-/** Serves on the first free port from `opts.port` and returns that port. */
-export function start(opts: StartOptions): number {
-  const app = createApp(opts);
+/**
+ * Serves on the first free port from `opts.port`, with the pairing token from the config dir.
+ * Returns the bound port and the token, which the pairing link needs.
+ */
+export async function start(opts: StartOptions): Promise<{ port: number; token: string }> {
+  const token = await loadToken();
+  const app = createApp({ ...opts, token });
 
   if (opts.serveStatic) {
     if (!existsSync(DIST)) {
@@ -38,7 +43,7 @@ export function start(opts: StartOptions): number {
   for (let port = opts.port; port < opts.port + 20; port++) {
     try {
       Bun.serve({ port, hostname: "127.0.0.1", fetch: app.fetch, idleTimeout: 120 });
-      return port;
+      return { port, token };
     } catch (e) {
       if ((e as { code?: string }).code !== "EADDRINUSE") throw e;
     }
@@ -49,14 +54,14 @@ export function start(opts: StartOptions): number {
 if (import.meta.main) {
   // Dev API server; Vite (vp dev) proxies /api here. GITUI_ALLOW_ORIGIN lets a web app served
   // elsewhere call it cross-origin, the way the hosted app calls the CLI.
-  const extraOrigin = process.env.GITUI_ALLOW_ORIGIN;
-  const token = await loadToken(CONFIG_DIR);
-  const port = start({
+  const raw = process.env.GITUI_ALLOW_ORIGIN;
+  const extraOrigin = parseOrigin(raw);
+  if (raw && !extraOrigin) throw new Error(`GITUI_ALLOW_ORIGIN is not an origin: ${raw}`);
+  const { port, token } = await start({
     port: Number(process.env.GITUI_PORT ?? DEFAULT_PORT),
     initialRepo: process.env.GITUI_REPO,
     serveStatic: false,
     allowedOrigins: extraOrigin ? [extraOrigin] : [],
-    token,
   });
   console.log(`gitui api on http://127.0.0.1:${port}`);
   if (extraOrigin) console.log(`pairing link: ${pairingUrl(extraOrigin, { port, token })}`);

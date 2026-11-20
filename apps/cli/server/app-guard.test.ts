@@ -120,14 +120,18 @@ test("error responses to an allowed origin carry CORS headers", async () => {
 });
 
 test("other origins are rejected without CORS headers", async () => {
-  for (const method of ["GET", "OPTIONS"]) {
-    const res = await req(
-      "/api/config",
-      { host: "127.0.0.1:4777", origin: "https://evil.example", "x-gitui": "1" },
-      { method },
-    );
-    expect(res.status).toBe(403);
-    expect(res.headers.get("access-control-allow-origin")).toBeNull();
+  // "null" comes from sandboxed frames and file:// pages; a loopback page on another port is
+  // a different origin too.
+  for (const origin of ["https://evil.example", "null", "http://127.0.0.1:5000"]) {
+    for (const method of ["GET", "OPTIONS"]) {
+      const res = await req(
+        "/api/config",
+        { host: "127.0.0.1:4777", origin, "x-gitui": "1", authorization: `Bearer ${TOKEN}` },
+        { method },
+      );
+      expect(res.status).toBe(403);
+      expect(res.headers.get("access-control-allow-origin")).toBeNull();
+    }
   }
 });
 

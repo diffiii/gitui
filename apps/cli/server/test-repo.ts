@@ -8,9 +8,13 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createApp } from "./app.ts";
 
 process.env.GIT_CONFIG_GLOBAL = os.devNull;
 process.env.GIT_CONFIG_NOSYSTEM = "1";
+
+/** The app as served locally, with no cross-origin callers. */
+export const testApp = () => createApp({ allowedOrigins: [], token: "unused" });
 
 const dirs: string[] = [];
 

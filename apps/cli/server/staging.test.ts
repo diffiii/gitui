@@ -1,8 +1,7 @@
 import { afterAll, expect, test } from "bun:test";
-import { createApp } from "./app.ts";
 import * as g from "./git.ts";
 import { withRepoLock } from "./lock.ts";
-import { commitFile, git, initRepo, removeTempDirs, write } from "./test-repo.ts";
+import { commitFile, git, initRepo, removeTempDirs, testApp, write } from "./test-repo.ts";
 
 afterAll(removeTempDirs);
 
@@ -25,14 +24,11 @@ const rejection = (p: Promise<unknown>) =>
   );
 
 async function post(dir: string, route: string, body: unknown) {
-  return await createApp({ allowedOrigins: [], token: "unused" }).request(
-    `/api/repo${route}?repo=${encodeURIComponent(dir)}`,
-    {
-      method: "POST",
-      headers: { host: "localhost", "x-gitui": "1", "content-type": "application/json" },
-      body: typeof body === "string" ? body : JSON.stringify(body),
-    },
-  );
+  return await testApp().request(`/api/repo${route}?repo=${encodeURIComponent(dir)}`, {
+    method: "POST",
+    headers: { host: "localhost", "x-gitui": "1", "content-type": "application/json" },
+    body: typeof body === "string" ? body : JSON.stringify(body),
+  });
 }
 
 test("stage([]) and unstage([]) throw instead of touching the whole tree", async () => {

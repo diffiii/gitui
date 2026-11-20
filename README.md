@@ -21,7 +21,7 @@ gitui ~/code/x -p 5000 --no-open
 gitui --hosted            # use the hosted app instead of the local build (no `vp build` needed)
 ```
 
-On start, gitui also prints a pairing link to the hosted app at https://gitui.diffiii.workers.dev. The link carries the port and a pairing token (kept in `~/.config/gitui/token`), so a browser stays paired across restarts. `--allow-origin <origin>` (repeatable) lets another web app origin pair too, e.g. a self-hosted copy or a local build.
+On start, gitui also prints a pairing link to the hosted app at https://gitui.diffiii.workers.dev. The link carries the port and a pairing token (kept in `~/.config/gitui/token`; delete it to rotate the token), so a browser stays paired across restarts. `--allow-origin <origin>` (repeatable) lets another web app origin pair too, e.g. a self-hosted copy or a local build.
 
 ## Development
 

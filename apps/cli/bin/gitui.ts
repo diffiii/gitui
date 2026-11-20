@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
 import { spawn } from "node:child_process";
 import { DEFAULT_PORT, HOSTED_ORIGIN, pairingUrl } from "@gitui/shared";
-import { CONFIG_DIR, pushRecent } from "../server/app.ts";
+import { parseOrigin } from "../server/access.ts";
+import { pushRecent } from "../server/config.ts";
 import { resolveRepo } from "../server/git.ts";
 import { start } from "../server/main.ts";
-import { loadToken } from "../server/token.ts";
 
 const HELP = `gitui — git in your browser
 
@@ -40,9 +40,8 @@ for (let i = 0; i < args.length; i++) {
   else if (a === "--no-open") open = false;
   else if (a === "--hosted") hosted = true;
   else if (a === "--allow-origin") {
-    const origin = args[++i];
-    if (URL.parse(origin)?.origin !== origin)
-      fail(`--allow-origin needs an origin, e.g. http://localhost:5173`);
+    const origin = parseOrigin(args[++i]);
+    if (!origin) fail(`--allow-origin needs an origin, e.g. http://localhost:5173`);
     allowedOrigins.push(origin);
   } else if (a.startsWith("-")) fail(`Unknown option ${a}\n\n${HELP}`);
   else target = a;
@@ -58,19 +57,19 @@ if (target) {
   }
 }
 
-const token = await loadToken(CONFIG_DIR);
-const bound = start({ port, initialRepo: repo, serveStatic: !hosted, allowedOrigins, token });
-const pairing = pairingUrl(HOSTED_ORIGIN, { port: bound, token });
-const local = `http://127.0.0.1:${bound}/${repo ? `?repo=${encodeURIComponent(repo)}` : ""}`;
+const bound = await start({ port, initialRepo: repo, serveStatic: !hosted, allowedOrigins });
+const pairing = pairingUrl(HOSTED_ORIGIN, bound);
+const local = `http://127.0.0.1:${bound.port}/${repo ? `?repo=${encodeURIComponent(repo)}` : ""}`;
 if (!hosted) console.log(`gitui running at ${local}`);
 console.log(`hosted app: ${pairing}`);
 const url = hosted ? pairing : local;
 if (open) {
-  const cmd =
-    process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open";
-  spawn(cmd, [url], {
-    stdio: "ignore",
-    detached: true,
-    shell: process.platform === "win32",
-  }).unref();
+  // No shell: the pairing link's `&` would split a cmd.exe command line.
+  const [cmd, ...cmdArgs] =
+    process.platform === "darwin"
+      ? ["open"]
+      : process.platform === "win32"
+        ? ["rundll32", "url.dll,FileProtocolHandler"]
+        : ["xdg-open"];
+  spawn(cmd, [...cmdArgs, url], { stdio: "ignore", detached: true }).unref();
 }
