@@ -111,14 +111,15 @@ switch (mode.kind) {
 /**
  * `text` as a QR code in half-block characters. uqr draws light modules with the glyphs and
  * leaves dark ones as background, which only reads right on a dark background, so a terminal
- * gets explicit colours: bright white glyphs on black.
+ * gets explicit colours: white glyphs on black, from the 256-colour palette, which themes leave
+ * alone (light themes often remap the 16 basic colours, white and black included).
  */
 function qrCode(text: string) {
   const qr = renderUnicodeCompact(text, { border: 2 });
   if (!process.stdout.isTTY) return qr;
   return qr
     .split("\n")
-    .map((line) => `\x1b[97;40m${line}\x1b[0m`)
+    .map((line) => `\x1b[38;5;231;48;5;16m${line}\x1b[0m`)
     .join("\n");
 }
 
