@@ -10,15 +10,20 @@ A lazygit-inspired git client that runs in your browser on localhost.
 
 ## Usage
 
-```sh
-bun install
-vp build                  # build the frontend into apps/web/dist/
-cd apps/cli && bun link   # puts `gitui` on your PATH
+Needs `git` and Node.js 22.1 or later (or Bun). Run it without installing:
 
+```sh
+npx @diffiii/gitui@latest       # Node
+bunx @diffiii/gitui@latest      # Bun
+```
+
+Or install it (`npm i -g @diffiii/gitui`) and run `gitui`. Arguments work the same either way:
+
+```sh
 gitui                     # open the repository picker
 gitui .                   # open the repository containing the current directory
 gitui ~/code/x -p 5000 --no-open
-gitui --hosted            # use the hosted app instead of the local build (no `vp build` needed)
+gitui --hosted            # use the hosted app instead of serving the bundled UI
 ```
 
 On start, gitui also prints a pairing link to the hosted app at https://gitui.diffiii.dev. The link carries the port and a pairing token (kept in `~/.config/gitui/token`; delete it to rotate the token), so a browser stays paired across restarts. `--allow-origin <origin>` (repeatable) lets another web app origin pair too, e.g. a self-hosted copy or a local build.
@@ -26,15 +31,24 @@ On start, gitui also prints a pairing link to the hosted app at https://gitui.di
 ## Development
 
 ```sh
+bun install
 bun run dev [repo-path]   # API on :4777 (bun --watch) + Vite+ dev server with /api proxy
 GITUI_ALLOW_ORIGIN=http://localhost:5173 bun run dev   # also accept that origin cross-origin
 vp check                  # format, lint, type check
 bun test                  # run the tests
+bun run build             # type check, build the UI and bundle the CLI into apps/cli/dist/
+bun apps/cli/bin/gitui.ts # run the CLI from source (serves the UI from apps/cli/dist/web)
 ```
+
+## Releasing
+
+`.github/workflows/release.yml` publishes `apps/cli` as `@diffiii/gitui` with npm trusted publishing (OIDC, no token), which also adds provenance. To release, bump `version` in `apps/cli/package.json`, commit, then push a matching tag: `git tag v0.1.0 && git push origin v0.1.0` (or run the workflow by hand).
+
+One-time setup on npmjs.com: package → Settings → Trusted publishing → GitHub Actions, with user `diffiii`, repository `gitui` and workflow `release.yml`. That page only exists once the package does, so the first version may have to be published by hand (`bun run build`, `cd apps/cli && bun pm pack`, then `npm publish <tarball>` from outside the repo, since npm refuses to run inside it because of the root `devEngines`).
 
 ## How it works
 
-- `apps/cli/`: the `gitui` CLI and a [Hono](https://hono.dev) API (`server/`) that shells out to the `git` CLI (`server/git.ts`). It listens on 127.0.0.1 only, rejects requests whose `Host` isn't localhost, and requires an `x-gitui` header on every API request. Cross-origin requests are refused unless they come from an allowed origin (the hosted app, plus any `--allow-origin`), and those must also send the pairing token as a bearer token, so other websites can't drive it.
+- `apps/cli/` (`@diffiii/gitui`): the `gitui` CLI and a [Hono](https://hono.dev) API (`server/`) that shells out to the `git` CLI (`server/git.ts`). It listens on 127.0.0.1 only, rejects requests whose `Host` isn't localhost, and requires an `x-gitui` header on every API request. Cross-origin requests are refused unless they come from an allowed origin (the hosted app, plus any `--allow-origin`), and those must also send the pairing token as a bearer token, so other websites can't drive it. `bun run build` bundles it into one Node-compatible file (`dist/gitui.js`) next to a copy of the built UI (`dist/web`), which is what the npm package ships.
 - `apps/web/`: React, Tailwind v4, shadcn/ui and TanStack Query. Status polls every 3s, and every mutation refreshes the repo's queries.
 - `packages/shared/` (`@gitui/shared`): API types and connection constants used by both sides.
 - Recent repositories are stored in `~/.config/gitui/recent.json`.

@@ -1,20 +1,34 @@
 {
-  "name": "@gitui/cli",
-  "version": "0.0.0",
-  "private": true,
+  "name": "@diffiii/gitui",
+  "version": "0.1.0",
+  "description": "A lazygit-inspired git client that runs in your browser on localhost",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/diffiii/gitui.git",
+    "directory": "apps/cli"
+  },
   "bin": {
-    "gitui": "./bin/gitui.ts"
+    "gitui": "./dist/gitui.js"
   },
+  "files": [
+    "dist"
+  ],
   "type": "module",
-  "scripts": {
-    "dev": "bun --watch server/main.ts"
+  "publishConfig": {
+    "access": "public"
   },
-  "dependencies": {
-    "@gitui/shared": "workspace:*",
-    "@gitui/web": "workspace:*",
-    "hono": "^4.13.19"
+  "scripts": {
+    "dev": "bun --watch server/dev.ts",
+    "build": "bun run --cwd ../web build && rm -rf dist && bun build bin/gitui.ts --target node --outfile dist/gitui.js && cp -R ../web/dist dist/web"
   },
   "devDependencies": {
-    "@pierre/diffs": "^1.6.4"
+    "@gitui/shared": "workspace:*",
+    "@gitui/web": "workspace:*",
+    "@hono/node-server": "^2.1.11",
+    "@pierre/diffs": "^1.6.4",
+    "hono": "^4.13.19"
+  },
+  "engines": {
+    "node": ">=22.1.0"
   }
 }
