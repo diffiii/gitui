@@ -7,18 +7,15 @@ import {
   DATA_CHANNEL_LABEL,
   type Fingerprints,
   type GuestMessage,
-  guestFinish,
-  guestStart,
   HOST_KEY,
   HOST_SECRET,
   hostKey,
   type HostMessage,
   MAX_LOCAL_CANDIDATES,
   parseChunk,
-  resumeStart,
-  resumeVerify,
   sdpFingerprint,
 } from "@gitui/shared";
+import { guestFinish, guestStart, resumeStart, resumeVerify } from "@gitui/shared/nearby-pake";
 import { RTCPeerConnection } from "werift";
 import {
   fingerprints,

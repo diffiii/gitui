@@ -19,8 +19,9 @@
 // offline. Resume proofs (below) are gitui's own too. nearby-pake.test.ts pins every value
 // these derive with known answers, so a port can't drift while both sides still agree.
 //
-// The package exports only what callers need (index.ts): the functions that draw their own
-// scalars and nonces. The `…With` variants, which take them, are for this package's tests.
+// The package exports only what callers need, from its `./nearby-pake` entry (pake.ts): the
+// functions that draw their own scalars and nonces. The `…With` variants, which take them,
+// channelId and PAKE_LABEL are for this package's tests; neither entry exports them.
 import { hmac } from "@noble/hashes/hmac.js";
 import { sha256, sha512 } from "@noble/hashes/sha2.js";
 import { equalBytes, fromBase64Url, randomId, toBase64Url, utf8 } from "./bytes.ts";

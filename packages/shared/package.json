@@ -6,7 +6,7 @@
   "sideEffects": false,
   "exports": {
     ".": "./src/index.ts",
-    "./nearby-pake": "./src/nearby-pake.ts"
+    "./nearby-pake": "./src/pake.ts"
   },
   "dependencies": {
     "@noble/curves": "2.4.0",

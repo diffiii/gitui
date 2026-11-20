@@ -70,7 +70,9 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   crosses its wires, used by the Worker, the CLI and the web app alike: messages are rebuilt
   with only the contract's fields, so a new field goes there) and `nearby-pake.ts` (CPace on
   ristretto255 for the code and HMAC proofs both ways for resume tokens, pure and synchronous,
-  with `@noble/curves` and `@noble/hashes`, which the CLI bundles).
+  with `@noble/curves` and `@noble/hashes`, which the CLI bundles). Its public functions are
+  only in the `@gitui/shared/nearby-pake` entry (`pake.ts`), not in `@gitui/shared`, so the
+  Worker and the web app's main chunk carry no curve code.
 - Root: `scripts/dev.ts` (runs both apps), `scripts/smoke.sh` (runs the built bundle with node
   in both modes and checks what it serves; CI and release run it), `vite.config.ts` (workspace
   fmt/lint/type check config, `defaultPackage` points `vp dev`/`vp build` at `apps/web`),

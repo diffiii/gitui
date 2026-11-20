@@ -4,8 +4,6 @@ import {
   type ClientMessage,
   type ChannelMessage,
   DATA_CHANNEL_LABEL,
-  guestFinish,
-  guestStart,
   HOST_KEY,
   hostKey,
   type HostMessage,
@@ -13,10 +11,10 @@ import {
   MAX_PENDING,
   MAX_REFUSALS_PER_WINDOW,
   newOfferId,
-  resumeStart,
   sdpFingerprint,
   type SignalData,
 } from "@gitui/shared";
+import { guestFinish, guestStart, resumeStart } from "@gitui/shared/nearby-pake";
 import { RTCPeerConnection } from "werift";
 import { type FakeSocket, fakeSockets } from "./fake-socket.ts";
 import { lockoutLine, PAIRING_WINDOW } from "./auth.ts";

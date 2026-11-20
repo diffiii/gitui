@@ -8,14 +8,12 @@ import {
   decodeChannelMessage,
   DATA_CHANNEL_LABEL,
   type Fingerprints,
-  hostFinish,
   type HostMessage,
-  hostRespond,
   type IceCandidate,
   MAX_LOCAL_CANDIDATES,
-  resumeAnswer,
   type SentSignal,
 } from "@gitui/shared";
+import { hostFinish, hostRespond, resumeAnswer } from "@gitui/shared/nearby-pake";
 import {
   fingerprints,
   Gatekeeper,

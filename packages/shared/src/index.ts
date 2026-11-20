@@ -3,15 +3,5 @@ export * from "./types.ts";
 export * from "./headers.ts";
 export * from "./nearby.ts";
 export * from "./nearby-codec.ts";
-// Only what callers need; nearby-pake.ts's other exports, cpace.ts and bytes.ts stay inside.
-export {
-  guestFinish,
-  guestStart,
-  type GuestPake,
-  hostFinish,
-  type HostPake,
-  hostRespond,
-  resumeAnswer,
-  resumeStart,
-  resumeVerify,
-} from "./nearby-pake.ts";
+// The nearby authentication functions are in their own entry, `@gitui/shared/nearby-pake`
+// (pake.ts), so that importing this one never pulls in the curve code.

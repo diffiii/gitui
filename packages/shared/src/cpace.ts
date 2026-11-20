@@ -1,6 +1,6 @@
 // The primitives of CPace (draft-irtf-cfrg-cpace-21) on ristretto255 with SHA-512, as the draft
 // defines them and tested against its vectors (cpace.test.ts). Internal to @gitui/shared:
-// nearby-pake.ts builds gitui's protocol on them, and index.ts doesn't export them.
+// nearby-pake.ts builds gitui's protocol on them, and neither entry exports them.
 import { ristretto255, ristretto255_hasher } from "@noble/curves/ed25519.js";
 import { sha512 } from "@noble/hashes/sha2.js";
 import { concat, utf8 } from "./bytes.ts";

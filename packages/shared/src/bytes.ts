@@ -1,4 +1,4 @@
-// Byte-string helpers for the nearby modules. Internal to @gitui/shared: index.ts doesn't export
+// Byte-string helpers for the nearby modules. Internal to @gitui/shared: neither entry exports
 // them.
 
 /** Base64url without padding. */
