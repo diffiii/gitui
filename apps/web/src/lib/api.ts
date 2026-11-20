@@ -1,5 +1,5 @@
 import type { Branch, Commit, CommitDetail, FileStatus, Status } from "@gitui/shared";
-import { ApiError, apiTarget, getConnection, rejectPairing } from "./connection.ts";
+import { ApiError, apiTarget, getConnection, rejectConnection } from "./connection.ts";
 
 export type { Branch, Commit, CommitDetail, FileStatus, Status };
 
@@ -18,7 +18,7 @@ async function request<T>(method: "GET" | "POST", path: string, body?: unknown):
   });
   const data = await res.json().catch(() => ({ error: res.statusText }));
   if (res.status === 401) {
-    rejectPairing(connection);
+    rejectConnection(connection);
     throw new ApiError(data.error ?? res.statusText, "unauthorized");
   }
   if (!res.ok) throw new ApiError(data.error ?? res.statusText, "http");

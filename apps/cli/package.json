@@ -1,6 +1,6 @@
 {
   "name": "@diffiii/gitui",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A lazygit-inspired git client that runs in your browser on localhost",
   "license": "MIT",
   "repository": {
@@ -27,7 +27,8 @@
     "@gitui/web": "workspace:*",
     "@hono/node-server": "^2.1.11",
     "@pierre/diffs": "^1.6.4",
-    "hono": "^4.13.19"
+    "hono": "^4.13.19",
+    "uqr": "0.1.3"
   },
   "engines": {
     "node": ">=22.1.0"

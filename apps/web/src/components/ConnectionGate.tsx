@@ -1,6 +1,6 @@
 import { parsePairing } from "@gitui/shared";
 import { useQuery } from "@tanstack/react-query";
-import { Link2, LoaderCircle, Terminal, Unplug } from "lucide-react";
+import { Link2, LoaderCircle, QrCode, RotateCw, Terminal, Unplug } from "lucide-react";
 import { useState } from "react";
 import { CenteredScreen } from "@/components/CenteredScreen";
 import { Button } from "@/components/ui/button";
@@ -9,13 +9,17 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { getConfig } from "@/lib/api";
 import {
   connectionStatus,
+  retrySession,
   retryWhileUnreachable,
   setPairing,
   useConnection,
   type ConnectionStatus,
 } from "@/lib/connection";
 
-/** Renders the app once gitui answers; until then, in the hosted app, how to connect to it. */
+/**
+ * Renders the app once gitui answers; until then, in the hosted app, how to connect to it. A page
+ * `gitui --lan` serves shows how to pair instead once gitui turns it away.
+ */
 export function ConnectionGate({ children }: { children: React.ReactNode }) {
   const connection = useConnection();
   const config = useQuery({
@@ -29,6 +33,8 @@ export function ConnectionGate({ children }: { children: React.ReactNode }) {
   switch (status.kind) {
     case "connected":
       return children;
+    case "noSession":
+      return <NoSessionScreen />;
     case "unpaired":
     case "rejected":
       return <PairScreen rejected={status.kind === "rejected"} />;
@@ -86,6 +92,28 @@ function PairScreen({ rejected }: { rejected: boolean }) {
           That isn't a gitui link. Copy the whole link, including the part after #.
         </p>
       )}
+    </CenteredScreen>
+  );
+}
+
+/** A page `gitui --lan` serves, opened without its pairing link or from before gitui restarted. */
+function NoSessionScreen() {
+  return (
+    <CenteredScreen
+      icon={QrCode}
+      title="Pair this device with gitui"
+      description="Scan the QR code or open the link gitui printed in your terminal."
+    >
+      <div className="flex flex-col items-center gap-4">
+        <Button variant="outline" onClick={retrySession}>
+          <RotateCw />
+          Try again
+        </Button>
+        <p className="px-1 text-center text-xs text-muted-foreground">
+          Opened the link in another tab? Come back here and this page picks it up. gitui prints a
+          new link each time it starts, so links and bookmarks from an earlier run stop working.
+        </p>
+      </div>
     </CenteredScreen>
   );
 }
