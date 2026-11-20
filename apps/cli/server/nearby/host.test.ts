@@ -373,38 +373,62 @@ test("the werift guard is on while nearby runs", async () => {
   expect(process.listenerCount("unhandledRejection")).toBe(before);
 });
 
-test("an error about one guest closes only its session", async () => {
+/** Offers from `from` on `socket`, with an SDP the fake peers can use. */
+const offerOn = (socket: FakeSocket, from: string) =>
+  socket.receive({
+    type: "signal",
+    from,
+    data: { kind: "offer", offerId: newOfferId(), sdp: sdpWithPrint("cd") },
+  });
+
+const TEARDOWN_LINE = "Nearby: closed a connection after an error: Error: teardown failed";
+
+test("a teardown that throws is logged, ends only its session, and drops no offer", async () => {
   // The connections of the first two offers throw when they are torn down.
   let n = 0;
   const fake = fakePeers({ closeThrows: () => n++ < 2 });
   const { log, last } = host({ peer: fake.peer });
   const v4 = last(4)!;
   welcome(v4, "h4");
-  const offer = (from: string) =>
-    v4.receive({
-      type: "signal",
-      from,
-      data: { kind: "offer", offerId: newOfferId(), sdp: sdpWithPrint("cd") },
-    });
-  offer("a");
-  offer("c");
-  offer("b");
+  offerOn(v4, "a");
+  offerOn(v4, "c");
+  offerOn(v4, "b");
   await until(() => signals(v4, "b").length > 0);
   const [a, c, b] = fake.peers;
-  const line = "Nearby: closed a connection after an error: Error: teardown failed";
 
-  // In an offer: replacing a's session throws; it ends, and nothing else does.
-  offer("a");
-  expect(log.at(-1)).toBe(line);
+  // In an offer: replacing a's session throws; it ends, and the new offer is answered.
+  offerOn(v4, "a");
+  expect(log.at(-1)).toBe(TEARDOWN_LINE);
+  expect(fake.peers).toHaveLength(4);
+  await until(
+    () =>
+      signals(v4, "a").filter((m) => m.type === "signal" && m.data.kind === "answer").length === 2,
+  );
   // In `gone`: likewise for c's.
   v4.receive({ type: "gone", id: "c" });
-  expect(log.filter((l) => l === line)).toHaveLength(2);
+  expect(log.filter((l) => l === TEARDOWN_LINE)).toHaveLength(2);
   expect([a!.closed, c!.closed, b!.closed]).toEqual([true, true, false]);
-  // Neither counts as pending any more: MAX_PENDING - 1 more guests get in besides "b".
-  for (let i = 1; i < MAX_PENDING; i++) offer(`g${i}`);
+  // Neither counts as pending any more: MAX_PENDING - 2 more guests get in besides a and b.
+  for (let i = 2; i < MAX_PENDING; i++) offerOn(v4, `g${i}`);
   expect(fake.peers).toHaveLength(MAX_PENDING + 2);
-  offer("busy");
+  offerOn(v4, "busy");
   expect(signals(v4, "busy")).toMatchObject([{ data: { kind: "refused", reason: "busy" } }]);
+});
+
+test("stop closes every session and the guard, even if a teardown throws", async () => {
+  const before = process.listenerCount("unhandledRejection");
+  let n = 0;
+  const fake = fakePeers({ closeThrows: () => n++ === 0 });
+  const { nearby, log, last } = host({ peer: fake.peer });
+  const v4 = last(4)!;
+  welcome(v4, "h4");
+  offerOn(v4, "a");
+  offerOn(v4, "b");
+  await until(() => signals(v4, "b").length > 0);
+  nearby.stop();
+  expect(fake.peers.map((peer) => peer.closed)).toEqual([true, true]);
+  expect(log).toContain(TEARDOWN_LINE);
+  expect(process.listenerCount("unhandledRejection")).toBe(before);
 });
 
 /** A werift guest that offers through `socket` as peer `from`, and trickles both ways. */

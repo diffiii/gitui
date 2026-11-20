@@ -1,6 +1,6 @@
 // A real werift guest on loopback against a GuestSession: offer, answer, trickle, CPace or
 // resume, a request.
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import {
   AUTH_ATTEMPTS,
   type ChannelMessage,
@@ -29,6 +29,7 @@ import {
   PairingBudget,
   Tokens,
 } from "./auth.ts";
+import { Bridge } from "./bridge.ts";
 import { fakePeers, sdpWithPrint } from "./fake-peer.ts";
 import { GuestSession, type GuestOptions, MAX_REMOTE_CANDIDATES } from "./peer.ts";
 
@@ -428,15 +429,51 @@ test("candidates are capped each way, and a guest's for another offer are droppe
   expect(peer!.added).toEqual([...Array(MAX_REMOTE_CANDIDATES).keys()].map(candidate));
 });
 
-test("a session whose teardown throws still ends, and says why", async () => {
+test("a session whose teardown throws still ends, says why, and doesn't throw", async () => {
   const fake = fakePeers({ closeThrows: () => true });
   const guest = await fakeSession({ peer: fake.peer });
   // As werift reports an error in one of the session's callbacks (webrtc.ts).
-  expect(() => fake.peers[0]!.events.error(new Error("boom"))).toThrow("teardown failed");
+  fake.peers[0]!.events.error(new Error("boom"));
   expect(guest.ended).toBe(1);
-  expect(guest.log).toEqual(["Nearby: closed a connection after an error: Error: boom"]);
+  expect(guest.log).toEqual([
+    "Nearby: closed a connection after an error: Error: teardown failed",
+    "Nearby: closed a connection after an error: Error: boom",
+  ]);
   guest.session.close();
   expect(guest.ended).toBe(1);
+});
+
+test("a bridge whose close throws still lets the channel and the peer close", async () => {
+  const fake = fakePeers();
+  const tokens = new Tokens();
+  const token = tokens.issue();
+  const guest = await fakeSession({ peer: fake.peer, tokens });
+  let closed = false;
+  let receive: (data: string) => void = () => {};
+  fake.peers[0]!.events.channel({
+    label: DATA_CHANNEL_LABEL,
+    bufferedAmount: 0,
+    send() {},
+    drain: async () => {},
+    listen: ({ message }) => (receive = message),
+    close: () => (closed = true),
+  });
+  const prints = fingerprints(sdpWithPrint("cd"), sdpWithPrint("ab"))!;
+  receive(JSON.stringify(resumeStart(token, prints)));
+  expect(guest.session.authenticated).toBe(true);
+  const bridgeClose = spyOn(Bridge.prototype, "close").mockImplementation(() => {
+    throw new Error("bridge failed");
+  });
+  try {
+    guest.session.close();
+  } finally {
+    bridgeClose.mockRestore();
+  }
+  expect([closed, fake.peers[0]!.closed, guest.ended]).toEqual([true, true, 1]);
+  expect(guest.log.slice(-2)).toEqual([
+    "Nearby: closed a connection after an error: Error: bridge failed",
+    "Nearby: device disconnected",
+  ]);
 });
 
 test("an error in a callback werift calls closes the session, through PeerEvents.error", async () => {

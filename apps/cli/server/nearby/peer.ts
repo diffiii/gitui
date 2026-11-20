@@ -69,7 +69,7 @@ export interface GuestOptions {
   budget: PairingBudget;
   /** Prints a line for the person at this machine. */
   log: (line: string) => void;
-  /** Called once, when the session ends for any reason, even if ending it throws. */
+  /** Called once, when the session ends for any reason. */
   onEnd: () => void;
   authTimeout?: number;
   /** For tests: the peer connection, a werift one (createAnsweringPeer) by default. */
@@ -140,23 +140,32 @@ export class GuestSession {
   }
 
   /**
-   * Ends the session, printing `line` if given. Safe to call more than once. If tearing it down
-   * throws, the session still ends (`onEnd`) and prints its line, and the error goes to the
-   * caller.
+   * Ends the session, printing `line` if given. Safe to call more than once, and never throws:
+   * each teardown step that throws is logged, and the others still run.
    */
   close(line?: string) {
     if (this.#state === "closed") return;
     const wasOpen = this.#state === "open";
     this.#state = "closed";
+    clearTimeout(this.#timer);
+    const { log, onEnd } = this.#options;
     try {
-      this.#bridge?.close();
-      this.#channel?.close();
-      this.#peer.close();
+      const steps = [
+        () => this.#bridge?.close(),
+        () => this.#channel?.close(),
+        () => this.#peer.close(),
+      ];
+      for (const step of steps) {
+        try {
+          step();
+        } catch (e) {
+          log(errorLine(e));
+        }
+      }
+      if (line) log(line);
+      else if (wasOpen) log("Nearby: device disconnected");
     } finally {
-      clearTimeout(this.#timer);
-      this.#options.onEnd();
-      if (line) this.#options.log(line);
-      else if (wasOpen) this.#options.log("Nearby: device disconnected");
+      onEnd();
     }
   }
 

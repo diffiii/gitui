@@ -105,13 +105,8 @@ export function startNearby(options: NearbyOptions) {
     } catch (e) {
       const line = errorLine(e);
       const session = sessions.get(sessionKey(family, id));
-      try {
-        if (session) session.close(line);
-        else log(line);
-      } catch (again) {
-        // Ending the session threw, but it still ended (GuestSession.close).
-        log(errorLine(again));
-      }
+      if (session) session.close(line);
+      else log(line);
     }
   };
 
