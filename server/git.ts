@@ -190,14 +190,31 @@ export async function fileDiff(
 // ---------------------------------------------------------------- staging & commit
 
 export async function stage(repo: string, paths?: string[]) {
+  // `git add -A --` with no pathspec stages the whole tree, so an empty list must not reach git.
+  if (paths?.length === 0) throw new GitError("No paths to stage", null, "");
   if (!paths) await git(repo, ["add", "-A"]);
   else await git(repo, ["add", "-A", "--", ...paths]);
 }
 
 export async function unstage(repo: string, paths?: string[]) {
+  if (paths?.length === 0) throw new GitError("No paths to unstage", null, "");
   if (await hasHead(repo)) {
     if (!paths) await git(repo, ["reset", "-q"]);
-    else await git(repo, ["restore", "--staged", "--", ...paths]);
+    else {
+      // Restoring only the new side of a staged rename would leave the deletion of the old path
+      // staged, so restore both sides together.
+      const renamedFrom = new Map(
+        (await status(repo)).files
+          .filter((f) => f.x === "R" && f.origPath)
+          .map((f) => [f.path, f.origPath!]),
+      );
+      const all = new Set(paths);
+      for (const p of paths) {
+        const orig = renamedFrom.get(p);
+        if (orig) all.add(orig);
+      }
+      await git(repo, ["restore", "--staged", "--", ...all]);
+    }
   } else {
     await git(repo, ["rm", "--cached", "-r", "-q", "--", ...(paths ?? ["."])]);
   }
