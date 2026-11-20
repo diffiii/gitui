@@ -11,7 +11,7 @@ import {
   PanelRightOpen,
 } from "lucide-react";
 import { usePanelRef } from "react-resizable-panels";
-import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -23,7 +23,7 @@ import { layoutGraph } from "@/lib/graph";
 import { useHistoryDetails } from "@/lib/prefs";
 import { useGitMutation, useRepo } from "@/lib/repo";
 import { cn } from "@/lib/utils";
-import { visibleRange } from "@/lib/windowing";
+import { useWindowedRows } from "@/lib/windowing";
 import { GraphCell, ROW_H } from "./CommitGraph";
 import { CommitTitle } from "./CommitTitle";
 import { DiffFiles, fileKey, useParsedPatch } from "./DiffView";
@@ -166,35 +166,11 @@ function CommitList({
     "Switched branch",
   );
   // Only the rows in (or near) the viewport are mounted; spacers keep the scroll height.
-  const [viewport, setViewport] = useState<HTMLDivElement | null>(null);
-  const [view, setView] = useState({ row: 0, height: 0 });
-  useLayoutEffect(() => {
-    if (!viewport) return;
-    const update = () => {
-      const row = Math.floor(viewport.scrollTop / ROW_H);
-      const height = viewport.clientHeight;
-      setView((v) => (v.row === row && v.height === height ? v : { row, height }));
-    };
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(viewport);
-    viewport.addEventListener("scroll", update, { passive: true });
-    return () => {
-      observer.disconnect();
-      viewport.removeEventListener("scroll", update);
-    };
-  }, [viewport]);
-  const { start, end } = visibleRange(
-    view.row * ROW_H,
-    view.height + ROW_H,
-    ROW_H,
-    commits.length,
-    OVERSCAN,
-  );
+  const { viewportRef, start, end, before, after } = useWindowedRows(commits.length, ROW_H);
   return (
-    <ScrollArea className="@container min-h-0 flex-1" viewportRef={setViewport}>
+    <ScrollArea className="@container min-h-0 flex-1" viewportRef={viewportRef}>
       <ul className="py-1">
-        {start > 0 && <li aria-hidden style={{ height: start * ROW_H }} />}
+        {before > 0 && <li aria-hidden style={{ height: before }} />}
         {commits.slice(start, end).map((c, k) => (
           <li
             key={c.hash}
@@ -228,16 +204,12 @@ function CommitList({
             </span>
           </li>
         ))}
-        {end < commits.length && (
-          <li aria-hidden style={{ height: (commits.length - end) * ROW_H }} />
-        )}
+        {after > 0 && <li aria-hidden style={{ height: after }} />}
       </ul>
       {footer}
     </ScrollArea>
   );
 }
-
-const OVERSCAN = 10;
 
 const CHANGE_STATUS: Record<FileDiffMetadata["type"], GitStatusEntry["status"]> = {
   change: "modified",
