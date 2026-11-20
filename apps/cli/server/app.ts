@@ -1,11 +1,13 @@
 import os from "node:os";
 import path from "node:path";
 import { Hono } from "hono";
-import { type AccessOptions, installAccess, RepoNotOpenedError, repoGate } from "./access.ts";
-import { CONFIG_DIR, pushRecent, readRecent } from "./config.ts";
+import { REPO_NOT_OPENED } from "@gitui/shared";
+import { type AccessOptions, installAccess } from "./access.ts";
+import { CONFIG_DIR, readRecent } from "./config.ts";
 import { untrackedDiff, workingFile, workingFiles } from "./files.ts";
 import * as g from "./git.ts";
 import { withRepoLock } from "./lock.ts";
+import { RepoGate, RepoNotOpenedError } from "./repo-scope.ts";
 
 export interface AppOptions extends AccessOptions {
   initialRepo?: string;
@@ -93,13 +95,13 @@ export function createApp(opts: AppOptions) {
 
   const { repoScope } = installAccess(app, opts);
   const configDir = opts.configDir ?? CONFIG_DIR;
-  const repos = repoGate(repoScope, {
-    initialRepo: opts.initialRepo,
-    recent: () => readRecent(configDir),
-  });
+  const repos = RepoGate.for(repoScope, { initialRepo: opts.initialRepo, configDir });
 
   app.onError((err, c) => {
-    if (err instanceof RepoNotOpenedError) return c.json(err.body(), 403);
+    // REPO_NOT_OPENED lets the UI tell this case apart.
+    if (err instanceof RepoNotOpenedError) {
+      return c.json({ error: err.message, code: REPO_NOT_OPENED }, 403);
+    }
     const message = err instanceof g.GitError ? err.message : String(err);
     return c.json({ error: message }, err instanceof g.GitError ? 400 : 500);
   });
@@ -113,13 +115,11 @@ export function createApp(opts: AppOptions) {
   );
 
   api.post("/open", async (c) => {
-    const p = str((await jsonBody(c.req)).path, "path");
-    const root = await repos.resolve(p);
-    if (repos.recordsOpened) await pushRecent(root, configDir);
+    const root = await repos.open(str((await jsonBody(c.req)).path, "path"));
     return c.json({ root, name: path.basename(root) });
   });
 
-  // Everything below operates on ?repo=<absolute path>
+  // Everything below operates on ?repo=<absolute path>, through the gate.
   const repo = new Hono<Env>();
   repo.use("*", async (c, next) => {
     const r = c.req.query("repo");

@@ -1,4 +1,4 @@
-// Which repositories each listener's clients may use (access.ts, repoGate), through the app.
+// Which repositories each listener's clients may use (repo-scope.ts), through the app.
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
@@ -9,6 +9,25 @@ import { pushRecent, readRecent } from "./config.ts";
 import { commitFile, initRepo, removeTempDirs, tmpDir, write } from "./test-repo.ts";
 
 afterAll(removeTempDirs);
+
+/**
+ * Routes outside /api/repo, which take no `?repo=`: /open goes through the gate on its own, and
+ * /pair is the LAN listener's pairing link.
+ */
+const UNGATED = ["GET /api/config", "POST /api/open", "GET /pair"];
+
+/** Values for route parameters, so each route's path matches it. */
+const PARAMS: Record<string, string> = { hash: "HEAD", action: "fetch" };
+
+/** Every API endpoint the app has, from its router: "METHOD /path" (middleware left out). */
+const endpoints = (app: ReturnType<typeof createApp>) =>
+  app.routes
+    .filter((r) => r.method !== "ALL")
+    .map((r) => ({
+      name: `${r.method} ${r.path}`,
+      method: r.method,
+      path: r.path.replace(/:(\w+)/g, (_, name: string) => PARAMS[name] ?? "x"),
+    }));
 
 const LAN = {
   kind: "lan",
@@ -86,6 +105,28 @@ for (const { listener, host, headers } of clients) {
     });
 
     if (scoped) {
+      test("every route that takes a repository goes through the gate", async () => {
+        const all = endpoints(app());
+        expect(all.length).toBeGreaterThan(UNGATED.length);
+        for (const { name, method, path: route } of all) {
+          if (!route.startsWith("/api/repo/")) {
+            // A new route outside /api/repo must be gated, or listed here with the reason.
+            expect(UNGATED).toContain(name);
+            continue;
+          }
+          const at = (repo: string) =>
+            send(`${route}?repo=${encodeURIComponent(repo)}`, {
+              method,
+              body: method === "GET" ? undefined : {},
+            });
+          await refused(await at(other));
+          // The path is the route's own: an opened repository gets past the gate to it.
+          const res = await at(initial);
+          expect([name, res.status]).not.toEqual([name, 404]);
+          expect([name, res.status]).not.toEqual([name, 403]);
+        }
+      });
+
       test("another repository is refused, for reads and writes", async () => {
         await refused(await status(other));
         write(other, "b.txt", "b\n");

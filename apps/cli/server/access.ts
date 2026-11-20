@@ -19,18 +19,15 @@
 //   request the Host NEARBY_HOST, so this app refuses anything that reaches it any other way, and
 //   it has no cross-origin callers.
 //
-// Repositories: clients on this computer (loopback) may open any repository. Clients on other
-// devices (lan, nearby) may only use the repositories opened on this computer: the one gitui was
-// started with and the recent list. They can pick from that list, but they can't name another
-// path, and opening one doesn't change the list (repoGate).
+// Repositories: each listener has a RepoScope, which repo-scope.ts enforces. Clients on this
+// computer (loopback) may open any repository; clients on other devices (lan, nearby) only those
+// opened on this computer.
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { realpath } from "node:fs/promises";
-import path from "node:path";
-import { CLIENT_HEADER, isLoopbackHost, REPO_NOT_OPENED } from "@gitui/shared";
+import { CLIENT_HEADER, isLoopbackHost } from "@gitui/shared";
 import type { Context, Env, Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
-import { loadToken, readRecent } from "./config.ts";
-import { expandHome, resolveRepo } from "./git.ts";
+import { loadToken } from "./config.ts";
+import type { RepoScope } from "./repo-scope.ts";
 
 /** Listens on 127.0.0.1; serves same-origin pages and the allowed cross-origin ones. */
 export interface LoopbackListener {
@@ -114,12 +111,6 @@ export function safeEqual(actual: string, expected: string) {
   const b = Buffer.from(expected);
   return a.length === b.length && timingSafeEqual(a, b);
 }
-
-/**
- * Which repositories a listener's clients may use: `any` path they name, or only those `opened`
- * on this computer (the repository gitui was started with and the recent list).
- */
-export type RepoScope = "any" | "opened";
 
 /**
  * What a listener lets through; `authError` is why a request may not proceed, if it may not.
@@ -206,7 +197,7 @@ function rules(listener: Listener): Rules {
 
 /**
  * Adds the access checks to `/api/*`, and the listener's own routes. Returns the listener's
- * repository scope, for repoGate.
+ * repository scope, for its RepoGate (repo-scope.ts).
  */
 export function installAccess<E extends Env>(
   app: Hono<E>,
@@ -243,61 +234,4 @@ export function installAccess<E extends Env>(
     await next();
   });
   return { repoScope };
-}
-
-/** A client asked for a repository outside its listener's scope. */
-export class RepoNotOpenedError extends Error {
-  constructor() {
-    super("This repository wasn't opened on the computer running gitui");
-  }
-  /** The response body: the message, and REPO_NOT_OPENED for the UI to tell this case apart. */
-  body() {
-    return { error: this.message, code: REPO_NOT_OPENED };
-  }
-}
-
-/** How requests' repository paths become repository roots, within a scope. */
-export interface RepoGate {
-  /** The root of the repository at `input` (it or any folder in it); throws RepoNotOpenedError. */
-  resolve(input: string): Promise<string>;
-  /** Whether opening a repository adds it to the recent list. */
-  recordsOpened: boolean;
-}
-
-export interface RepoGateOptions {
-  /** The repository gitui was started with (`gitui <path>`). */
-  initialRepo?: string;
-  /** The recent list; read on every request, since opening a repository here changes it. */
-  recent?: () => Promise<string[]>;
-}
-
-/** `p` with symlinks resolved, or null if it doesn't exist. */
-const real = (p: string) => realpath(p).catch(() => null);
-
-/**
- * The gate for `scope`. With `opened`, a path must lie in an opened repository before git runs
- * in it (so a client learns nothing about other folders), and its root must be an opened one
- * itself (not a nested repository). Paths compare with symlinks resolved.
- */
-export function repoGate(
-  scope: RepoScope,
-  { initialRepo, recent = readRecent }: RepoGateOptions = {},
-): RepoGate {
-  if (scope === "any") return { resolve: resolveRepo, recordsOpened: true };
-  const opened = async () => {
-    const roots = [...(initialRepo ? [initialRepo] : []), ...(await recent())];
-    const resolved = await Promise.all(roots.map(real));
-    return new Set(resolved.filter((r) => r !== null));
-  };
-  return {
-    recordsOpened: false,
-    async resolve(input) {
-      const [roots, target] = await Promise.all([opened(), real(path.resolve(expandHome(input)))]);
-      const inside = (root: string) => target === root || target?.startsWith(root + path.sep);
-      if (!target || ![...roots].some(inside)) throw new RepoNotOpenedError();
-      const root = await resolveRepo(target);
-      if (!roots.has((await real(root)) ?? "")) throw new RepoNotOpenedError();
-      return root;
-    },
-  };
 }
