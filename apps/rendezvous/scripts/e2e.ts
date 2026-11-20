@@ -4,7 +4,7 @@
 // stops its own servers on free ports between 5100 and 5199.
 //
 //   bun scripts/e2e.ts
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -43,24 +43,34 @@ async function freePort(): Promise<number> {
   throw new Error("no free port between 5100 and 5199");
 }
 
-/** Starts `wrangler dev` with its own state directory, retrying on other ports if it fails. */
+/**
+ * Starts `wrangler dev` with its own state directory, retrying on other ports if it fails. Its
+ * vars are only what's passed here: an empty --env-file stops wrangler from loading .dev.vars.
+ */
 async function startServer(secret: string | null): Promise<Server> {
   let output = "";
   for (let attempt = 0; attempt < 3; attempt++) {
     const port = await freePort();
     const state = mkdtempSync(join(tmpdir(), "rendezvous-e2e-"));
     const vars = [`ALLOWED_ORIGINS:${ORIGIN}`, ...(secret ? [`NETWORK_KEY_SECRET:${secret}`] : [])];
+    const envFile = join(state, "empty.env");
+    writeFileSync(envFile, "");
     const proc = Bun.spawn(
       [
         `${import.meta.dir}/../node_modules/.bin/wrangler`,
         "dev",
         ...["--port", String(port), "--ip", "127.0.0.1"],
         ...["--inspector-port", String(await freePort()), "--inspector-ip", "127.0.0.1"],
-        ...["--persist-to", state, "--show-interactive-dev-session=false"],
+        ...["--persist-to", state, "--env-file", envFile, "--show-interactive-dev-session=false"],
       ].concat(vars.flatMap((v) => ["--var", v])),
       {
         cwd: `${import.meta.dir}/..`,
-        env: { ...process.env, WRANGLER_SEND_METRICS: "false" },
+        env: {
+          ...process.env,
+          WRANGLER_SEND_METRICS: "false",
+          // Don't let the shell's environment in as secrets either.
+          CLOUDFLARE_INCLUDE_PROCESS_ENV: "false",
+        },
         stdout: "pipe",
         stderr: "pipe",
       },
@@ -376,7 +386,7 @@ try {
   await server.stop();
 }
 
-// Started with no secret (and no .dev.vars), it must refuse every connection.
+// Started with no secret (.dev.vars isn't loaded), it must refuse every connection.
 const misconfigured = await startServer(null);
 try {
   await step("no NETWORK_KEY_SECRET: 500", async () => {
