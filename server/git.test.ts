@@ -1,64 +1,22 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import * as g from "./git.ts";
+import {
+  clone,
+  commitFile,
+  git,
+  initRepo,
+  removeTempDirs,
+  repoWithOrigin,
+  revParse,
+  tmpDir,
+  write,
+} from "./test-repo.ts";
 
-// Keep the user's global and system git config (signing, hooks, aliases) out of the tests.
-// `git()` in git.ts spawns with process.env, so this applies to it too.
-process.env.GIT_CONFIG_GLOBAL = os.devNull;
-process.env.GIT_CONFIG_NOSYSTEM = "1";
+afterAll(removeTempDirs);
 
-const dirs: string[] = [];
-afterAll(() => {
-  for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
-});
-
-function tmpDir() {
-  // realpath: on macOS os.tmpdir() is behind a symlink, and git reports resolved paths.
-  const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "gitui-")));
-  dirs.push(d);
-  return d;
-}
-
-function run(cwd: string, ...args: string[]) {
-  return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-}
-
-function initRepo(dir = tmpDir()) {
-  run(dir, "init", "-q", "-b", "main");
-  run(dir, "config", "user.name", "Test User");
-  run(dir, "config", "user.email", "test@example.com");
-  return dir;
-}
-
-function bareRepo() {
-  const dir = tmpDir();
-  run(dir, "init", "-q", "--bare", "-b", "main");
-  return dir;
-}
-
-function clone(origin: string) {
-  const dir = tmpDir();
-  run(dir, "clone", "-q", origin, ".");
-  run(dir, "config", "user.name", "Test User");
-  run(dir, "config", "user.email", "test@example.com");
-  return dir;
-}
-
-function write(repo: string, file: string, content: string) {
-  const p = path.join(repo, file);
-  fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, content);
-}
-
-function commitFile(repo: string, file: string, content: string, message = `update ${file}`) {
-  write(repo, file, content);
-  run(repo, "add", "--", file);
-  run(repo, "commit", "-q", "-m", message);
-  return head(repo);
-}
+const byPath = (st: g.Status, p: string) => st.files.find((f) => f.path === p);
 
 /** Resolves to the rejection reason, failing if the promise resolves. */
 async function rejection(p: Promise<unknown>): Promise<Error> {
@@ -70,19 +28,6 @@ async function rejection(p: Promise<unknown>): Promise<Error> {
   );
 }
 
-const head = (repo: string, rev = "HEAD") => run(repo, "rev-parse", rev).trim();
-const byPath = (st: g.Status, p: string) => st.files.find((f) => f.path === p);
-
-/** A repo with `main` pushed to a bare `origin` and tracking it. */
-function repoWithOrigin() {
-  const origin = bareRepo();
-  const repo = initRepo();
-  commitFile(repo, "a.txt", "a\n", "initial");
-  run(repo, "remote", "add", "origin", origin);
-  run(repo, "push", "-q", "-u", "origin", "main");
-  return { repo, origin };
-}
-
 describe("status", () => {
   test("modified unstaged and staged files", async () => {
     const repo = initRepo();
@@ -90,12 +35,12 @@ describe("status", () => {
     commitFile(repo, "b.txt", "b\n");
     write(repo, "a.txt", "a2\n");
     write(repo, "b.txt", "b2\n");
-    run(repo, "add", "b.txt");
+    git(repo, "add", "b.txt");
 
     const st = await g.status(repo);
     expect(st.operation).toBeNull();
     expect(st.head.branch).toBe("main");
-    expect(st.head.oid).toBe(head(repo));
+    expect(st.head.oid).toBe(revParse(repo));
     expect(st.head.upstream).toBeNull();
     expect(byPath(st, "a.txt")).toEqual({ x: ".", y: "M", path: "a.txt" });
     expect(byPath(st, "b.txt")).toEqual({ x: "M", y: ".", path: "b.txt" });
@@ -120,7 +65,7 @@ describe("status", () => {
   test("staged rename has origPath", async () => {
     const repo = initRepo();
     commitFile(repo, "old name.txt", "content that is long enough to be detected\n");
-    run(repo, "mv", "old name.txt", "new name.txt");
+    git(repo, "mv", "old name.txt", "new name.txt");
 
     const st = await g.status(repo);
     expect(st.files).toEqual([{ x: "R", y: ".", path: "new name.txt", origPath: "old name.txt" }]);
@@ -151,11 +96,11 @@ describe("status", () => {
   test("merge conflict", async () => {
     const repo = initRepo();
     commitFile(repo, "f.txt", "base\n");
-    run(repo, "switch", "-q", "-c", "other");
+    git(repo, "switch", "-q", "-c", "other");
     commitFile(repo, "f.txt", "theirs\n");
-    run(repo, "switch", "-q", "main");
+    git(repo, "switch", "-q", "main");
     commitFile(repo, "f.txt", "ours\n");
-    expect(() => run(repo, "merge", "-q", "other")).toThrow();
+    expect(() => git(repo, "merge", "-q", "other")).toThrow();
 
     const st = await g.status(repo);
     expect(st.operation).toBe("merge");
@@ -166,7 +111,7 @@ describe("status", () => {
     const repo = initRepo();
     const first = commitFile(repo, "a.txt", "1\n");
     commitFile(repo, "a.txt", "2\n");
-    run(repo, "switch", "-q", "--detach", first);
+    git(repo, "switch", "-q", "--detach", first);
 
     const st = await g.status(repo);
     expect(st.head.branch).toBeNull();
@@ -187,10 +132,10 @@ describe("status", () => {
     const { repo, origin } = repoWithOrigin();
     const other = clone(origin);
     commitFile(other, "b.txt", "b\n");
-    run(other, "push", "-q");
+    git(other, "push", "-q");
     commitFile(repo, "c.txt", "c\n");
     commitFile(repo, "d.txt", "d\n");
-    run(repo, "fetch", "-q");
+    git(repo, "fetch", "-q");
 
     const st = await g.status(repo);
     expect(st.head.upstream).toBe("origin/main");
@@ -218,11 +163,11 @@ describe("log", () => {
   test("merge commits have two parents", async () => {
     const repo = initRepo();
     commitFile(repo, "a.txt", "a\n");
-    run(repo, "switch", "-q", "-c", "feature");
+    git(repo, "switch", "-q", "-c", "feature");
     const feature = commitFile(repo, "f.txt", "f\n");
-    run(repo, "switch", "-q", "main");
+    git(repo, "switch", "-q", "main");
     const main = commitFile(repo, "m.txt", "m\n");
-    run(repo, "merge", "-q", "--no-ff", "-m", "merge feature", "feature");
+    git(repo, "merge", "-q", "--no-ff", "-m", "merge feature", "feature");
 
     const [merge] = await g.log(repo, { limit: 10, all: false });
     expect(merge.subject).toBe("merge feature");
@@ -231,8 +176,8 @@ describe("log", () => {
 
   test("refs from %D", async () => {
     const { repo } = repoWithOrigin();
-    run(repo, "tag", "v1");
-    run(repo, "branch", "other");
+    git(repo, "tag", "v1");
+    git(repo, "branch", "other");
 
     const [c] = await g.log(repo, { limit: 1, all: false });
     expect(c.refs).toContain("HEAD -> refs/heads/main");
@@ -254,9 +199,9 @@ describe("log", () => {
   test("all includes other branches", async () => {
     const repo = initRepo();
     commitFile(repo, "a.txt", "a\n");
-    run(repo, "switch", "-q", "-c", "feature");
+    git(repo, "switch", "-q", "-c", "feature");
     const feature = commitFile(repo, "f.txt", "f\n");
-    run(repo, "switch", "-q", "main");
+    git(repo, "switch", "-q", "main");
 
     const current = await g.log(repo, { limit: 10, all: false });
     expect(current.map((c) => c.hash)).not.toContain(feature);
@@ -268,9 +213,9 @@ describe("log", () => {
   test("ref limits the log to that branch", async () => {
     const repo = initRepo();
     commitFile(repo, "a.txt", "a\n");
-    run(repo, "switch", "-q", "-c", "feature");
+    git(repo, "switch", "-q", "-c", "feature");
     const feature = commitFile(repo, "f.txt", "f\n");
-    run(repo, "switch", "-q", "main");
+    git(repo, "switch", "-q", "main");
 
     const commits = await g.log(repo, { limit: 10, all: false, ref: "feature" });
     expect(commits[0].hash).toBe(feature);
@@ -294,17 +239,17 @@ describe("branches", () => {
   test("current, upstream, ahead/behind, gone, remote", async () => {
     const { repo, origin } = repoWithOrigin();
     // origin/HEAD exists in clones; make it exist here so we can check it is filtered out.
-    run(repo, "remote", "set-head", "origin", "main");
-    run(repo, "branch", "local-only");
-    run(repo, "switch", "-q", "-c", "doomed");
-    run(repo, "push", "-q", "-u", "origin", "doomed");
-    run(repo, "switch", "-q", "main");
+    git(repo, "remote", "set-head", "origin", "main");
+    git(repo, "branch", "local-only");
+    git(repo, "switch", "-q", "-c", "doomed");
+    git(repo, "push", "-q", "-u", "origin", "doomed");
+    git(repo, "switch", "-q", "main");
     commitFile(repo, "b.txt", "b\n", "local work");
 
     // Someone else deletes `doomed` on the remote; fetching with --prune makes it gone.
     const other = clone(origin);
-    run(other, "push", "-q", "origin", "--delete", "doomed");
-    run(repo, "fetch", "-q", "--prune");
+    git(other, "push", "-q", "origin", "--delete", "doomed");
+    git(repo, "fetch", "-q", "--prune");
 
     const list = await g.branches(repo);
     const get = (name: string) => list.find((b) => b.name === name);
@@ -322,7 +267,7 @@ describe("branches", () => {
       current: true,
       subject: "local work",
     });
-    expect(head(repo)).toStartWith(get("main")!.hash);
+    expect(revParse(repo)).toStartWith(get("main")!.hash);
 
     expect(get("local-only")).toMatchObject({ upstream: null, ahead: 0, behind: 0, gone: false });
     expect(get("doomed")).toMatchObject({ upstream: "origin/doomed", gone: true });
@@ -340,8 +285,8 @@ describe("branches", () => {
     const other = clone(origin);
     commitFile(other, "b.txt", "b\n");
     commitFile(other, "c.txt", "c\n");
-    run(other, "push", "-q");
-    run(repo, "fetch", "-q");
+    git(other, "push", "-q");
+    git(repo, "fetch", "-q");
 
     const main = (await g.branches(repo)).find((b) => b.name === "main");
     expect(main).toMatchObject({ ahead: 0, behind: 2 });
@@ -352,7 +297,7 @@ describe("checkout", () => {
   test("local branch", async () => {
     const repo = initRepo();
     commitFile(repo, "a.txt", "a\n");
-    run(repo, "branch", "feature");
+    git(repo, "branch", "feature");
 
     await g.checkout(repo, "feature", false);
     expect((await g.status(repo)).head.branch).toBe("feature");
@@ -361,10 +306,10 @@ describe("checkout", () => {
   test("remote branch creates a tracking branch, then switches to it", async () => {
     const { repo, origin } = repoWithOrigin();
     const other = clone(origin);
-    run(other, "switch", "-q", "-c", "feat/x");
+    git(other, "switch", "-q", "-c", "feat/x");
     const tip = commitFile(other, "x.txt", "x\n");
-    run(other, "push", "-q", "-u", "origin", "feat/x");
-    run(repo, "fetch", "-q");
+    git(other, "push", "-q", "-u", "origin", "feat/x");
+    git(repo, "fetch", "-q");
 
     await g.checkout(repo, "origin/feat/x", true);
     let st = await g.status(repo);
@@ -373,11 +318,8 @@ describe("checkout", () => {
     expect(st.head.oid).toBe(tip);
 
     // A second checkout reuses the existing local branch instead of failing.
-    run(repo, "switch", "-q", "main");
-    commitFile(repo, "local.txt", "l\n");
-    run(repo, "switch", "-q", "feat/x");
     const localTip = commitFile(repo, "y.txt", "y\n");
-    run(repo, "switch", "-q", "main");
+    git(repo, "switch", "-q", "main");
 
     await g.checkout(repo, "origin/feat/x", true);
     st = await g.status(repo);
@@ -403,15 +345,15 @@ describe("createBranch / deleteBranch", () => {
 
     await g.createBranch(repo, "old", first, false);
     expect((await g.status(repo)).head.branch).toBe("main");
-    expect(head(repo, "old")).toBe(first);
+    expect(revParse(repo, "old")).toBe(first);
   });
 
   test("delete an unmerged branch needs force", async () => {
     const repo = initRepo();
     commitFile(repo, "a.txt", "a\n");
-    run(repo, "switch", "-q", "-c", "unmerged");
+    git(repo, "switch", "-q", "-c", "unmerged");
     commitFile(repo, "u.txt", "u\n");
-    run(repo, "switch", "-q", "main");
+    git(repo, "switch", "-q", "main");
 
     expect(await rejection(g.deleteBranch(repo, "unmerged", false))).toBeInstanceOf(g.GitError);
     expect((await g.branches(repo)).map((b) => b.name)).toContain("unmerged");
@@ -423,7 +365,7 @@ describe("createBranch / deleteBranch", () => {
   test("delete a merged branch without force", async () => {
     const repo = initRepo();
     commitFile(repo, "a.txt", "a\n");
-    run(repo, "branch", "merged");
+    git(repo, "branch", "merged");
 
     await g.deleteBranch(repo, "merged", false);
     expect((await g.branches(repo)).map((b) => b.name)).toEqual(["main"]);
@@ -434,7 +376,7 @@ describe("commit", () => {
   test("normal commit with a multi-line message", async () => {
     const repo = initRepo();
     write(repo, "a.txt", "a\n");
-    run(repo, "add", "a.txt");
+    git(repo, "add", "a.txt");
 
     await g.commit(repo, "subject line\n\nbody line", false);
     expect((await g.lastCommitMessage(repo)).trimEnd()).toBe("subject line\n\nbody line");
@@ -444,7 +386,7 @@ describe("commit", () => {
   test("an empty message is rejected", async () => {
     const repo = initRepo();
     write(repo, "a.txt", "a\n");
-    run(repo, "add", "a.txt");
+    git(repo, "add", "a.txt");
 
     expect(await rejection(g.commit(repo, "", false))).toBeInstanceOf(g.GitError);
   });
@@ -454,13 +396,13 @@ describe("commit", () => {
     const parent = commitFile(repo, "a.txt", "a\n", "first");
     commitFile(repo, "b.txt", "b\n", "old message");
     write(repo, "c.txt", "c\n");
-    run(repo, "add", "c.txt");
+    git(repo, "add", "c.txt");
 
     await g.commit(repo, "new message", true);
     const commits = await g.log(repo, { limit: 10, all: false });
     expect(commits.map((c) => c.subject)).toEqual(["new message", "first"]);
     expect(commits[0].parents).toEqual([parent]);
-    expect(run(repo, "show", "--name-only", "--format=", "HEAD").trim().split("\n")).toEqual([
+    expect(git(repo, "show", "--name-only", "--format=", "HEAD").trim().split("\n")).toEqual([
       "b.txt",
       "c.txt",
     ]);
@@ -469,12 +411,12 @@ describe("commit", () => {
   test("amend with an empty message keeps the old one", async () => {
     const repo = initRepo();
     commitFile(repo, "a.txt", "a\n", "keep me\n\nwith body");
-    const before = head(repo);
+    const before = revParse(repo);
     write(repo, "b.txt", "b\n");
-    run(repo, "add", "b.txt");
+    git(repo, "add", "b.txt");
 
     await g.commit(repo, "  \n", true);
-    expect(head(repo)).not.toBe(before);
+    expect(revParse(repo)).not.toBe(before);
     expect((await g.lastCommitMessage(repo)).trimEnd()).toBe("keep me\n\nwith body");
     expect(await g.log(repo, { limit: 10, all: false })).toHaveLength(1);
   });
@@ -501,7 +443,7 @@ describe("resolveRepo", () => {
     expect(await g.resolveRepo(repo)).toBe(repo);
   });
 
-  test("a file is not a directory", async () => {
+  test("a file or a missing path is not a directory", async () => {
     const repo = initRepo();
     write(repo, "file.txt", "x\n");
     expect((await rejection(g.resolveRepo(path.join(repo, "file.txt")))).message).toMatch(
@@ -513,7 +455,6 @@ describe("resolveRepo", () => {
   });
 
   test("a directory outside any repo is rejected", async () => {
-    const dir = tmpDir();
-    expect((await rejection(g.resolveRepo(dir))).message).toMatch(/Not a git repository/);
+    expect((await rejection(g.resolveRepo(tmpDir()))).message).toMatch(/Not a git repository/);
   });
 });
