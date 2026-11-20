@@ -1,0 +1,104 @@
+/* Color themes (src/lib/themes.ts). "neutral" is the base palette in index.css and sets no
+   data-palette. Each theme sets its base colors for light and dark; the rest derive from them. */
+:root[data-palette] {
+  --card-foreground: var(--foreground);
+  --popover: var(--card);
+  --popover-foreground: var(--foreground);
+  --secondary: var(--muted);
+  --secondary-foreground: var(--foreground);
+  --accent-foreground: var(--foreground);
+  --input: var(--border);
+  --ring: var(--primary);
+}
+
+:root[data-palette="github"] {
+  --background: #ffffff;
+  --foreground: #1f2328;
+  --card: #ffffff;
+  --muted: #f6f8fa;
+  --muted-foreground: #59636e;
+  --accent: #eff2f5;
+  --border: #d1d9e0;
+  --primary: #0969da;
+  --primary-foreground: #ffffff;
+}
+:root.dark[data-palette="github"] {
+  --background: #0d1117;
+  --foreground: #f0f6fc;
+  --card: #151b23;
+  --muted: #151b23;
+  --muted-foreground: #9198a1;
+  --accent: #212830;
+  --border: #3d444d;
+  --primary: #4493f8;
+  --primary-foreground: #0d1117;
+}
+
+:root[data-palette="catppuccin"] {
+  --background: #eff1f5;
+  --foreground: #4c4f69;
+  --card: #e6e9ef;
+  --muted: #e6e9ef;
+  --muted-foreground: #6c6f85;
+  --accent: #dce0e8;
+  --border: #ccd0da;
+  --primary: #8839ef;
+  --primary-foreground: #eff1f5;
+}
+:root.dark[data-palette="catppuccin"] {
+  --background: #1e1e2e;
+  --foreground: #cdd6f4;
+  --card: #181825;
+  --muted: #313244;
+  --muted-foreground: #a6adc8;
+  --accent: #313244;
+  --border: #45475a;
+  --primary: #cba6f7;
+  --primary-foreground: #1e1e2e;
+}
+
+:root[data-palette="rose-pine"] {
+  --background: #faf4ed;
+  --foreground: #575279;
+  --card: #fffaf3;
+  --muted: #f2e9e1;
+  --muted-foreground: #797593;
+  --accent: #f4ede8;
+  --border: #dfdad9;
+  --primary: #907aa9;
+  --primary-foreground: #faf4ed;
+}
+:root.dark[data-palette="rose-pine"] {
+  --background: #191724;
+  --foreground: #e0def4;
+  --card: #1f1d2e;
+  --muted: #26233a;
+  --muted-foreground: #908caa;
+  --accent: #26233a;
+  --border: #403d52;
+  --primary: #c4a7e7;
+  --primary-foreground: #191724;
+}
+
+:root[data-palette="gruvbox"] {
+  --background: #fbf1c7;
+  --foreground: #3c3836;
+  --card: #f9f5d7;
+  --muted: #ebdbb2;
+  --muted-foreground: #7c6f64;
+  --accent: #ebdbb2;
+  --border: #d5c4a1;
+  --primary: #af3a03;
+  --primary-foreground: #fbf1c7;
+}
+:root.dark[data-palette="gruvbox"] {
+  --background: #282828;
+  --foreground: #ebdbb2;
+  --card: #32302f;
+  --muted: #3c3836;
+  --muted-foreground: #a89984;
+  --accent: #3c3836;
+  --border: #504945;
+  --primary: #fe8019;
+  --primary-foreground: #282828;
+}
