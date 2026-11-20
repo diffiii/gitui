@@ -1,0 +1,17 @@
+// A copy of the hosted web app for trying nearby on a real phone before gitui.diffiii.dev gets
+// it: `bun run deploy:nearby-test` (apps/rendezvous/README.md, "First test on a phone"). That
+// script builds first, with the production rendezvous, so it never ships whatever dist/ holds.
+// The rendezvous must allow its origin (ALLOWED_ORIGINS). It can't pair with a CLI over
+// 127.0.0.1 unless that CLI runs with `--allow-origin https://gitui-test.diffiii.dev`.
+// To remove it: `bunx wrangler delete -c wrangler.nearby-test.jsonc`, then delete this file.
+{
+  "name": "gitui-nearby-test",
+  "compatibility_date": "2026-11-01",
+  "routes": [{ "pattern": "gitui-test.diffiii.dev", "custom_domain": true }],
+  "workers_dev": false,
+  "preview_urls": false,
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application",
+  },
+}
