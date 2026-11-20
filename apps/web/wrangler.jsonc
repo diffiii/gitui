@@ -2,6 +2,8 @@
 {
   "name": "gitui",
   "compatibility_date": "2026-11-01",
+  // The CLI only accepts HOSTED_ORIGIN, so preview deployments on other origins couldn't pair.
+  "preview_urls": false,
   "assets": {
     "directory": "./dist",
     "not_found_handling": "single-page-application",
