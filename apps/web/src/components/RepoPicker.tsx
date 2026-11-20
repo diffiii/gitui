@@ -104,9 +104,13 @@ export function RepoSwitcher({ repo, onOpen }: { repo: string; onOpen: (root: st
   return (
     <Popover open={openState} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <Button variant="ghost" size="sm" className="gap-2 px-2 font-semibold">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="touch-target gap-2 px-2 font-semibold max-md:min-w-0 max-md:shrink"
+        >
           <FolderGit2 className="text-muted-foreground" />
-          {basename(repo)}
+          <span className="truncate">{basename(repo)}</span>
           <ChevronsUpDown className="text-muted-foreground" />
         </Button>
       </PopoverTrigger>

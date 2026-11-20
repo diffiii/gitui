@@ -4,7 +4,8 @@ import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { getConfig } from "@/lib/api";
 import { RepoProvider } from "@/lib/repo";
-import { AppHeader, type View } from "./components/AppHeader";
+import { cn } from "@/lib/utils";
+import { AppHeader, type View, ViewTabBar } from "./components/AppHeader";
 import { BranchesView } from "./components/BranchesView";
 import { ChangesView } from "./components/ChangesView";
 import { HistoryPane } from "./components/HistoryView";
@@ -56,19 +57,25 @@ export default function App() {
       <title>{repo ? `${repo.split("/").pop()} · gitui` : "gitui"}</title>
       {repo ? (
         <RepoProvider key={repo} repo={repo}>
-          <div className="flex h-svh flex-col bg-background">
+          {/* viewport-fit=cover (index.html) lays the page under iOS's notch and home indicator. */}
+          <div className="flex h-svh flex-col bg-background pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)] md:pb-[env(safe-area-inset-bottom)]">
             <AppHeader view={view} onView={setView} onOpenRepo={openRepo} />
             <main className="min-h-0 flex-1">
               {view === "changes" && <ChangesView />}
               {view === "history" && <HistoryView />}
               {view === "branches" && <BranchesView />}
             </main>
+            <ViewTabBar view={view} onView={setView} />
           </div>
         </RepoProvider>
       ) : isLoading ? null : (
         <RepoWelcome onOpen={openRepo} />
       )}
-      <Toaster position="bottom-right" />
+      <Toaster
+        position="bottom-right"
+        offset={{ bottom: "var(--toaster-bottom)" }}
+        mobileOffset={{ bottom: "var(--toaster-mobile-bottom)" }}
+      />
     </TooltipProvider>
   );
 }
@@ -89,7 +96,10 @@ function HistoryView() {
               key={o.label}
               size="xs"
               variant={all === o.v ? "secondary" : "ghost"}
-              className={all === o.v ? "bg-background shadow-sm" : "text-muted-foreground"}
+              className={cn(
+                "touch-target",
+                all === o.v ? "bg-background shadow-sm" : "text-muted-foreground",
+              )}
               onClick={() => setAll(o.v)}
             >
               {o.label}

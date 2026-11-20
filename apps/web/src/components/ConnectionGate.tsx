@@ -4,6 +4,7 @@ import { Link2, LoaderCircle, QrCode, RotateCw, Terminal, Unplug } from "lucide-
 import { useState } from "react";
 import { CenteredScreen } from "@/components/CenteredScreen";
 import { Button } from "@/components/ui/button";
+import { DropdownMenuItem, DropdownMenuSeparator } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { getConfig } from "@/lib/api";
@@ -170,11 +171,32 @@ export function DisconnectButton() {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Button variant="ghost" size="icon-sm" onClick={() => setPairing(null)}>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Disconnect"
+          className="touch-target"
+          onClick={() => setPairing(null)}
+        >
           <Unplug />
         </Button>
       </TooltipTrigger>
       <TooltipContent>Disconnect from gitui on port {connection.pairing.port}</TooltipContent>
     </Tooltip>
+  );
+}
+
+/** DisconnectButton as a menu item, after a separator. */
+export function DisconnectMenuItem() {
+  const connection = useConnection();
+  if (connection.kind !== "paired") return null;
+  return (
+    <>
+      <DropdownMenuSeparator />
+      <DropdownMenuItem onSelect={() => setPairing(null)}>
+        <Unplug />
+        Disconnect from port {connection.pairing.port}
+      </DropdownMenuItem>
+    </>
   );
 }
