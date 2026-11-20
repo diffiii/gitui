@@ -34,24 +34,37 @@ interface RunOptions {
 
 const MAX_OUTPUT = 8 * 1024 * 1024;
 
-export interface CappedOutput {
-  stdout: string;
-  /** stdout exceeded `maxBytes`; the child was killed and only the first part was kept. */
-  truncated: boolean;
+/** Run git; stdout past `maxBytes` (default 8 MB) is silently dropped. */
+export async function git(cwd: string, args: string[], opts: RunOptions = {}): Promise<string> {
+  return (await run(cwd, args, opts)).stdout;
 }
 
-export function git(cwd: string, args: string[], opts: RunOptions = {}): Promise<string> {
-  return gitCapped(cwd, args, opts).then((r) => r.stdout);
-}
-
-/** Like `git()`, but reports whether stdout was cut off at `maxBytes` (default 8 MB). */
-export function gitCapped(
+/**
+ * Run a git command that prints a patch. If the patch exceeds `maxBytes`, it is cut back so it
+ * still parses: to the last complete file if more than one survived, else to the last complete
+ * line (the diff parser accepts the shortened final hunk). Content lines start with ' ', '+', '-'
+ * or '\\', so "\ndiff --git " only matches real file headers.
+ */
+async function gitPatch(
   cwd: string,
   args: string[],
   opts: RunOptions = {},
-): Promise<CappedOutput> {
-  const okCodes = opts.okCodes ?? [0];
-  const maxBytes = opts.maxBytes ?? MAX_OUTPUT;
+): Promise<{ patch: string; truncated: boolean }> {
+  const { stdout, truncated } = await run(cwd, args, opts);
+  if (!truncated) return { patch: stdout, truncated };
+  const fileCut = stdout.lastIndexOf("\ndiff --git ");
+  return {
+    patch: stdout.slice(0, (fileCut >= 0 ? fileCut : stdout.lastIndexOf("\n")) + 1),
+    truncated,
+  };
+}
+
+function run(
+  cwd: string,
+  args: string[],
+  opts: RunOptions,
+): Promise<{ stdout: string; truncated: boolean }> {
+  const { okCodes = [0], maxBytes = MAX_OUTPUT, timeoutMs } = opts;
   return new Promise((resolve, reject) => {
     const child = spawn(
       "git",
@@ -60,25 +73,16 @@ export function gitCapped(
         cwd,
         env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C" },
         stdio: ["pipe", "pipe", "pipe"],
+        // On abort the child gets SIGTERM, which git passes on to the children it marks
+        // clean-on-exit (ssh, remote helpers, aliases), and "error" fires at once, so a straggler
+        // holding the pipe can't delay the rejection.
+        signal: timeoutMs === undefined ? undefined : AbortSignal.timeout(timeoutMs),
       },
     );
     const out: Buffer[] = [];
     const err: Buffer[] = [];
     let size = 0;
     let truncated = false;
-    let timedOut = false;
-    // On SIGTERM git also signals the children it marks clean-on-exit (ssh, remote helpers,
-    // aliases). We reject right away rather than on "close", which a straggler holding the pipe
-    // could delay.
-    const timer =
-      opts.timeoutMs === undefined
-        ? undefined
-        : setTimeout(() => {
-            timedOut = true;
-            child.kill();
-            const secs = Math.round(opts.timeoutMs! / 100) / 10;
-            reject(new GitError(`git ${args[0]} timed out after ${secs} s`, null, ""));
-          }, opts.timeoutMs);
     child.stdout.on("data", (chunk: Buffer) => {
       if (truncated) return;
       size += chunk.length;
@@ -92,12 +96,10 @@ export function gitCapped(
     });
     child.stderr.on("data", (chunk: Buffer) => err.push(chunk));
     child.on("error", (e) => {
-      clearTimeout(timer);
-      reject(e);
+      if (e.name !== "AbortError" || timeoutMs === undefined) return reject(e);
+      reject(new GitError(`git ${args[0]} timed out after ${timeoutMs / 1000} s`, null, ""));
     });
     child.on("close", (code) => {
-      clearTimeout(timer);
-      if (timedOut) return;
       const stdout = Buffer.concat(out).toString("utf8");
       if (truncated) return resolve({ stdout, truncated });
       const stderr = Buffer.concat(err).toString("utf8").trim();
@@ -107,42 +109,6 @@ export function gitCapped(
     if (opts.input !== undefined) child.stdin.end(opts.input);
     else child.stdin.end();
   });
-}
-
-/**
- * Make a patch that was cut off at an arbitrary byte parseable again:
- * - If it contains more than one file, drop the trailing partial file (cut at the last
- *   `diff --git` header).
- * - Otherwise (always the case for a single-file diff) keep the first file up to its last complete
- *   line, and rewrite the line counts of its last hunk header to match what was kept, so the
- *   parser sees a valid (shorter) hunk instead of a broken one.
- * Content lines start with ' ', '+', '-' or '\\', so these markers only match real headers.
- */
-function trimPatch(patch: string): string {
-  const fileCut = patch.lastIndexOf("\ndiff --git ");
-  if (fileCut >= 0) return patch.slice(0, fileCut + 1);
-  const hunkAt = patch.lastIndexOf("\n@@ ") + 1;
-  if (hunkAt === 0) return "";
-  const lines = patch
-    .slice(hunkAt, patch.lastIndexOf("\n") + 1)
-    .split("\n")
-    .slice(0, -1);
-  const m = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@(.*)$/.exec(lines[0] ?? "");
-  if (!m) return patch.slice(0, hunkAt);
-  let oldN = 0;
-  let newN = 0;
-  for (const l of lines.slice(1)) {
-    if (l[0] === " " || l[0] === "-") oldN++;
-    if (l[0] === " " || l[0] === "+") newN++;
-  }
-  // Nothing of this hunk survived: keep only what came before it.
-  if (oldN + newN === 0) return patch.slice(0, hunkAt);
-  const header = `@@ -${m[1]},${oldN} +${m[2]},${newN} @@${m[3]}`;
-  return patch.slice(0, hunkAt) + [header, ...lines.slice(1)].join("\n") + "\n";
-}
-
-function cappedPatch({ stdout, truncated }: CappedOutput) {
-  return { patch: truncated ? trimPatch(stdout) : stdout, truncated };
 }
 
 export function expandHome(p: string) {
@@ -254,23 +220,25 @@ export async function fileDiff(
     maxBytes?: number;
   },
 ): Promise<{ diff: string; truncated: boolean }> {
-  let out: CappedOutput;
-  if (opts.untracked) {
-    out = await gitCapped(
-      repo,
-      ["diff", "--no-index", "--no-color", "--", "/dev/null", opts.path],
-      {
+  const { maxBytes } = opts;
+  const { patch, truncated } = opts.untracked
+    ? await gitPatch(repo, ["diff", "--no-index", "--no-color", "--", "/dev/null", opts.path], {
         okCodes: [0, 1],
-        maxBytes: opts.maxBytes,
-      },
-    );
-  } else {
-    const paths = opts.origPath ? [opts.origPath, opts.path] : [opts.path];
-    const args = ["diff", "--no-color", "-M", "--no-ext-diff"];
-    if (opts.staged) args.push("--cached");
-    out = await gitCapped(repo, [...args, "--", ...paths], { maxBytes: opts.maxBytes });
-  }
-  const { patch, truncated } = cappedPatch(out);
+        maxBytes,
+      })
+    : await gitPatch(
+        repo,
+        [
+          "diff",
+          "--no-color",
+          "-M",
+          "--no-ext-diff",
+          ...(opts.staged ? ["--cached"] : []),
+          "--",
+          ...(opts.origPath ? [opts.origPath, opts.path] : [opts.path]),
+        ],
+        { maxBytes },
+      );
   return { diff: patch, truncated };
 }
 
@@ -366,21 +334,19 @@ export async function showCommit(
   ]);
   const [h, parents, author, email, date, refs, subject, committer, cdate, body] =
     metaRaw.split("\x1f");
-  const { patch, truncated } = cappedPatch(
-    await gitCapped(
-      repo,
-      [
-        "show",
-        "--format=",
-        "--no-color",
-        "-M",
-        "--diff-merges=first-parent",
-        "--no-ext-diff",
-        hash,
-        "--",
-      ],
-      { maxBytes: opts.maxBytes },
-    ),
+  const { patch, truncated } = await gitPatch(
+    repo,
+    [
+      "show",
+      "--format=",
+      "--no-color",
+      "-M",
+      "--diff-merges=first-parent",
+      "--no-ext-diff",
+      hash,
+      "--",
+    ],
+    opts,
   );
   return {
     hash: h,
