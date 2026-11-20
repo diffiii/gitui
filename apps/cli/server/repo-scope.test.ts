@@ -10,11 +10,8 @@ import { commitFile, initRepo, removeTempDirs, tmpDir, write } from "./test-repo
 
 afterAll(removeTempDirs);
 
-/**
- * Routes outside /api/repo, which take no `?repo=`: /open goes through the gate on its own, and
- * /pair is the LAN listener's pairing link.
- */
-const UNGATED = ["GET /api/config", "POST /api/open", "GET /pair"];
+/** Routes outside /api/repo, which take no `?repo=`: /open goes through the gate on its own. */
+const UNGATED = ["GET /api/config", "POST /api/open"];
 
 /** Values for route parameters, so each route's path matches it. */
 const PARAMS: Record<string, string> = { hash: "HEAD", action: "fetch" };
@@ -44,13 +41,6 @@ const endpoints = (app: ReturnType<typeof createApp>) =>
       };
     });
 
-const LAN = {
-  kind: "lan",
-  address: "192.168.1.5",
-  secret: "s",
-  cookie: "gitui-session-t",
-} as const;
-
 /** A listener of each kind, and the headers its clients send. */
 const clients: { listener: Listener; host: string; headers: Record<string, string> }[] = [
   {
@@ -58,7 +48,6 @@ const clients: { listener: Listener; host: string; headers: Record<string, strin
     host: "127.0.0.1:4870",
     headers: { origin: "https://hosted.example", authorization: "Bearer t" },
   },
-  { listener: LAN, host: "192.168.1.5:4870", headers: { cookie: "gitui-session-t=s" } },
   { listener: { kind: "nearby" }, host: NEARBY_HOST, headers: {} },
 ];
 

@@ -11,10 +11,10 @@ bun run dev [repo-path]     # API on :4777 (bun --watch) + Vite+ dev server with
 bun test                    # bun:test; server tests run against real temp repos
 ./node_modules/.bin/tsc -b  # type check every tsconfig project
 vp check                    # format, lint (type-aware), type check
-bun run build               # tsc -b, build apps/web, bundle the CLI into apps/cli/dist (+ dist/web)
+bun run build               # tsc -b, build apps/web, bundle the CLI into apps/cli/dist
 cd apps/web && bun run deploy  # build and deploy the hosted UI to Cloudflare (needs wrangler login)
 cd apps/rendezvous && bun run dev  # nearby rendezvous Worker on :8787 (wrangler dev)
-scripts/smoke.sh            # run the built CLI with node (hosted and --local) and probe it
+scripts/smoke.sh            # run the built CLI with node and probe it
 ```
 
 ## Layout
@@ -23,28 +23,28 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
 
 - `apps/cli/` (`@diffiii/gitui`, published to npm): the `gitui` bin (`bin/gitui.ts`) and the
   Hono API in `server/`. `app.ts` holds the routes, `git.ts` wraps the git CLI and parses its
-  output, `main.ts` starts the server (`@hono/node-server`), serving the UI directory it's given
-  with `uiSecurityHeaders` (`bin/gitui.ts` passes `dist/web` only with `--local` and `--lan`;
-  by default the hosted app is the UI), `bin/args.ts` parses the command line, `dev.ts` is the
-  dev API entry, `lan.ts` picks the `--lan` address. `server/nearby/` is `--nearby`, the host
+  output, `main.ts` starts the server (`@hono/node-server`) on 127.0.0.1, with only a plain-text
+  pointer to the hosted app at `/`: the CLI serves no UI. `bin/args.ts` parses the command line,
+  `dev.ts` is the dev API entry. `server/nearby/` is `--nearby`, the host
   side of `@gitui/shared`'s nearby protocol: `rendezvous.ts` (one `ws` socket, pinned to IPv4
   or IPv6, with pings and reconnects), `peer.ts` (one guest: answer, trickle, CPace or resume
   check from `auth.ts`), `bridge.ts` (HTTP over the data channel, pure and unit-tested),
   `host.ts` (wires them up: two sockets, sessions bound to theirs), `guard.ts` (survives
   werift's unhandled rejections on malformed SCTP packets; werift callbacks go through
   `isolate`) and `webrtc.ts`, the only file that imports werift. `bun run build`
-  (`scripts/build.ts`) bundles `bin/gitui.ts` for Node into `dist/gitui.js`, copies
-  `apps/web/dist` to `dist/web` (`scripts/local-ui.ts` adds the `LOCAL_UI_META` tag to that copy
-  only, never to `apps/web/dist`, which is the hosted app, and leaves `_headers` out) and the root `LICENSE` into the package; with `README.md` that is all the package ships, with no runtime dependencies.
+  (`scripts/build.ts`) bundles `bin/gitui.ts` for Node into `dist/gitui.js` and copies the root
+  `LICENSE` into the package; with `README.md` that is all the package ships, with no runtime
+  dependencies.
   Code in `bin/` and `server/` must run on Node too: no `Bun.*` APIs outside tests, `dev.ts`
   and `test-repo.ts` (a lint rule enforces it). Tests live next to the code (`server/*.test.ts`).
 - `apps/web/` (`@gitui/web`): React app. `src/lib/` holds the API client, graph layout and
   prefs, `src/components/` the views, and `src/components/ui/` the shadcn components. Unit
   tests sit next to their module (`src/**/*.test.ts`, type-checked by `tsconfig.test.json`).
-  `@/` maps to `apps/web/src`. A page with the `LOCAL_UI_META` tag (served by the CLI, or by the
-  dev server, whose `vite.config.ts` plugin adds it) calls its own `/api`; without it, whatever
-  the host, it is the hosted app: `src/lib/connection.ts` decides this and holds the pairing with
-  the CLI and where requests go (its store reads `window` lazily; `initConnection` does the
+  `@/` maps to `apps/web/src`. A page from the dev server (`__GITUI_DEV_SERVER__`, defined by `vite.config.ts`, which `main.tsx`
+  passes to `initConnection`) is the `dev` connection and calls its own `/api`, which
+  `vite.config.ts` proxies to the dev API (`GITUI_PORT`, default 4777); any other page, whatever
+  the host, is the hosted app: `src/lib/connection.ts` holds its pairing with the CLI on
+  127.0.0.1 and where requests go (its store reads `window` lazily; `initConnection` does the
   startup wiring), and `ConnectionGate` gates the app until the CLI answers. Its `nearby` kind
   is a `gitui --nearby` found through the rendezvous: `src/lib/nearby/` holds the guest
   (`createSession` in `session.ts` is the state machine, with its dependencies injected; the
@@ -64,8 +64,8 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   all against `wrangler dev`. Worker code is type-checked with `@cloudflare/workers-types`, tests
   and scripts with bun's.
 - `packages/shared/` (`@gitui/shared`): API types and the connection contract (default port,
-  client header, local UI marker, hosted origin, loopback hosts, pairing links) and the UI's
-  security headers (`headers.ts`), used by both sides, imported as `@gitui/shared`. The nearby
+  client header, hosted origin, loopback hosts, pairing links), used by both sides, and the
+  hosted app's `_headers` file (`headers.ts`, which the web build emits), imported as `@gitui/shared`. The nearby
   protocol: `nearby.ts` (the contract and its docs), `nearby-codec.ts` (every check on what
   crosses its wires, used by the Worker, the CLI and the web app alike: messages are rebuilt
   with only the contract's fields, so a new field goes there) and `nearby-pake.ts` (CPace on
@@ -88,13 +88,11 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
 - `/api/*` access policy lives in `apps/cli/server/access.ts`, keyed by the `Listener`: the
   `x-gitui` header always. `loopback`: localhost `Host`; cross-origin callers only from
   `allowedOrigins`, with CORS headers and the pairing token (`loadToken` in `server/config.ts`)
-  as a bearer token. `lan` (`--lan`): `Host` names the listen address (hostnames only, ports
-  aren't checked), no cross-origin callers, and the per-run session cookie that
-  `/pair?key=<per-run secret>` sets. `nearby`: requests from an authenticated data channel,
+  as a bearer token. `nearby`: requests from an authenticated data channel,
   through `nearby/bridge.ts`, which gives them the Host `NEARBY_HOST`. Don't add checks in
   routes or `main.ts`.
-- Each listener also has a `repoScope`: `loopback` is `any`; `lan` and `nearby` (other devices)
-  are `opened`, i.e. only the `initialRepo` and the recent list, compared as realpaths, read per
+- Each listener also has a `repoScope`: `loopback` is `any`; `nearby` (other devices) is
+  `opened`, i.e. only the `initialRepo` and the recent list, compared as realpaths, read per
   request. Every repo path a request names goes through `repoGate` (`server/repo-scope.ts`): the `repo`
   middleware and `/open`, which only records repos in the recent list for `any`. A refusal is a
   403 `{ error, code: REPO_NOT_OPENED }`. New routes that take a repo path must use the gate.

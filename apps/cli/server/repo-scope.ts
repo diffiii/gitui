@@ -1,6 +1,6 @@
 // Which repositories a listener's clients may use (access.ts gives each listener its scope).
 // Clients on this computer (loopback) may open any repository, and opening one puts it in the
-// recent list. Clients on other devices (lan, nearby) may only use the repositories opened on
+// recent list. Clients on other devices (nearby) may only use the repositories opened on
 // this computer: the one gitui was started with and the recent list. They can pick from that
 // list, but they can't name another path, and opening one doesn't change the list.
 //

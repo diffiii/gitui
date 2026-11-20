@@ -6,7 +6,6 @@ import {
   KeyRound,
   Laptop,
   LoaderCircle,
-  QrCode,
   Radar,
   RotateCw,
   Terminal,
@@ -20,7 +19,6 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { getConfig } from "@/lib/api";
 import {
   connectionStatus,
-  retrySession,
   retryWhileUnreachable,
   setNearbyHost,
   setPairing,
@@ -34,8 +32,7 @@ import type { NearbyState } from "@/lib/nearby/state";
 
 /**
  * Renders the app once gitui answers; until then, in the hosted app, how to connect to it: a
- * computer nearby, or gitui on this one. A page `gitui --lan` serves shows how to pair instead
- * once gitui turns it away.
+ * computer nearby, or gitui on this one.
  */
 export function ConnectionGate({ children }: { children: React.ReactNode }) {
   const connection = useConnection();
@@ -52,8 +49,6 @@ export function ConnectionGate({ children }: { children: React.ReactNode }) {
       return children;
     case "nearby":
       return <NearbyGate session={status.session}>{children}</NearbyGate>;
-    case "noSession":
-      return <NoSessionScreen />;
     case "unpaired":
       return <ConnectScreen />;
     case "rejected":
@@ -328,28 +323,6 @@ function PairLinkForm() {
   );
 }
 
-/** A page `gitui --lan` serves, opened without its pairing link or from before gitui restarted. */
-function NoSessionScreen() {
-  return (
-    <CenteredScreen
-      icon={QrCode}
-      title="Pair this device with gitui"
-      description="Scan the QR code or open the link gitui printed in your terminal."
-    >
-      <div className="flex flex-col items-center gap-4">
-        <Button variant="outline" onClick={retrySession}>
-          <RotateCw />
-          Try again
-        </Button>
-        <p className="px-1 text-center text-xs text-muted-foreground">
-          Opened the link in another tab? Come back here and this page picks it up. gitui prints a
-          new link each time it starts, so links and bookmarks from an earlier run stop working.
-        </p>
-      </div>
-    </CenteredScreen>
-  );
-}
-
 /** Shown while the CLI hasn't answered. It fades in late, so a fast first answer doesn't flash it. */
 function UnreachableScreen({
   status: { kind, port },
@@ -374,8 +347,16 @@ function UnreachableScreen({
           it.
         </li>
         <li>
-          Safari may block connections to localhost. If it never connects, add <Code>--local</Code>{" "}
-          and use the page it opens instead.
+          Safari may block connections to localhost. If it never connects, run{" "}
+          <Code>npx @diffiii/gitui@latest --nearby</Code> instead and{" "}
+          <button
+            type="button"
+            className="text-foreground underline underline-offset-4"
+            onClick={() => setPairing(null)}
+          >
+            pick this computer from the list
+          </button>
+          , with iCloud Private Relay off for this network.
         </li>
       </ul>
       <div className="mt-4 flex items-center justify-between gap-2 px-1 text-xs text-muted-foreground">

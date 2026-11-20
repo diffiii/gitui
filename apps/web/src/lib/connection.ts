@@ -1,4 +1,4 @@
-import { LOCAL_UI_META, pairingFragment, parsePairing, type Pairing } from "@gitui/shared";
+import { pairingFragment, parsePairing, type Pairing } from "@gitui/shared";
 import type { QueryClient } from "@tanstack/react-query";
 import { useSyncExternalStore } from "react";
 import { rendezvous } from "./nearby/rendezvous.ts";
@@ -7,18 +7,14 @@ import { parseNearbyHost, type NearbyHost } from "./nearby/state.ts";
 import { withHeaders } from "./withHeaders.ts";
 
 /**
- * Where API requests go. A page served by gitui itself (the CLI, or the Vite dev server with its
- * `/api` proxy) carries the `LOCAL_UI_META` tag and is `local`: it calls its own origin, whatever
- * its host, until the CLI turns it away. Only `gitui --lan` does, when the page has no session
- * (it wasn't opened through the pairing link, or gitui restarted since): then it is `noSession`.
- * Any other page is the hosted app, which calls the CLI on 127.0.0.1 once it is paired with it,
- * until the CLI rejects the pairing's token, or a `gitui --nearby` on another computer of this
- * network over WebRTC once the user picked it (`nearby`: its session holds that link, and ends
- * with the connection).
+ * Where API requests go. A page from the Vite dev server (`bun run dev`) is `dev`: it calls its
+ * own `/api`, which the dev server proxies to the dev API. Any other page is the hosted app, which
+ * calls the CLI on 127.0.0.1 once it is paired with it, until the CLI rejects the pairing's token,
+ * or a `gitui --nearby` on a computer of this network over WebRTC once the user picked it
+ * (`nearby`: its session holds that link, and ends with the connection).
  */
 export type Connection =
-  | { kind: "local" }
-  | { kind: "noSession" }
+  | { kind: "dev" }
   | { kind: "unpaired" }
   | { kind: "paired"; pairing: Pairing }
   | { kind: "rejected"; pairing: Pairing }
@@ -44,11 +40,11 @@ export const isApiError = (e: unknown, kind: ApiError["kind"]) =>
 export type Target = Exclude<Connection, { kind: "nearby" }> | { kind: "nearby"; host: NearbyHost };
 
 /**
- * The connection a page starts with: `local` if gitui served it (it has the `LOCAL_UI_META`
- * tag), else the saved pairing fragment's, else the saved nearby host (JSON).
+ * The connection a page starts with: `dev` on the dev server, else the saved pairing fragment's,
+ * else the saved nearby host (JSON).
  */
-export function initialConnection(servedByGitui: boolean, saved: string, savedNearby = ""): Target {
-  if (servedByGitui) return { kind: "local" };
+export function initialConnection(dev: boolean, saved: string, savedNearby = ""): Target {
+  if (dev) return { kind: "dev" };
   const pairing = parsePairing(saved);
   if (pairing) return { kind: "paired", pairing };
   const host = parseSavedHost(savedNearby);
@@ -69,7 +65,7 @@ export type Transport = (path: string, init: RequestInit) => Promise<Response>;
 /** Where API requests go. Without an accepted pairing there is nowhere to send them. */
 export function apiTransport(connection: Connection): Transport {
   switch (connection.kind) {
-    case "local":
+    case "dev":
       return (path, init) => fetch(path, withHeaders(init));
     case "nearby": {
       // Over the session's data channel, which is the authentication.
@@ -84,7 +80,6 @@ export function apiTransport(connection: Connection): Transport {
           withHeaders(init, { authorization: `Bearer ${token}` }),
         );
     }
-    case "noSession":
     case "unpaired":
     case "rejected":
       throw new ApiError("Not paired with gitui", "unauthorized");
@@ -98,7 +93,6 @@ export const retryWhileUnreachable = {
 };
 
 export type ConnectionStatus =
-  | { kind: "noSession" }
   | { kind: "unpaired" }
   | { kind: "rejected" }
   | { kind: "connecting"; port: number }
@@ -119,9 +113,8 @@ export function connectionStatus(
   switch (connection.kind) {
     case "nearby":
       return connection;
-    case "local":
+    case "dev":
       return { kind: "connected" };
-    case "noSession":
     case "unpaired":
     case "rejected":
       return { kind: connection.kind };
@@ -141,7 +134,7 @@ const KEY = "gitui-pairing";
 const NEARBY_KEY = "gitui-nearby-host";
 let connection: Connection = { kind: "unpaired" };
 const listeners = new Set<() => void>();
-/** Opens a session with a nearby host (tests pass initConnection another). */
+/** Opens a session with a nearby host. */
 let openSession: (host: NearbyHost) => NearbySession = nearbySession;
 
 function saved(key: string): string {
@@ -161,8 +154,6 @@ function save(key: string, value: string | null) {
     // storage unavailable: the connection lasts for this page load
   }
 }
-
-const hasLocalUiMeta = () => document.querySelector(`meta[name="${LOCAL_UI_META}"]`) !== null;
 
 export const getConnection = (): Connection => connection;
 
@@ -230,13 +221,12 @@ export function setNearbyHost(host: NearbyHost | null) {
  */
 export function afterRejection(used: Connection): Target | null {
   switch (used.kind) {
-    case "local":
-      return { kind: "noSession" };
     case "paired":
       return { kind: "rejected", pairing: used.pairing };
-    // The data channel is the authentication; a 401 over it is just an error response.
+    // The dev API takes requests through the dev server's proxy without a token, and the data
+    // channel is a nearby session's authentication: a 401 over either is just an error response.
+    case "dev":
     case "nearby":
-    case "noSession":
     case "unpaired":
     case "rejected":
       return null;
@@ -253,32 +243,20 @@ export function rejectConnection(used: Connection) {
 }
 
 /**
- * Let a page that lost its session (`noSession`) call its `/api` again, e.g. once its pairing link
- * was opened in another tab, which sets the cookie for this one too. A 401 sends it back to
- * `noSession`; only the user or the page becoming visible again retries, so it can't loop.
+ * Startup wiring. Reads the page's connection (opening the session with a saved nearby host) and
+ * drops everything fetched over a connection when it changes. Then the hosted app adopts pairing
+ * links opened in this tab, and has a nearby session check its channel when the page is shown
+ * again (iOS may have killed it meanwhile). `dev`: the page is on the dev server
+ * (`__GITUI_DEV_SERVER__`, set by vite.config.ts). `open`: opens nearby sessions (tests pass another).
  */
-export function retrySession() {
-  if (getConnection().kind === "noSession") update({ kind: "local" });
-}
-
-/**
- * Startup wiring. Reads the page's connection (opening the session with a saved nearby host),
- * drops everything fetched over a connection when it changes, and then: a local page retries a lost session whenever it is shown again (a phone
- * opens a scanned pairing link in a new tab, and the user comes back to this one); the hosted app
- * adopts pairing links opened in this tab, and has a nearby session check its channel when the
- * page is shown again (iOS may have killed it meanwhile).
- */
-export function initConnection(queryClient: QueryClient, open = nearbySession) {
+export function initConnection(
+  queryClient: QueryClient,
+  { dev = false, open = nearbySession }: { dev?: boolean; open?: typeof nearbySession } = {},
+) {
   openSession = open;
-  update(initialConnection(hasLocalUiMeta(), saved(KEY), saved(NEARBY_KEY)));
+  update(initialConnection(dev, saved(KEY), saved(NEARBY_KEY)));
   subscribeConnection(() => queryClient.clear());
-
-  if (connection.kind === "local") {
-    document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible") retrySession();
-    });
-    return;
-  }
+  if (connection.kind === "dev") return;
 
   // Take the pairing out of the address bar and history, keeping the query string the app keeps
   // its state in.

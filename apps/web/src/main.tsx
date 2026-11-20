@@ -11,7 +11,7 @@ const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: false, refetchOnWindowFocus: true } },
 });
 
-initConnection(queryClient);
+initConnection(queryClient, { dev: __GITUI_DEV_SERVER__ });
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

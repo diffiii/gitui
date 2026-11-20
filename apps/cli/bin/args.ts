@@ -1,5 +1,4 @@
 // The `gitui` command line, parsed without side effects so it can be tested.
-import net from "node:net";
 import { DEFAULT_PORT, HOSTED_ORIGIN, hostName, MAX_NAME_LENGTH, toHostName } from "@gitui/shared";
 import { parseOrigin } from "../server/access.ts";
 
@@ -9,34 +8,20 @@ Usage:
   gitui            start the app with a repository picker
   gitui <path>     open the repository containing <path> (e.g. \`gitui .\`)
 
-By default gitui serves only the API and opens the hosted app (${HOSTED_ORIGIN}),
+gitui serves the API on this machine and opens the hosted app (${HOSTED_ORIGIN}),
 paired with this machine through the printed link.
 
 Options:
   -p, --port <n>          port to listen on (default ${DEFAULT_PORT})
-  --local                 serve the UI bundled with gitui and open it instead (for browsers
-                          that block the hosted app from reaching localhost, or offline use)
-  --lan [address]         serve the bundled UI on your network, for a phone or another device.
-                          The address is an IPv4 address of this machine (default: the default
-                          route's, if it is private). Prints a link and QR code and never opens
-                          a browser; the session travels over plain HTTP
   --nearby                also list this machine for phones on the same network: they find it
                           on ${HOSTED_ORIGIN} and connect over WebRTC with the
-                          code gitui prints. Works with --local, not with --lan
+                          code gitui prints. Desktop Safari, which blocks the hosted app from
+                          reaching localhost, can pick this computer from the same list
+                          (with iCloud Private Relay off, which hides the network)
   --name <name>           the name phones see with --nearby (default: this machine's hostname)
   --allow-origin <origin> also let the web app at <origin> call the API (repeatable)
   --no-open               don't open the browser
   -h, --help              show this help`;
-
-/**
- * Which UI gitui serves, and where. `hosted` and `local` listen on 127.0.0.1 and accept the
- * hosted app plus `origins` (`--allow-origin`), and with `nearby` also take phones' connections
- * through the rendezvous service; `lan` serves its own UI only, on `address`, or on an address
- * gitui picks if null.
- */
-export type Mode =
-  | { kind: "hosted" | "local"; origins: string[]; nearby: Nearby | null }
-  | { kind: "lan"; address: string | null };
 
 /** `--nearby`: the name phones see, or null for this machine's hostname. */
 export interface Nearby {
@@ -54,7 +39,10 @@ export function hostnameAsName(hostname: string) {
 export interface Options {
   port: number;
   open: boolean;
-  mode: Mode;
+  /** Web apps besides the hosted one that may call the API (`--allow-origin`). */
+  origins: string[];
+  /** `--nearby`, or null without it. */
+  nearby: Nearby | null;
   /** The path to open the repository of, if given. */
   target: string | null;
 }
@@ -67,13 +55,12 @@ export function parseArgs(argv: string[]): Options | "help" {
   const options: Options = {
     port: DEFAULT_PORT,
     open: true,
-    mode: { kind: "hosted", origins: [], nearby: null },
+    origins: [],
+    nearby: null,
     target: null,
   };
   let nearby = false;
   let name: string | null = null;
-  const notWithLan = (flag: string) =>
-    new ArgsError(`${flag} doesn't apply to --lan, which serves its own UI only`);
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -85,27 +72,7 @@ export function parseArgs(argv: string[]): Options | "help" {
       }
       options.port = port;
     } else if (a === "--no-open") options.open = false;
-    else if (a === "--local") {
-      if (options.mode.kind === "lan") throw new ArgsError("--local and --lan can't be combined");
-      options.mode = { ...options.mode, kind: "local" };
-    } else if (a === "--lan") {
-      const current = options.mode;
-      if (current.kind === "lan") throw new ArgsError("--lan is given twice");
-      if (current.kind === "local") throw new ArgsError("--local and --lan can't be combined");
-      if (current.origins.length) throw notWithLan("--allow-origin");
-      // The address is optional: an IPv4 address after --lan is taken as one, anything else that
-      // looks like an address is refused rather than taken as the repository path.
-      const next = argv[i + 1] ?? "";
-      let address: string | null = null;
-      if (net.isIPv4(next)) address = argv[++i];
-      else if (net.isIPv6(next) || /^\d+(\.\d+)+$/.test(next)) {
-        throw new ArgsError(`--lan takes an IPv4 address of this machine, not ${next}`);
-      }
-      if (address === "0.0.0.0") {
-        throw new ArgsError("--lan needs this machine's address, not 0.0.0.0");
-      }
-      options.mode = { kind: "lan", address };
-    } else if (a === "--nearby") nearby = true;
+    else if (a === "--nearby") nearby = true;
     else if (a === "--name") {
       // The rendezvous refuses other names (and the CLI would reconnect forever); control and
       // bidi characters would also let the name rewrite or disguise the lines that print it.
@@ -116,17 +83,18 @@ export function parseArgs(argv: string[]): Options | "help" {
         );
       }
     } else if (a === "--allow-origin") {
-      if (options.mode.kind === "lan") throw notWithLan(a);
       const origin = parseOrigin(argv[++i]);
-      if (!origin) throw new ArgsError(`${a} needs an origin, e.g. http://localhost:5173`);
-      options.mode.origins.push(origin);
+      if (!origin) throw new ArgsError(`${a} needs an origin, e.g. http://localhost:4173`);
+      options.origins.push(origin);
+    } else if (a === "--lan" || a === "--local") {
+      throw new ArgsError(
+        `${a} was removed in 0.5.0: open the app at ${HOSTED_ORIGIN}, or use --nearby for a phone`,
+      );
     } else if (a.startsWith("-")) throw new ArgsError(`Unknown option ${a}\n\n${HELP}`);
     else options.target = a;
   }
 
-  if (options.mode.kind === "lan") {
-    if (nearby) throw new ArgsError("--nearby and --lan can't be combined");
-  } else if (nearby) options.mode.nearby = { name };
+  if (nearby) options.nearby = { name };
   if (name !== null && !nearby) throw new ArgsError("--name only applies to --nearby");
   return options;
 }

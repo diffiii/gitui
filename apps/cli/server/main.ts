@@ -1,51 +1,36 @@
 import { once } from "node:events";
-import path from "node:path";
 import { createAdaptorServer } from "@hono/node-server";
-import { serveStatic } from "@hono/node-server/serve-static";
-import { uiSecurityHeaders } from "@gitui/shared";
-import { type SocketListener, listenAddress } from "./access.ts";
+import { HOSTED_ORIGIN } from "@gitui/shared";
+import type { LoopbackListener } from "./access.ts";
 import { type AppOptions, createApp } from "./app.ts";
 
 export interface StartOptions extends AppOptions {
   /** First port to try. */
   port: number;
-  /** Directory of the built UI to serve at `/`. Omitted, only the API is served. */
-  ui?: string;
-  listener: SocketListener;
-}
-
-/** Headers of the UI's responses: the hosted app's, except that this UI only calls its origin. */
-const UI_HEADERS = uiSecurityHeaders("'self'");
-
-/**
- * Serves the built UI in `root`: files as they are (serveStatic refuses `..` segments), and
- * index.html for extension-less paths, which are client-side routes. A missing asset 404s.
- */
-export function serveUi(app: ReturnType<typeof createApp>, root: string) {
-  const index = serveStatic({ root, path: "index.html" });
-  app.get(
-    "*",
-    (c, next) => {
-      for (const [name, value] of Object.entries(UI_HEADERS)) c.header(name, value);
-      return next();
-    },
-    serveStatic({ root }),
-    (c, next) => (path.extname(c.req.path) ? next() : index(c, next)),
-  );
+  listener: LoopbackListener;
 }
 
 /**
- * Serves on the first free port from `opts.port`, at the listener's address. Returns the bound
- * port, which the pairing link needs.
+ * The app `start` serves: the API, and at `/` a note on where the UI is, for someone who opens
+ * the server's address in a browser.
  */
-export async function start({ port: first, ui, ...opts }: StartOptions): Promise<number> {
+export function serverApp(opts: AppOptions & { listener: LoopbackListener }) {
   const app = createApp(opts);
-  if (ui) serveUi(app, ui);
+  app.get("/", (c) => c.text(`This is the gitui API. The app is at ${HOSTED_ORIGIN}\n`));
+  return app;
+}
+
+/**
+ * Serves on the first free port from `opts.port`, on 127.0.0.1. Returns the bound port, which
+ * the pairing link needs.
+ */
+export async function start({ port: first, ...opts }: StartOptions): Promise<number> {
+  const app = serverApp(opts);
   for (let port = first; port < first + 20; port++) {
     // Node's requestTimeout and headersTimeout only cover receiving the request, and
     // server.timeout is 0, so long git responses (fetches, pushes) aren't cut off.
     const server = createAdaptorServer({ fetch: app.fetch });
-    server.listen(port, listenAddress(opts.listener));
+    server.listen(port, "127.0.0.1");
     try {
       await once(server, "listening");
       return port;
