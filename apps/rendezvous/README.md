@@ -7,13 +7,19 @@ a WebRTC connection to it. The protocol is in `packages/shared/src/nearby.ts`.
 Hosts (the CLI) and guests (the web app) open a WebSocket to `/v1/connect`. The Worker sends it to
 one Durable Object per network: the caller's public IPv4 address, or its IPv6 /64. The object
 tells guests which hosts are online and relays WebRTC signals between a guest and a host. Once
-the peers connect, the rendezvous sees nothing more: the data channel is direct and encrypted,
-and the guest proves it knows the code the host printed before the host answers any request.
+the peers connect, the rendezvous sees nothing more: the data channel is direct and encrypted.
+The rendezvous isn't trusted to authenticate anyone: the guest and the host run CPace with the
+code the host printed, bound to both DTLS fingerprints, before the host answers any request, so
+a rendezvous that swapped SDPs would fail that check. When a peer leaves, every peer of the
+other role on the network gets its `gone`.
 
 Browsers must come from `https://gitui.diffiii.dev` or an origin in the `ALLOWED_ORIGINS` var
-(comma-separated). Only a socket with an allowed Origin can be a guest; the CLI sends none.
+(comma-separated). Only a socket with an allowed Origin can be a guest; the CLI sends none. This
+only stops other websites from using their visitors' browsers as guests: anything that isn't a
+browser can send whatever Origin it likes.
 
-A host says hello with a display name (at most `MAX_NAME_LENGTH`) and its `key`, a random per-run
+A host says hello with a display name (at most `MAX_NAME_LENGTH` code points, without control
+or bidi characters: `hostName` in `@gitui/shared`) and its `key`, a random per-run
 id (`HOST_KEY`). The CLI registers over IPv4 and IPv6 with the same key and name; the two
 sockets land in different objects, or in one when both addresses map to the same network. An
 object lists each key once: the socket that joined first, then the other if that one leaves.

@@ -28,7 +28,7 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   by default the hosted app is the UI), `bin/args.ts` parses the command line, `dev.ts` is the
   dev API entry, `lan.ts` picks the `--lan` address. `server/nearby/` is `--nearby`, the host
   side of `@gitui/shared`'s nearby protocol: `rendezvous.ts` (one `ws` socket, pinned to IPv4
-  or IPv6, with pings and reconnects), `peer.ts` (one guest: answer, trickle, code or resume
+  or IPv6, with pings and reconnects), `peer.ts` (one guest: answer, trickle, CPace or resume
   check from `auth.ts`), `bridge.ts` (HTTP over the data channel, pure and unit-tested),
   `host.ts` (wires them up: two sockets, sessions bound to theirs), `guard.ts` (survives
   werift's unhandled rejections on malformed SCTP packets; werift callbacks go through
@@ -57,14 +57,17 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   `packages/shared/src/nearby.ts`). `src/route.ts` checks the upgrade and Origin and names the
   caller's network with an HMAC keyed by the `NETWORK_KEY_SECRET` secret (500 without it),
   `src/rendezvous.ts` is the hibernating Durable Object (one per network) that lists hosts (once
-  per key) and relays signals, `src/messages.ts` validates messages and rebuilds them with only
-  the contract's fields (a new optional field must be added there, and in the CLI's
-  `parseSignal`/`parseServerMessage`, or it is dropped), `scripts/e2e.ts` checks it
+  per key) and relays signals, `scripts/e2e.ts` checks it
   all against `wrangler dev`. Worker code is type-checked with `@cloudflare/workers-types`, tests
   and scripts with bun's.
 - `packages/shared/` (`@gitui/shared`): API types and the connection contract (default port,
   client header, local UI marker, hosted origin, loopback hosts, pairing links) and the UI's
-  security headers (`headers.ts`), used by both sides, imported as `@gitui/shared`.
+  security headers (`headers.ts`), used by both sides, imported as `@gitui/shared`. The nearby
+  protocol: `nearby.ts` (the contract and its docs), `nearby-codec.ts` (every check on what
+  crosses its wires, used by the Worker, the CLI and the web app alike: messages are rebuilt
+  with only the contract's fields, so a new field goes there) and `nearby-pake.ts` (CPace on
+  ristretto255 for the code and HMAC proofs both ways for resume tokens, pure and synchronous,
+  with `@noble/curves` and `@noble/hashes`, which the CLI bundles).
 - Root: `scripts/dev.ts` (runs both apps), `scripts/smoke.sh` (runs the built bundle with node
   in both modes and checks what it serves; CI and release run it), `vite.config.ts` (workspace
   fmt/lint/type check config, `defaultPackage` points `vp dev`/`vp build` at `apps/web`),
