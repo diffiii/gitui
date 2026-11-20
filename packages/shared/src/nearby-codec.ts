@@ -2,36 +2,30 @@
 // rendezvous Worker, the CLI (host) and the web app (guest) all read messages with these. Each
 // decoder rebuilds its value from the contract's fields only, so nothing else is relayed or
 // trusted, and throws a NearbyCodecError that says what is wrong; the parse* wrappers return
-// null instead. Pure, with nothing beyond what browsers, Node and Workers all have.
+// null instead. Pure, with nothing beyond what browsers, Node and Workers all have; it imports
+// no curve code, so the Worker's bundle doesn't either.
+import { fromBase64Url } from "./bytes.ts";
 import {
   AUTH_ATTEMPTS,
   type ChannelMessage,
   type ClientMessage,
+  type Fingerprint,
   type GuestMessage,
   HOST_KEY,
   type HostInfo,
   type HostMessage,
   type IceCandidate,
+  MAX_MESSAGE_LENGTH,
   MAX_NAME_LENGTH,
   OFFER_ID,
   parseChunk,
+  PEER_ID,
   REFUSAL_REASONS,
   type RefusalReason,
   RENDEZVOUS_PATH,
   type ServerMessage,
   type SignalData,
 } from "./nearby.ts";
-import { randomId } from "./nearby-pake.ts";
-
-/** Longest message a peer may send the rendezvous, in UTF-16 code units. An SDP is a few KiB. */
-export const MAX_MESSAGE_LENGTH = 64 * 1024;
-
-/**
- * Data channel flow control, for both peers: a sender stops once more than CHANNEL_HIGH_WATER
- * bytes are queued, and goes on when the queue drains to CHANNEL_LOW_WATER.
- */
-export const CHANNEL_HIGH_WATER = 1024 * 1024;
-export const CHANNEL_LOW_WATER = 256 * 1024;
 
 /** A message that breaks the contract; `message` says how. */
 export class NearbyCodecError extends Error {
@@ -92,12 +86,9 @@ export const isHeaders = (value: unknown): value is [string, string][] =>
       typeof pair[1] === "string",
   );
 
-/** A peer id the rendezvous assigned (a UUID from the Worker). */
-export const PEER_ID = /^[\w-]{1,64}$/;
-
 // Control characters, line and paragraph separators, and the bidi controls that could make a
 // name display as another.
-const UNSAFE_NAME_CHAR = /[\p{Cc}\p{Zl}\p{Zp}؜‎‏‪-‮⁦-⁩]/u;
+const UNSAFE_NAME_CHAR = /[\p{Cc}\p{Zl}\p{Zp}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/u;
 const UNSAFE_NAME_CHARS = new RegExp(UNSAFE_NAME_CHAR.source, "gu");
 
 /**
@@ -137,9 +128,6 @@ export function rendezvousUrl(origin: string): string | null {
 }
 
 // ── Rendezvous messages ────────────────────────────────────────────────────────────────────
-
-/** A fresh SignalData offerId. */
-export const newOfferId = () => randomId(16);
 
 function decodeCandidate(value: unknown): IceCandidate {
   const { candidate, sdpMid, sdpMLineIndex } = record(value, "candidate");
@@ -247,8 +235,11 @@ export type Incoming<M extends ChannelMessage = ChannelMessage> =
   /** `id` is the request the message names, if it names one. */
   | { kind: "invalid"; id: number | null; reason: string };
 
-/** 32 bytes, base64url: CPace shares, tags, resume proofs and tokens. */
-const B64_32 = /^[\w-]{43}$/;
+/** `what`: 32 bytes in canonical base64url (CPace shares, tags, resume proofs and tokens). */
+function bytes32(value: unknown, what: string): string {
+  const text = string(value, what);
+  return fromBase64Url(text, 32) ? text : fail(`invalid ${what}`);
+}
 /** A resume nonce: 16 to 48 bytes, base64url. */
 const NONCE = /^[\w-]{22,64}$/;
 /** An HTTP method (RFC 9110 token). */
@@ -272,16 +263,16 @@ function requestId(value: unknown): number {
 function decodeGuestMessage(m: Record<string, unknown>): GuestMessage {
   switch (m.t) {
     case "pake":
-      return { t: "pake", y: string(m.y, "share", B64_32) };
+      return { t: "pake", y: bytes32(m.y, "share") };
     case "pake-confirm":
-      return { t: "pake-confirm", confirm: string(m.confirm, "tag", B64_32) };
+      return { t: "pake-confirm", confirm: bytes32(m.confirm, "tag") };
     case "pake-fail":
       return { t: "pake-fail" };
     case "resume":
       return {
         t: "resume",
         nonce: string(m.nonce, "nonce", NONCE),
-        proof: string(m.proof, "proof", B64_32),
+        proof: bytes32(m.proof, "proof"),
       };
     case "req": {
       const id = requestId(m.id);
@@ -303,11 +294,11 @@ function decodeHostMessage(m: Record<string, unknown>): HostMessage {
     case "pake":
       return {
         t: "pake",
-        y: string(m.y, "share", B64_32),
-        confirm: string(m.confirm, "tag", B64_32),
+        y: bytes32(m.y, "share"),
+        confirm: bytes32(m.confirm, "tag"),
       };
     case "resume-ok":
-      return { t: "resume-ok", proof: string(m.proof, "proof", B64_32) };
+      return { t: "resume-ok", proof: bytes32(m.proof, "proof") };
     case "auth-ok":
       return { t: "auth-ok" };
     case "auth-fail": {
@@ -317,7 +308,7 @@ function decodeHostMessage(m: Record<string, unknown>): HostMessage {
       return ok ? { t: "auth-fail", attemptsLeft: left as number } : fail("invalid attemptsLeft");
     }
     case "session":
-      return { t: "session", token: string(m.token, "token", B64_32) };
+      return { t: "session", token: bytes32(m.token, "token") };
     case "res": {
       const id = requestId(m.id);
       const { status } = m;
@@ -383,7 +374,7 @@ const FINGERPRINT = /^a=fingerprint:sha-256 ((?:[0-9a-f]{2}:){31}[0-9a-f]{2})$/i
  * here could be the one not used. Lines are split on every kind of line break, and any line
  * that mentions "fingerprint" counts, so no SDP parser finds one that this misses.
  */
-export function sdpFingerprint(sdp: string): string | null {
+export function sdpFingerprint(sdp: string): Fingerprint | null {
   const lines = sdp.split(/\r\n|\r|\n/).filter((line) => /fingerprint/i.test(line));
   if (lines.length !== 1) return null;
   const match = FINGERPRINT.exec(lines[0]!.trim());

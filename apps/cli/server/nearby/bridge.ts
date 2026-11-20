@@ -3,6 +3,8 @@
 // the Response back as a `res` head, body frames of at most CHUNK_SIZE bytes and an `end`, or an
 // `abort` if the app fails. A body over MAX_REQUEST_BODY, or over MAX_BODIES_IN_FLIGHT with the
 // others, gets a 413 instead. A guest's `cancel` stops a response. Requests interleave by id.
+// A response stops sending once the channel holds more than CHANNEL_HIGH_WATER queued bytes,
+// and resumes when it drains to CHANNEL_LOW_WATER, so a large diff never sits in memory twice.
 // Nothing here knows about WebRTC.
 import {
   CHANNEL_HIGH_WATER,
@@ -27,12 +29,6 @@ export interface BridgeChannel {
 
 export type Fetch = (request: Request) => Response | Promise<Response>;
 
-/**
- * Backpressure: a response stops sending once the channel holds more than HIGH_WATER queued
- * bytes, and resumes when it drains to LOW_WATER, so a large diff never sits in memory twice.
- */
-export const HIGH_WATER = CHANNEL_HIGH_WATER;
-export const LOW_WATER = CHANNEL_LOW_WATER;
 /** The most requests a channel may have open (not yet answered) at once. */
 export const MAX_OPEN_REQUESTS = 64;
 /** The largest request body; the API only takes small JSON bodies. */
@@ -46,32 +42,6 @@ export const MAX_BODIES_IN_FLIGHT = 16 * 1024 * 1024;
 const ORIGIN = `http://${NEARBY_HOST}`;
 
 type RequestHead = Extract<GuestMessage, { t: "req" }>;
-
-/** A channel message from the guest, checked. */
-export type Incoming =
-  | { kind: "req"; head: RequestHead }
-  | { kind: "chunk"; id: number; payload: Uint8Array }
-  | { kind: "end"; id: number }
-  | { kind: "cancel"; id: number }
-  /** Not a message the guest may send; `id` is the request it names, if it names one. */
-  | { kind: "invalid"; id: number | null; reason: string };
-
-/** Reads one channel message from the guest (@gitui/shared's decodeChannelMessage). */
-export function decode(data: string | Uint8Array): Incoming {
-  const incoming = decodeChannelMessage(data, "guest");
-  if (incoming.kind !== "message") return incoming;
-  const { message } = incoming;
-  switch (message.t) {
-    case "req":
-      return { kind: "req", head: message };
-    case "end":
-    case "cancel":
-      return { kind: message.t, id: message.id };
-    default:
-      // Authentication is over once the bridge has the channel.
-      return { kind: "invalid", id: null, reason: `unexpected message "${message.t}"` };
-  }
-}
 
 interface OpenRequest {
   head: RequestHead;
@@ -106,37 +76,27 @@ export class Bridge {
     this.#fetch = fetch;
   }
 
-  /** Handles a message from the guest. Messages that name no open request are dropped. */
+  /**
+   * Handles a message from the guest. Messages that name no open request are dropped, and so
+   * are authentication messages: that is over once the bridge has the channel.
+   */
   receive(data: string | Uint8Array) {
     if (this.#closed) return;
-    const message = decode(data);
-    switch (message.kind) {
+    const incoming = decodeChannelMessage(data, "guest");
+    switch (incoming.kind) {
+      case "chunk":
+        return this.#chunk(incoming.id, incoming.payload);
+      case "invalid":
+        if (incoming.id !== null) this.#fail(incoming.id, incoming.reason);
+        return;
+    }
+    const { message } = incoming;
+    switch (message.t) {
       case "req": {
-        const { id } = message.head;
+        const { id } = message;
         if (this.#open.has(id)) return this.#fail(id, "request id already in use");
         if (this.#open.size >= MAX_OPEN_REQUESTS) return this.#fail(id, "too many open requests");
-        this.#open.set(id, {
-          head: message.head,
-          body: [],
-          size: 0,
-          controller: new AbortController(),
-        });
-        return;
-      }
-      case "chunk": {
-        const open = this.#open.get(message.id);
-        if (!open?.body) return;
-        const { byteLength } = message.payload;
-        if (
-          open.size + byteLength > MAX_REQUEST_BODY ||
-          this.#bodyBytes + byteLength > MAX_BODIES_IN_FLIGHT
-        ) {
-          return this.#tooLarge(message.id);
-        }
-        open.size += byteLength;
-        this.#bodyBytes += byteLength;
-        // A copy: the frame's buffer belongs to the channel.
-        open.body.push(message.payload.slice());
+        this.#open.set(id, { head: message, body: [], size: 0, controller: new AbortController() });
         return;
       }
       case "end": {
@@ -147,9 +107,23 @@ export class Bridge {
       case "cancel":
         this.#cancel(message.id);
         return;
-      case "invalid":
-        if (message.id !== null) this.#fail(message.id, message.reason);
     }
+  }
+
+  #chunk(id: number, payload: Uint8Array) {
+    const open = this.#open.get(id);
+    if (!open?.body) return;
+    const { byteLength } = payload;
+    if (
+      open.size + byteLength > MAX_REQUEST_BODY ||
+      this.#bodyBytes + byteLength > MAX_BODIES_IN_FLIGHT
+    ) {
+      return this.#tooLarge(id);
+    }
+    open.size += byteLength;
+    this.#bodyBytes += byteLength;
+    // A copy: the frame's buffer belongs to the channel.
+    open.body.push(payload.slice());
   }
 
   /** Gives up on every open request; the channel is gone. */
@@ -215,8 +189,8 @@ export class Bridge {
         if (signal.aborted) return false;
         if (done) return true;
         for (const piece of chunks(value)) {
-          if (this.#channel.bufferedAmount > HIGH_WATER) {
-            await this.#channel.drain(LOW_WATER);
+          if (this.#channel.bufferedAmount > CHANNEL_HIGH_WATER) {
+            await this.#channel.drain(CHANNEL_LOW_WATER);
             if (signal.aborted) return false;
           }
           this.#send(frameChunk(id, piece));

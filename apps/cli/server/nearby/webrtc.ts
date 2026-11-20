@@ -8,15 +8,9 @@
 // Every callback werift gets goes through `isolate` (guard.ts): werift's SCTP code calls most of
 // them while it handles a packet, and an error of ours must not pass for one of werift's there.
 // Such an error goes to PeerEvents.error instead, which closes the session.
+import type { IceCandidate } from "@gitui/shared";
 import { type RTCDataChannel, RTCPeerConnection } from "werift";
 import { isolate } from "./guard.ts";
-
-/** An ICE candidate as browsers' RTCIceCandidateInit carries it. */
-export interface IceCandidate {
-  candidate: string;
-  sdpMid?: string | null;
-  sdpMLineIndex?: number | null;
-}
 
 /** A data channel the guest opened. */
 export interface DataChannel {

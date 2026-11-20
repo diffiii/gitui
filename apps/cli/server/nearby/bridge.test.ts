@@ -1,13 +1,18 @@
 import { expect, test } from "bun:test";
-import { CHUNK_SIZE, type ChannelMessage, chunks, frameChunk, parseChunk } from "@gitui/shared";
+import {
+  CHANNEL_HIGH_WATER,
+  CHANNEL_LOW_WATER,
+  CHUNK_SIZE,
+  type ChannelMessage,
+  chunks,
+  frameChunk,
+  parseChunk,
+} from "@gitui/shared";
 import { createApp } from "../app.ts";
 import {
   Bridge,
   type BridgeChannel,
-  decode,
   type Fetch,
-  HIGH_WATER,
-  LOW_WATER,
   MAX_BODIES_IN_FLIGHT,
   MAX_OPEN_REQUESTS,
   MAX_REQUEST_BODY,
@@ -135,22 +140,22 @@ test("a body split into many frames is reassembled", async () => {
 
 test("a large response goes out in CHUNK_SIZE frames, waiting for the channel to drain", async () => {
   const channel = new FakeChannel();
-  const size = 5 * HIGH_WATER + 17;
+  const size = 5 * CHANNEL_HIGH_WATER + 17;
   request(new Bridge(channel, echo), 3, `/big/${size}`);
   await settle();
   // The response stops at the high-water mark until the channel drains.
-  expect(channel.bufferedAmount).toBeGreaterThan(HIGH_WATER);
-  expect(channel.maxBuffered).toBeLessThanOrEqual(HIGH_WATER + 4 + CHUNK_SIZE);
+  expect(channel.bufferedAmount).toBeGreaterThan(CHANNEL_HIGH_WATER);
+  expect(channel.maxBuffered).toBeLessThanOrEqual(CHANNEL_HIGH_WATER + 4 + CHUNK_SIZE);
   expect(replies(channel).get(3)!.ended).toBe(false);
   while (!replies(channel).get(3)!.ended) {
     channel.flush();
     await settle();
   }
-  expect(channel.maxBuffered).toBeLessThanOrEqual(HIGH_WATER + 4 + CHUNK_SIZE);
+  expect(channel.maxBuffered).toBeLessThanOrEqual(CHANNEL_HIGH_WATER + 4 + CHUNK_SIZE);
   const reply = replies(channel).get(3)!;
   expect(reply.body.length).toBe(Math.ceil(size / CHUNK_SIZE));
   expect(Buffer.concat(reply.body)).toEqual(Buffer.alloc(size, 120));
-  expect(LOW_WATER).toBeLessThan(HIGH_WATER);
+  expect(CHANNEL_LOW_WATER).toBeLessThan(CHANNEL_HIGH_WATER);
 });
 
 test("interleaved requests are kept apart and answered as each completes", async () => {
@@ -179,7 +184,7 @@ test("interleaved requests are kept apart and answered as each completes", async
 test("responses stream concurrently, interleaving their frames", async () => {
   const channel = new FakeChannel();
   const bridge = new Bridge(channel, echo);
-  const size = 3 * HIGH_WATER;
+  const size = 3 * CHANNEL_HIGH_WATER;
   request(bridge, 1, `/big/${size}`);
   request(bridge, 2, `/big/${size}`);
   const done = () => [1, 2].every((id) => replies(channel).get(id)?.ended);
@@ -269,7 +274,7 @@ test("a cancel before the end drops the request unanswered", async () => {
 test("closing the bridge stops every response", async () => {
   const channel = new FakeChannel();
   const bridge = new Bridge(channel, echo);
-  request(bridge, 1, `/big/${4 * HIGH_WATER}`);
+  request(bridge, 1, `/big/${4 * CHANNEL_HIGH_WATER}`);
   await settle();
   const sent = channel.sent.length;
   channel.close();
@@ -403,13 +408,15 @@ test("the bodies a bridge holds at once are capped, and the room comes back", as
   expect(replies(channel).get(99)?.head?.status).toBe(200);
 });
 
-test("decode reads frames and heads", () => {
-  expect(decode(frameChunk(5, new Uint8Array([1, 2])))).toEqual({
-    kind: "chunk",
-    id: 5,
-    payload: new Uint8Array([1, 2]),
-  });
-  expect(decode(JSON.stringify({ t: "end", id: 5 }))).toEqual({ kind: "end", id: 5 });
+test("authentication messages are dropped once the bridge has the channel", async () => {
+  const channel = new FakeChannel();
+  const bridge = new Bridge(channel, () => new Response("hi"));
+  bridge.receive(JSON.stringify({ t: "pake", y: "A".repeat(43) }));
+  bridge.receive(JSON.stringify({ t: "pake-fail" }));
+  request(bridge, 1, "/x");
+  await settle();
+  expect(replies(channel).get(1)?.head?.status).toBe(200);
+  expect(replies(channel).size).toBe(1);
 });
 
 test("through the app, the nearby rules want x-gitui and no Origin; nothing else gets in", async () => {

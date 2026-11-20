@@ -1,12 +1,17 @@
 import { expect, test } from "bun:test";
-import { AUTH_ATTEMPTS, frameChunk, MAX_NAME_LENGTH, RENDEZVOUS_PATH } from "./nearby.ts";
+import {
+  AUTH_ATTEMPTS,
+  frameChunk,
+  MAX_MESSAGE_LENGTH,
+  MAX_NAME_LENGTH,
+  newOfferId,
+  RENDEZVOUS_PATH,
+} from "./nearby.ts";
 import {
   decodeChannelMessage,
   decodeClientMessage,
   hostName,
   isId,
-  MAX_MESSAGE_LENGTH,
-  newOfferId,
   NearbyCodecError,
   parseClientMessage,
   parseServerMessage,
@@ -155,7 +160,7 @@ test("parseServerMessage rebuilds every message a peer handles", () => {
   expect(
     server({
       type: "hosts",
-      hosts: [host, { ...host, name: "evil‮koob" }, { ...host, key: "short" }, null],
+      hosts: [host, { ...host, name: "evil\u202Ekoob" }, { ...host, key: "short" }, null],
     }),
   ).toEqual({ type: "hosts", hosts: [host] });
   for (const bad of [
@@ -195,7 +200,7 @@ test("hostName trims and bounds names by code point and rejects control and bidi
   expect(hostName("   ")).toBeNull();
   expect(hostName("")).toBeNull();
   expect(hostName(42)).toBeNull();
-  for (const bad of ["\n", "\u0000", "\u009b", "‮", "⁦", "‏", "؜", " "]) {
+  for (const bad of ["\n", "\u0000", "\u009b", "\u202E", "\u2066", "\u200F", "\u061C", "\u2028"]) {
     expect(hostName(`a${bad}b`)).toBeNull();
   }
   // Emoji sequences keep their joiners.
@@ -203,9 +208,9 @@ test("hostName trims and bounds names by code point and rejects control and bidi
 });
 
 test("toHostName drops what hostName refuses and cuts by code point", () => {
-  expect(toHostName(" my‮-box\n ")).toBe("my-box");
+  expect(toHostName(" my\u202E-box\n ")).toBe("my-box");
   expect(toHostName("💻".repeat(MAX_NAME_LENGTH + 5))).toBe("💻".repeat(MAX_NAME_LENGTH));
-  expect(toHostName("\u0007‮")).toBeNull();
+  expect(toHostName("\u0007\u202E")).toBeNull();
 });
 
 test("rendezvousUrl takes ws: and wss: origins only", () => {
@@ -266,6 +271,23 @@ test("decodeChannelMessage reads each side's messages only", () => {
     kind: "invalid",
   });
   expect(host({ t: "session", token: "short" })).toMatchObject({ kind: "invalid" });
+  // 43 characters that aren't the one encoding of 32 bytes: stray low bits in the last one.
+  const loose = `${"A".repeat(42)}B`;
+  expect(guest({ t: "pake", y: loose })).toMatchObject({
+    kind: "invalid",
+    reason: "invalid share",
+  });
+  expect(guest({ t: "pake-confirm", confirm: loose })).toMatchObject({ kind: "invalid" });
+  expect(guest({ t: "resume", nonce: "n".repeat(22), proof: loose })).toMatchObject({
+    kind: "invalid",
+  });
+  expect(host({ t: "pake", y: b43, confirm: loose })).toMatchObject({
+    kind: "invalid",
+    reason: "invalid tag",
+  });
+  expect(host({ t: "pake", y: loose, confirm: b43 })).toMatchObject({ kind: "invalid" });
+  expect(host({ t: "resume-ok", proof: loose })).toMatchObject({ kind: "invalid" });
+  expect(host({ t: "session", token: loose })).toMatchObject({ kind: "invalid" });
   expect(decodeChannelMessage("nope", "host")).toEqual({
     kind: "invalid",
     id: null,
@@ -294,6 +316,7 @@ const hex = (n: number) =>
 test("sdpFingerprint reads a single SHA-256 fingerprint", () => {
   const print = hex(7);
   const sdp = `v=0\r\na=group:BUNDLE 0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 ${print.toUpperCase()}\r\na=setup:actpass\r\n`;
+  // Normalized to lowercase: sdpFingerprint is the one place that does it.
   expect(sdpFingerprint(sdp)).toBe(`sha-256 ${print}`);
   expect(sdpFingerprint(sdp.replaceAll("\r\n", "\n"))).toBe(`sha-256 ${print}`);
   expect(sdpFingerprint("v=0\r\n")).toBeNull();

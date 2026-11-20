@@ -19,7 +19,7 @@
 // 3. Auth, on the data channel, before anything else. The host prints a 6-digit code once the
 //    channel opens, and the two run CPace (nearby-pake.ts), a PAKE keyed by the code and bound
 //    to both DTLS fingerprints as each side read them from the SDPs (sdpFingerprint, exactly one
-//    SHA-256 per SDP):
+//    SHA-256 per SDP), with a key confirmation of gitui's own (not the draft's):
 //      guest → host  { t: "pake", y }
 //      host → guest  { t: "pake", y, confirm }   the host's key-confirmation tag
 //      guest → host  { t: "pake-confirm", confirm } once the host's tag checked out, or
@@ -55,6 +55,7 @@
 // host's terminal. The Worker's Origin check only keeps other websites' pages from opening guest
 // sockets in their visitors' browsers; anything that isn't a browser can send whatever Origin it
 // likes.
+import { randomId } from "./bytes.ts";
 
 /** Where the rendezvous Worker lives (apps/rendezvous). */
 export const RENDEZVOUS_ORIGIN = "wss://rendezvous.gitui.diffiii.dev";
@@ -78,6 +79,16 @@ export const AUTH_ATTEMPTS = 3;
 /** The most guests a host lets prove themselves at once; it refuses more offers as `busy`. */
 export const MAX_PENDING = 4;
 
+/**
+ * Data channel flow control, for both peers: a sender stops once more than CHANNEL_HIGH_WATER
+ * bytes are queued, and goes on when the queue drains to CHANNEL_LOW_WATER.
+ */
+export const CHANNEL_HIGH_WATER = 1024 * 1024;
+export const CHANNEL_LOW_WATER = 256 * 1024;
+
+/** Longest message a peer may send the rendezvous, in UTF-16 code units. An SDP is a few KiB. */
+export const MAX_MESSAGE_LENGTH = 64 * 1024;
+
 // ── Rendezvous WebSocket (JSON text messages) ─────────────────────────────────────────────
 
 export interface HostInfo {
@@ -98,8 +109,14 @@ export interface HostInfo {
 /** HostInfo.key: 16 to 64 URL-safe characters. */
 export const HOST_KEY = /^[\w-]{16,64}$/;
 
+/** A peer id the rendezvous assigned (a UUID from the Worker). */
+export const PEER_ID = /^[\w-]{1,64}$/;
+
 /** SignalData.offerId: 16 to 64 URL-safe characters, random (newOfferId). */
 export const OFFER_ID = /^[\w-]{16,64}$/;
+
+/** A fresh SignalData offerId. */
+export const newOfferId = () => randomId(16);
 
 /** An ICE candidate as browsers' RTCIceCandidateInit carries it. */
 export interface IceCandidate {
@@ -150,6 +167,15 @@ export type ServerMessage =
   | { type: "pong" };
 
 // ── Data channel ──────────────────────────────────────────────────────────────────────────
+
+/** A DTLS fingerprint as sdpFingerprint reads it: "sha-256 ab:cd:…", lowercase. */
+export type Fingerprint = string;
+
+/** Both DTLS fingerprints of a connection, by role, as each side read them from the SDPs. */
+export interface Fingerprints {
+  guest: Fingerprint;
+  host: Fingerprint;
+}
 
 /** JSON text messages the guest sends on the data channel (step 3, then 4). */
 export type GuestMessage =
