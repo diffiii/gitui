@@ -2,6 +2,7 @@
   "name": "@diffiii/gitui",
   "version": "0.1.0",
   "description": "A lazygit-inspired git client that runs in your browser on localhost",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/diffiii/gitui.git",
@@ -19,7 +20,7 @@
   },
   "scripts": {
     "dev": "bun --watch server/dev.ts",
-    "build": "bun run --cwd ../web build && rm -rf dist && bun build bin/gitui.ts --target node --outfile dist/gitui.js && cp -R ../web/dist dist/web"
+    "build": "bun run --cwd ../web build && bun scripts/build.ts"
   },
   "devDependencies": {
     "@gitui/shared": "workspace:*",
