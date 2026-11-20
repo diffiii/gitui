@@ -160,8 +160,12 @@ export function startNearby(options: NearbyOptions) {
     { offerId, sdp: offerSdp, resume }: Extract<SignalData, { kind: "offer" }>,
   ) {
     const at = sessionKey(client.family, from);
-    const pending = [...sessions].filter(([id, s]) => id !== at && !s.authenticated).length;
-    const admission = limiter.admit(pending, resume === true);
+    const resuming = resume === true;
+    // Offers that resume and those that don't are pending in pools of their own (OfferLimiter).
+    const pending = [...sessions].filter(
+      ([id, s]) => id !== at && !s.authenticated && s.resuming === resuming,
+    ).length;
+    const admission = limiter.admit(pending, resuming);
     if (!admission.ok) {
       // Said, so the guest needn't wait for an answer that won't come, unless refusals came too
       // often.
@@ -174,7 +178,7 @@ export function startNearby(options: NearbyOptions) {
     const session: GuestSession = new GuestSession({
       offerSdp,
       offerId,
-      resuming: resume === true,
+      resuming,
       stunUrls: STUN_URLS,
       signal: (data) => client.send(from, data),
       fetch,

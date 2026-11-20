@@ -80,8 +80,13 @@ export const CHUNK_SIZE = 16 * 1024;
 export const AUTH_CODE_DIGITS = 6;
 /** `pake`s (and resumes after the first) a channel may fail before the host closes it. */
 export const AUTH_ATTEMPTS = 3;
-/** The most guests a host lets prove themselves at once; it refuses more offers as `busy`. */
+/** The most guests a host lets prove themselves with a code at once; more are `busy`. */
 export const MAX_PENDING = 4;
+/**
+ * The same for offers that say they resume, in a pool of their own, so that offers for a code
+ * can't keep paired devices out.
+ */
+export const MAX_PENDING_RESUMES = 2;
 
 /**
  * Data channel flow control, for both peers: a sender stops once more than CHANNEL_HIGH_WATER
@@ -100,8 +105,13 @@ export const MAX_MESSAGE_LENGTH = 64 * 1024;
 
 /** The rendezvous counts messages in fixed windows of this many ms: floor(now / RATE_WINDOW). */
 export const RATE_WINDOW = 10_000;
-/** The most offers a host takes per minute, so at most this many in any RATE_WINDOW too. */
+/**
+ * The most offers a host takes per minute, so at most this many in any RATE_WINDOW too. Of
+ * these, MAX_RESUMES_PER_MINUTE are kept for offers that resume, and the rest for the others,
+ * so offers for a code can't use them all.
+ */
 export const MAX_OFFERS_PER_MINUTE = 12;
+export const MAX_RESUMES_PER_MINUTE = 4;
 /** The most local candidates a host trickles for one offer; it drops the rest. */
 export const MAX_LOCAL_CANDIDATES = 16;
 /** The most `refused` signals a host sends per RATE_WINDOW; past that it ignores offers quietly. */
@@ -177,7 +187,8 @@ export type RelayedSignal = Signal<string>;
 
 /**
  * Why a host refused an offer (SignalData's `refused`), as hosts send it.
- * - `busy`: too many guests are proving themselves at once (MAX_PENDING).
+ * - `busy`: too many guests are proving themselves at once (MAX_PENDING, or for offers that
+ *   resume, MAX_PENDING_RESUMES).
  * - `rate-limited`: too many offers came lately (MAX_OFFERS_PER_MINUTE).
  * - `pairing-locked`: too many codes were tried on the host lately, so it pairs no new device
  *   for a while; paired devices can still resume.

@@ -122,6 +122,11 @@ export class GuestSession {
     this.#answered = this.#answer();
   }
 
+  /** Whether the offer said the guest will resume (GuestOptions.resuming). */
+  get resuming() {
+    return this.#options.resuming === true;
+  }
+
   /** Whether the guest entered the right code or resumed. */
   get authenticated() {
     return this.#state === "open";

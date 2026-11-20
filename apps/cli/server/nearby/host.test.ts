@@ -9,6 +9,7 @@ import {
   type HostMessage,
   MAX_OFFERS_PER_MINUTE,
   MAX_PENDING,
+  MAX_RESUMES_PER_MINUTE,
   MAX_REFUSALS_PER_WINDOW,
   newOfferId,
   sdpFingerprint,
@@ -307,8 +308,8 @@ test("offers over the limits are refused, with the reason", async () => {
   pc.createDataChannel(DATA_CHANNEL_LABEL);
   await pc.setLocalDescription(await pc.createOffer());
   const sdp = pc.localDescription!.sdp;
-  const offer = (from: string, offerId: string) =>
-    v4.receive({ type: "signal", from, data: { kind: "offer", offerId, sdp } });
+  const offer = (from: string, offerId: string, resume = false) =>
+    v4.receive({ type: "signal", from, data: { kind: "offer", offerId, sdp, resume } });
   const refusals = () =>
     v4.sent.flatMap((m) => (m.type === "signal" && m.data.kind === "refused" ? [m] : []));
 
@@ -323,7 +324,7 @@ test("offers over the limits are refused, with the reason", async () => {
   ]);
   expect(log.at(-1)).toBe("Nearby: ignoring connection requests, too many at once");
   // The same guests sending new offers replace their sessions, until the minute's offers run out.
-  for (let i = MAX_PENDING; i < MAX_OFFERS_PER_MINUTE; i++)
+  for (let i = MAX_PENDING; i < MAX_OFFERS_PER_MINUTE - MAX_RESUMES_PER_MINUTE; i++)
     offer("g0", `offer-${i}`.padEnd(16, "x"));
   offer("g0", "offer-late".padEnd(16, "x"));
   expect(refusals().at(-1)?.data).toEqual({
@@ -331,6 +332,12 @@ test("offers over the limits are refused, with the reason", async () => {
     offerId: "offer-late".padEnd(16, "x"),
     reason: "rate-limited",
   });
+  // A paired device still gets in: offers that resume have their own pool and their own share.
+  const before = refusals().length;
+  offer("paired", "offer-paired".padEnd(16, "x"), true);
+  await until(() => signals(v4, "paired").length > 0);
+  expect(refusals()).toHaveLength(before);
+  expect(signals(v4, "paired")[0]).toMatchObject({ data: { kind: "answer" } });
 });
 
 test("a flood of offers gets at most MAX_REFUSALS_PER_WINDOW refusals", () => {
