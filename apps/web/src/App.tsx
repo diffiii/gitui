@@ -58,11 +58,14 @@ export default function App() {
 
 /**
  * The repo's views, unless this device may only use repositories opened on the computer and
- * this isn't one (a link from elsewhere): then the picker, saying so.
+ * this isn't one (a link from elsewhere): then the picker, saying so. The views wait for the
+ * repo's first status, so such a repo doesn't flash their errors first; the status keeps polling,
+ * so the views come up once the repo is opened on the computer.
  */
 function OpenedRepo({ children }: { children: React.ReactNode }) {
-  const { error } = useStatus();
+  const { data, error } = useStatus();
   if (isApiError(error, "not-opened")) return <RepoWelcome onOpen={openRepo} notOpened />;
+  if (data === undefined && !error) return null;
   return children;
 }
 

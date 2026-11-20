@@ -36,7 +36,7 @@ function useOpenRepo(onOpen: (root: string) => void) {
 
 /** Why a path typed on another device can't be opened, and what to do instead. */
 const NOT_OPENED =
-  "This repository wasn't opened on the computer running gitui. From this device you can open the recent repositories, or run gitui with its path on the computer.";
+  "Open it on your computer first: this device can only use repositories gitui opened there. Run gitui with its path on the computer, or pick a recent one.";
 
 function tildify(p: string, home?: string) {
   return home && p.startsWith(home) ? `~${p.slice(home.length)}` : p;
@@ -44,7 +44,7 @@ function tildify(p: string, home?: string) {
 
 /**
  * Full-page picker shown when no repository is selected, or when this device may not use the
- * selected one (`notOpened`).
+ * selected one yet (`notOpened`): it asks for it to be opened on the computer first.
  */
 export function RepoWelcome({
   onOpen,
@@ -60,8 +60,12 @@ export function RepoWelcome({
   return (
     <CenteredScreen
       icon={FolderGit2}
-      title="Open a repository"
-      description="Paste a path to any folder inside a git repository, or pick a recent one."
+      title={notOpened ? "Open this repository on your computer first" : "Open a repository"}
+      description={
+        notOpened
+          ? "This device can only use repositories gitui opened on the computer it runs on. Run gitui with this repository's path there, and it shows up here. Or pick a recent one."
+          : "Paste a path to any folder inside a git repository, or pick a recent one."
+      }
     >
       <form
         className="flex gap-2"
@@ -81,8 +85,8 @@ export function RepoWelcome({
           Open
         </Button>
       </form>
-      {(open.isIdle ? notOpened : open.notOpened) && (
-        <p role="alert" className="mt-3 px-1 text-sm text-destructive">
+      {open.notOpened && (
+        <p role="status" className="mt-3 px-1 text-sm text-muted-foreground">
           {NOT_OPENED}
         </p>
       )}
@@ -149,7 +153,7 @@ export function RepoSwitcher({ repo, onOpen }: { repo: string; onOpen: (root: st
           />
           <CommandList>
             {open.notOpened && (
-              <p role="alert" className="px-3 py-2 text-xs text-destructive">
+              <p role="status" className="px-3 py-2 text-xs text-muted-foreground">
                 {NOT_OPENED}
               </p>
             )}
