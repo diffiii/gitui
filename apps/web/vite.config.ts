@@ -31,7 +31,8 @@ export default defineConfig({
     alias: { "@": path.resolve(import.meta.dirname, "src") },
   },
   server: {
-    proxy: { "/api": `http://127.0.0.1:${API_PORT}` },
+    // Keep the page's Host, so the API sees its same-origin requests as such (POSTs carry Origin).
+    proxy: { "/api": { target: `http://127.0.0.1:${API_PORT}`, changeOrigin: false } },
   },
   plugins: lazyPlugins(() => [react(), tailwindcss(), hostedHeaders()]),
 });
