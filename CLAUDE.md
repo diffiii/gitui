@@ -26,8 +26,8 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   prefs, `src/components/` the views, and `src/components/ui/` the shadcn components. Unit
   tests sit next to their module (`src/**/*.test.ts`, type-checked by `tsconfig.test.json`).
   `@/` maps to `apps/web/src`.
-- `packages/shared/` (`@gitui/shared`): API types used by both sides, imported as
-  `@gitui/shared`.
+- `packages/shared/` (`@gitui/shared`): API types and the connection contract (default port,
+  client header, hosted origin, pairing links) used by both sides, imported as `@gitui/shared`.
 - Root: `scripts/dev.ts` (runs both apps), `vite.config.ts` (workspace fmt/lint/type check
   config, `defaultPackage` points `vp dev`/`vp build` at `apps/web`), `tsconfig.json`
   (project references to every package).

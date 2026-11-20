@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { CLIENT_HEADER } from "@gitui/shared";
 import { Hono } from "hono";
 import * as g from "./git.ts";
 import { withRepoLock } from "./lock.ts";
@@ -105,7 +106,7 @@ export function createApp(opts: AppOptions = {}) {
   app.use("/api/*", async (c, next) => {
     const host = (c.req.header("host") ?? "").replace(/:\d+$/, "");
     if (!["localhost", "127.0.0.1", "[::1]"].includes(host)) return c.text("Forbidden host", 403);
-    if (c.req.header("x-gitui") !== "1") return c.text("Forbidden", 403);
+    if (c.req.header(CLIENT_HEADER) !== "1") return c.text("Forbidden", 403);
     await next();
   });
 

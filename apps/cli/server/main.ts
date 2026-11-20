@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import path from "node:path";
+import { DEFAULT_PORT } from "@gitui/shared";
 import { createApp } from "./app.ts";
 
 // The built @gitui/web app (a workspace dependency), served in production.
@@ -46,7 +47,7 @@ export function start(opts: StartOptions) {
 if (import.meta.main) {
   // Dev API server; Vite (vp dev) proxies /api here.
   const server = start({
-    port: Number(process.env.GITUI_PORT ?? 4777),
+    port: Number(process.env.GITUI_PORT ?? DEFAULT_PORT),
     initialRepo: process.env.GITUI_REPO,
     serveStatic: false,
   });

@@ -32,7 +32,7 @@ bun test                  # run the tests
 
 - `apps/cli/`: the `gitui` CLI and a [Hono](https://hono.dev) API (`server/`) that shells out to the `git` CLI (`server/git.ts`). It listens on 127.0.0.1 only, rejects requests whose `Host` isn't localhost, and requires an `x-gitui` header on every API request, so other websites can't drive it.
 - `apps/web/`: React, Tailwind v4, shadcn/ui and TanStack Query. Status polls every 3s, and every mutation refreshes the repo's queries.
-- `packages/shared/` (`@gitui/shared`): API types used by both sides.
+- `packages/shared/` (`@gitui/shared`): API types and connection constants used by both sides.
 - Recent repositories are stored in `~/.config/gitui/recent.json`.
 
 The git backend needs a real filesystem and the `git` binary, so it can't run on Cloudflare Workers. Only the static UI could be hosted there.

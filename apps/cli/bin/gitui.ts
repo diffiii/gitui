@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { spawn } from "node:child_process";
+import { DEFAULT_PORT } from "@gitui/shared";
 import { pushRecent } from "../server/app.ts";
 import { resolveRepo } from "../server/git.ts";
 import { start } from "../server/main.ts";
@@ -11,12 +12,12 @@ Usage:
   gitui <path>     open the repository containing <path> (e.g. \`gitui .\`)
 
 Options:
-  -p, --port <n>   port to listen on (default 4777)
+  -p, --port <n>   port to listen on (default ${DEFAULT_PORT})
   --no-open        don't open the browser
   -h, --help       show this help`;
 
 const args = process.argv.slice(2);
-let port = 4777;
+let port = DEFAULT_PORT;
 let open = true;
 let target: string | undefined;
 

@@ -1,4 +1,11 @@
-import type { Branch, Commit, CommitDetail, FileStatus, Status } from "@gitui/shared";
+import {
+  CLIENT_HEADER,
+  type Branch,
+  type Commit,
+  type CommitDetail,
+  type FileStatus,
+  type Status,
+} from "@gitui/shared";
 
 export type { Branch, Commit, CommitDetail, FileStatus, Status };
 
@@ -8,7 +15,7 @@ async function request<T>(method: "GET" | "POST", url: string, body?: unknown): 
   const res = await fetch(url, {
     method,
     headers: {
-      "x-gitui": "1",
+      [CLIENT_HEADER]: "1",
       ...(body !== undefined ? { "content-type": "application/json" } : {}),
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
