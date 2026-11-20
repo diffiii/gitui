@@ -1,7 +1,12 @@
 // The host's connection to the rendezvous service (the contract's step 1): announces this
 // machine to guests on the same network and relays WebRTC signals. One RendezvousClient keeps
 // one socket, pinned to an IP family, alive: it pings, and reconnects with backoff.
-import { type ClientMessage, parseServerMessage, type SignalData } from "@gitui/shared";
+import {
+  type ClientMessage,
+  type ErrorCode,
+  parseServerMessage,
+  type SignalData,
+} from "@gitui/shared";
 import { WebSocket } from "ws";
 
 /**
@@ -53,8 +58,8 @@ export interface RendezvousEvents {
   signal: (from: string, data: SignalData) => void;
   /** Peer `id` disconnected. */
   gone: (id: string) => void;
-  /** The service reported an error. */
-  error: (message: string) => void;
+  /** The service reported an error; all but `unknown-peer` close the socket. */
+  error: (code: ErrorCode, message: string) => void;
 }
 
 /** The delay before reconnection attempt `attempt` (0 for the first). */
@@ -65,9 +70,9 @@ export function backoffDelay(attempt: number, { first, max } = BACKOFF) {
 export interface RendezvousOptions {
   url: string;
   family: Family;
-  /** The `hello`'s name and key. */
+  /** The `hello`'s name and secret (HOST_SECRET). */
   name: string;
-  key: string;
+  secret: string;
   events: RendezvousEvents;
   backoff?: typeof BACKOFF;
   keepalive?: typeof KEEPALIVE;
@@ -107,7 +112,7 @@ export class RendezvousClient {
   }
 
   #connect() {
-    const { url, family, name, key, events } = this.#options;
+    const { url, family, name, secret, events } = this.#options;
     const { interval, timeout } = this.#options.keepalive ?? KEEPALIVE;
     const socket = (this.#options.open ?? openSocket)(url, family);
     this.#socket = socket;
@@ -115,7 +120,7 @@ export class RendezvousClient {
     let pong: ReturnType<typeof setTimeout> | undefined;
 
     socket.on("open", () => {
-      this.#send({ type: "hello", role: "host", name, key });
+      this.#send({ type: "hello", role: "host", name, secret });
       ping = setInterval(() => {
         // One ping at a time: the timeout ends the socket before the next is due.
         if (pong !== undefined) return;
@@ -140,7 +145,7 @@ export class RendezvousClient {
         case "gone":
           return events.gone(message.id);
         case "error":
-          return events.error(message.message);
+          return events.error(message.code, message.message);
       }
     });
     // A socket that fails to open emits `error`, then `close`, so `close` covers both.

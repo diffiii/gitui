@@ -38,11 +38,13 @@ test("a host never visible says it is visible once it is", () => {
   expect(status.lost).toBe(false);
 });
 
-test("no room is said once until a welcome", () => {
-  const noRoom: StatusEvent = { type: "no-room" };
-  expect(run([4], [noRoom, noRoom, welcome(4), noRoom]).lines).toEqual([
-    "no-room",
+test("no room is said once until a welcome, or until the reason changes", () => {
+  const hosts: StatusEvent = { type: "no-room", why: "hosts" };
+  const sockets: StatusEvent = { type: "no-room", why: "sockets" };
+  expect(run([4], [hosts, hosts, welcome(4), hosts, sockets, sockets]).lines).toEqual([
+    "no-room-hosts",
     "visible",
-    "no-room",
+    "no-room-hosts",
+    "no-room-sockets",
   ]);
 });

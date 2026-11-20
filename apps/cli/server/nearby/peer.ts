@@ -13,6 +13,7 @@ import {
   type HostPake,
   hostRespond,
   type IceCandidate,
+  MAX_LOCAL_CANDIDATES,
   resumeAnswer,
   type SignalData,
 } from "@gitui/shared";
@@ -32,6 +33,8 @@ export const AUTH_TIMEOUT = 60_000;
 
 /** The most candidates a guest may trickle for one offer; the rest are ignored. */
 export const MAX_REMOTE_CANDIDATES = 32;
+// This side trickles at most MAX_LOCAL_CANDIDATES, which the rendezvous's limit for hosts
+// counts on (apps/rendezvous/src/network.ts).
 
 /** What the host sends a guest about its offer: its answer and candidates. */
 export type HostSignal =
@@ -79,6 +82,8 @@ export class GuestSession {
   readonly #gate: Gatekeeper;
   /** The candidates the guest trickled for this offer. */
   #candidates = 0;
+  /** The candidates this side trickled. */
+  #localCandidates = 0;
   #state: State = "answering";
   #expected: Expected | null = null;
   /** The CPace run waiting for the guest's `pake-confirm`. */
@@ -91,8 +96,10 @@ export class GuestSession {
     this.#options = options;
     this.#gate = new Gatekeeper(options.budget);
     this.#peer = createAnsweringPeer(options.stunUrls, {
-      candidate: (candidate) =>
-        options.signal({ kind: "candidate", offerId: options.offerId, candidate }),
+      candidate: (candidate) => {
+        if (++this.#localCandidates > MAX_LOCAL_CANDIDATES) return;
+        options.signal({ kind: "candidate", offerId: options.offerId, candidate });
+      },
       channel: (channel) => this.#take(channel),
       closed: () => this.close(),
       error: (error) => this.close(`Nearby: closed a connection after an error: ${String(error)}`),

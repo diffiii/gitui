@@ -5,8 +5,8 @@
 // public address, and a guest may reach it over either family. Each session belongs to the
 // socket its offer came on, which carries all its signals and its `gone`.
 import net from "node:net";
-import { HOSTED_ORIGIN, type SignalData, STUN_URLS } from "@gitui/shared";
-import { BUDGET_LINE, newHostKey, PairingBudget, Tokens } from "./auth.ts";
+import { HOSTED_ORIGIN, hostKey, type SignalData, STUN_URLS } from "@gitui/shared";
+import { BUDGET_LINE, newHostSecret, PairingBudget, Tokens } from "./auth.ts";
 import type { Fetch } from "./bridge.ts";
 import { guardWerift } from "./guard.ts";
 import { OfferLimiter } from "./offers.ts";
@@ -33,12 +33,6 @@ export function familiesFor(url: string): Family[] {
   return family === 4 || family === 6 ? [family] : [4, 6];
 }
 
-/**
- * The service's refusals for want of room (MAX_HOSTS and MAX_SOCKETS_PER_KEY in
- * apps/rendezvous/src/network.ts). The socket closes after one and is retried with backoff.
- */
-const NO_ROOM = /^Too many (hosts on this network|sockets for this host)$/;
-
 /** `text` without control characters, which would let a remote string drive the terminal. */
 const printable = (text: string) => text.replace(/\p{Cc}/gu, "");
 
@@ -60,7 +54,9 @@ export interface NearbyOptions {
 /** Starts listing this machine and answering guests; `stop` ends every connection. */
 export function startNearby(options: NearbyOptions) {
   const { url, name, fetch, log } = options;
-  const key = newHostKey();
+  const secret = newHostSecret();
+  /** What guests see: the service lists this host under it. */
+  const key = hostKey(secret);
   const tokens = new Tokens();
   const budget = new PairingBudget({ onExhausted: () => log(BUDGET_LINE) });
   const limiter = new OfferLimiter(budget);
@@ -78,8 +74,10 @@ export function startNearby(options: NearbyOptions) {
     unreachable: () => `Nearby: can't reach the rendezvous service at ${url}, retrying`,
     lost: () => "Nearby: lost the rendezvous service, reconnecting",
     reconnected: () => "Nearby: reconnected to the rendezvous service",
-    "no-room": () =>
+    "no-room-hosts": () =>
       "Nearby: too many computers on this network use gitui nearby already, retrying",
+    "no-room-sockets": () =>
+      "Nearby: the rendezvous service still holds this computer's earlier connections, retrying",
   };
   const report = (event: StatusEvent) => {
     const [next, line] = nextStatus(status, event);
@@ -109,7 +107,7 @@ export function startNearby(options: NearbyOptions) {
       url,
       family,
       name,
-      key,
+      secret,
       open: options.open,
       backoff: options.backoff,
       keepalive: options.keepalive,
@@ -139,9 +137,12 @@ export function startNearby(options: NearbyOptions) {
         gone(id) {
           forGuest(family, id, () => sessions.get(sessionKey(family, id))?.close());
         },
-        error(message) {
-          if (NO_ROOM.test(message)) return report({ type: "no-room" });
-          log(`Nearby: the rendezvous service reported: ${printable(message)}`);
+        // The service's refusals for want of room (MAX_HOSTS and MAX_SOCKETS_PER_KEY in
+        // apps/rendezvous/src/network.ts) close the socket, which is retried with backoff.
+        error(code, message) {
+          if (code === "host-limit") return report({ type: "no-room", why: "hosts" });
+          if (code === "key-limit") return report({ type: "no-room", why: "sockets" });
+          log(`Nearby: the rendezvous service reported: ${printable(message)} (${code})`);
         },
       },
     });
@@ -157,8 +158,9 @@ export function startNearby(options: NearbyOptions) {
     const pending = [...sessions].filter(([id, s]) => id !== at && !s.authenticated).length;
     const admission = limiter.admit(pending, resume === true);
     if (!admission.ok) {
-      // Said, so the guest needn't wait for an answer that won't come.
-      client.send(from, { kind: "refused", offerId, reason: admission.reason });
+      // Said, so the guest needn't wait for an answer that won't come, unless refusals came too
+      // often.
+      if (admission.tell) client.send(from, { kind: "refused", offerId, reason: admission.reason });
       if (admission.line) log(admission.line);
       return;
     }

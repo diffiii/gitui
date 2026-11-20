@@ -9,9 +9,12 @@ import {
   AUTH_ATTEMPTS,
   type ChannelMessage,
   type ClientMessage,
+  ERROR_CODES,
+  type ErrorCode,
   type Fingerprint,
   type GuestMessage,
   HOST_KEY,
+  HOST_SECRET,
   type HostInfo,
   type HostMessage,
   type IceCandidate,
@@ -179,8 +182,8 @@ export function decodeClientMessage(text: string): ClientMessage {
     if (message.role === "guest") return { type: "hello", role: "guest" };
     if (message.role !== "host") return fail("invalid role");
     const name = hostName(message.name) ?? fail("invalid name");
-    const key = string(message.key, "key", HOST_KEY);
-    return { type: "hello", role: "host", name, key };
+    const secret = string(message.secret, "secret", HOST_SECRET);
+    return { type: "hello", role: "host", name, secret };
   }
   if (message.type === "signal") {
     const to = string(message.to, "peer id", PEER_ID);
@@ -212,8 +215,12 @@ export function decodeServerMessage(text: string): ServerMessage {
         from: string(message.from, "peer id", PEER_ID),
         data: decodeSignal(message.data),
       };
-    case "error":
-      return { type: "error", message: string(message.message, "error message").slice(0, 500) };
+    case "error": {
+      const code = message.code as ErrorCode;
+      if (!ERROR_CODES.includes(code)) return fail("invalid error code");
+      const text = string(message.message, "error message").slice(0, 500);
+      return { type: "error", code, message: text };
+    }
     case "pong":
       return { type: "pong" };
     default:

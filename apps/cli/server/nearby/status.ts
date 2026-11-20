@@ -16,9 +16,16 @@ export interface Status {
   /** Whether the host is said to be unreachable or lost, and not back yet. */
   readonly lost: boolean;
   readonly everVisible: boolean;
-  /** Whether the service's lack of room was said since the last welcome. */
-  readonly noRoomSaid: boolean;
+  /** The service's lack of room last said since the last welcome, if any. */
+  readonly noRoomSaid: NoRoom | null;
 }
+
+/**
+ * Why the service had no room for this host: the network lists as many hosts as it may
+ * (`hosts`), or this host's key has as many sockets there as it may (`sockets`): earlier ones of
+ * this run's, since only this run holds the secret behind its key.
+ */
+export type NoRoom = "hosts" | "sockets";
 
 export type StatusEvent =
   | { type: "welcome"; family: Family }
@@ -26,10 +33,16 @@ export type StatusEvent =
   /** STATUS_DELAY passed. */
   | { type: "timeout" }
   /** The service had no room for this host (MAX_HOSTS or MAX_SOCKETS_PER_KEY). */
-  | { type: "no-room" };
+  | { type: "no-room"; why: NoRoom };
 
 /** A line to print: host.ts words them. */
-export type StatusLine = "visible" | "unreachable" | "lost" | "reconnected" | "no-room";
+export type StatusLine =
+  | "visible"
+  | "unreachable"
+  | "lost"
+  | "reconnected"
+  | "no-room-hosts"
+  | "no-room-sockets";
 
 export const initialStatus = (families: readonly Family[]): Status => ({
   families,
@@ -38,7 +51,7 @@ export const initialStatus = (families: readonly Family[]): Status => ({
   announced: false,
   lost: false,
   everVisible: false,
-  noRoomSaid: false,
+  noRoomSaid: null,
 });
 
 type Next = [Status, StatusLine | null];
@@ -63,12 +76,13 @@ export function nextStatus(status: Status, event: StatusEvent): Next {
     case "timeout":
       return announce(status);
     case "no-room":
-      return status.noRoomSaid ? [status, null] : [{ ...status, noRoomSaid: true }, "no-room"];
+      if (status.noRoomSaid === event.why) return [status, null];
+      return [{ ...status, noRoomSaid: event.why }, `no-room-${event.why}`];
     case "welcome": {
       const visible = add(status.visible, event.family);
       const [next, line] = settle({ ...status, visible }, event.family);
       const back = next.announced && next.lost;
-      const after = { ...next, lost: false, everVisible: true, noRoomSaid: false };
+      const after = { ...next, lost: false, everVisible: true, noRoomSaid: null };
       if (back) return [after, next.everVisible ? "reconnected" : "visible"];
       return [after, line];
     }

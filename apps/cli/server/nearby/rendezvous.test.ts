@@ -28,8 +28,8 @@ afterEach(() => {
   for (const fn of cleanup.splice(0)) fn();
 });
 
-const KEY = "k".repeat(22);
-const hello: ClientMessage = { type: "hello", role: "host", name: "Desk", key: KEY };
+const SECRET = "s".repeat(43);
+const hello: ClientMessage = { type: "hello", role: "host", name: "Desk", secret: SECRET };
 
 /** A client on fake sockets, logging its events. */
 function client(options: Partial<RendezvousOptions> = {}) {
@@ -40,13 +40,13 @@ function client(options: Partial<RendezvousOptions> = {}) {
     down: () => log.push("down"),
     signal: (from, data) => log.push(`signal ${from} ${data.kind}`),
     gone: (id) => log.push(`gone ${id}`),
-    error: (message) => log.push(`error ${message}`),
+    error: (code, message) => log.push(`error ${code} ${message}`),
   };
   const rendezvous = new RendezvousClient({
     url: "wss://rendezvous.example/v1/connect",
     family: 6,
     name: "Desk",
-    key: KEY,
+    secret: SECRET,
     events,
     open: fake.open,
     backoff: { first: 10, max: 20 },
@@ -57,7 +57,7 @@ function client(options: Partial<RendezvousOptions> = {}) {
   return { rendezvous, log, ...fake };
 }
 
-test("the client says hello with its key, relays signals both ways and reconnects", async () => {
+test("the client says hello with its secret, relays signals both ways and reconnects", async () => {
   const { rendezvous, log, sockets } = client();
   expect(sockets).toHaveLength(1);
   const [socket] = sockets;
@@ -76,9 +76,14 @@ test("the client says hello with its key, relays signals both ways and reconnect
     data: { kind: "offer", offerId: "offer-0123456789ab", sdp: "v=0" },
   });
   socket.receive({ type: "gone", id: "g1" });
-  socket.receive({ type: "error", message: "slow down" });
+  socket.receive({ type: "error", code: "unknown-peer", message: "Unknown peer" });
   socket.emit("message", Buffer.from('{"type":"gone","id":"g2"}'), true);
-  expect(log).toEqual(["welcome h1", "signal g1 offer", "gone g1", "error slow down"]);
+  expect(log).toEqual([
+    "welcome h1",
+    "signal g1 offer",
+    "gone g1",
+    "error unknown-peer Unknown peer",
+  ]);
 
   rendezvous.send("g1", { kind: "answer", offerId: "offer-0123456789ab", sdp: "v=0" });
   expect(socket.sent[1]).toEqual({
@@ -142,7 +147,7 @@ test("stopping closes the socket and reconnects no more", async () => {
   expect(log).toEqual([]);
 });
 
-test("over a real WebSocket: hello with the key, protocol pings, IPv4 and IPv6", async () => {
+test("over a real WebSocket: hello with the secret, protocol pings, IPv4 and IPv6", async () => {
   const pings: string[] = [];
   const hellos: string[] = [];
   const serve = (hostname: string, port = 0) =>
@@ -166,7 +171,7 @@ test("over a real WebSocket: hello with the key, protocol pings, IPv4 and IPv6",
       url: `ws://localhost:${v4.port}`,
       family,
       name: "Desk",
-      key: KEY,
+      secret: SECRET,
       keepalive: { interval: 20, timeout: 1000 },
       events: {
         welcome() {},

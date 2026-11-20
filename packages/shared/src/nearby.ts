@@ -8,7 +8,9 @@
 //    (a hash of the public IP: the address for IPv4, the /64 for IPv6). The object tells guests
 //    which hosts are online and forwards `signal` messages between a guest and a host. It keeps
 //    no state beyond the live sockets. When a peer leaves, every peer of the other role on the
-//    network gets its `gone`.
+//    network gets its `gone`. A host says hello with a display name and a random secret
+//    (HOST_SECRET); the object lists it under hostKey(secret), so only the holder of the secret
+//    can be listed under that key, or take its sockets.
 // 2. WebRTC. The guest creates the offer, with a fresh `offerId` that the host's answer and
 //    both sides' candidates repeat, so signals of an older offer are told apart and dropped. A
 //    host that won't take an offer says so with `refused`. The data channel (DATA_CHANNEL_LABEL,
@@ -47,15 +49,16 @@
 // SDPs and the candidates (addresses), and it could swap SDPs to sit in the middle of a
 // connection; but CPace binds the code to the fingerprints each side sees, so a relay that
 // swapped them derives other keys and the confirmation fails, and an observed run gives it
-// nothing to test codes against offline. HostInfo.key and names are public hints for finding a
-// host, not proofs: any device on the network can list itself with a copied key and name, and
-// it then fails the code's confirmation and can't prove a resume token. What remains is online
-// guessing (one guess per `pake`, bounded by the attempts per channel, the host's limits on
-// offers and its pairing budget across every channel), and anyone who can read the code in the
-// host's terminal. The Worker's Origin check only keeps other websites' pages from opening guest
-// sockets in their visitors' browsers; anything that isn't a browser can send whatever Origin it
-// likes.
-import { randomId } from "./bytes.ts";
+// nothing to test codes against offline. Names are public hints for finding a host, not
+// proofs: any device on the network can list itself under a copied name (though not under a
+// copied key, which takes the host's secret), and it then fails the code's confirmation and
+// can't prove a resume token. What remains is online guessing (one guess per `pake`, bounded
+// by the attempts per channel, the host's limits on offers and its pairing budget across every
+// channel), and anyone who can read the code in the host's terminal. The Worker's Origin check
+// only keeps other websites' pages from opening guest sockets in their visitors' browsers;
+// anything that isn't a browser can send whatever Origin it likes.
+import { sha256 } from "@noble/hashes/sha2.js";
+import { randomId, toBase64Url, utf8 } from "./bytes.ts";
 
 /** Where the rendezvous Worker lives (apps/rendezvous). */
 export const RENDEZVOUS_ORIGIN = "wss://rendezvous.gitui.diffiii.dev";
@@ -89,6 +92,20 @@ export const CHANNEL_LOW_WATER = 256 * 1024;
 /** Longest message a peer may send the rendezvous, in UTF-16 code units. An SDP is a few KiB. */
 export const MAX_MESSAGE_LENGTH = 64 * 1024;
 
+// ── What a host sends the rendezvous ──────────────────────────────────────────────────────
+// The rendezvous charges a host's key HOST_RATE_LIMIT messages per RATE_WINDOW
+// (apps/rendezvous/src/network.ts); these bound what the CLI sends in one, and a test there
+// checks the limit covers them.
+
+/** The rendezvous counts messages in fixed windows of this many ms: floor(now / RATE_WINDOW). */
+export const RATE_WINDOW = 10_000;
+/** The most offers a host takes per minute, so at most this many in any RATE_WINDOW too. */
+export const MAX_OFFERS_PER_MINUTE = 12;
+/** The most local candidates a host trickles for one offer; it drops the rest. */
+export const MAX_LOCAL_CANDIDATES = 16;
+/** The most `refused` signals a host sends per RATE_WINDOW; past that it ignores offers quietly. */
+export const MAX_REFUSALS_PER_WINDOW = 16;
+
 // ── Rendezvous WebSocket (JSON text messages) ─────────────────────────────────────────────
 
 export interface HostInfo {
@@ -97,17 +114,24 @@ export interface HostInfo {
   /** Display name, e.g. "Jan's MacBook". */
   name: string;
   /**
-   * Random per-run id of the CLI, the same on all its sockets (it registers over IPv4 and IPv6,
-   * and reconnects). Guests use it to list a host once and to find their resume token.
-   * A public hint, not a secret and no proof of identity: every guest on the network sees it,
-   * and any device there can register as a host with the same key and name. Only CPace and
-   * the resume proofs (step 3) authenticate, both ways.
+   * hostKey of the CLI's per-run secret, the same on all its sockets (it registers over IPv4
+   * and IPv6, and reconnects). Guests use it to list a host once and to find their resume
+   * token. Public, and no proof of identity: only a socket with the same secret is listed under
+   * it, but only CPace and the resume proofs (step 3) authenticate the host behind it.
    */
   key: string;
 }
 
-/** HostInfo.key: 16 to 64 URL-safe characters. */
+/** HostInfo.key: 16 to 64 URL-safe characters (hostKey makes 22). */
 export const HOST_KEY = /^[\w-]{16,64}$/;
+
+/** A host's hello secret: at least 32 random bytes, base64url (43 to 128 characters). */
+export const HOST_SECRET = /^[\w-]{43,128}$/;
+
+/** A host's public key, HostInfo.key: the first 16 bytes of SHA-256(secret), base64url. */
+export function hostKey(secret: string): string {
+  return toBase64Url(sha256(utf8(secret)).subarray(0, 16));
+}
 
 /** A peer id the rendezvous assigned (a UUID from the Worker). */
 export const PEER_ID = /^[\w-]{1,64}$/;
@@ -149,7 +173,8 @@ export const REFUSAL_REASONS: readonly RefusalReason[] = ["busy", "rate-limited"
 
 /** Messages a peer sends to the rendezvous object. */
 export type ClientMessage =
-  | { type: "hello"; role: "host"; name: string; key: string }
+  /** `secret` matches HOST_SECRET; the object lists the host under hostKey(secret). */
+  | { type: "hello"; role: "host"; name: string; secret: string }
   | { type: "hello"; role: "guest" }
   | { type: "signal"; to: string; data: SignalData };
 
@@ -162,9 +187,45 @@ export type ServerMessage =
   | { type: "signal"; from: string; data: SignalData }
   /** The peer `id` disconnected; every peer of the other role on the network gets this. */
   | { type: "gone"; id: string }
-  | { type: "error"; message: string }
+  /** What went wrong; the socket is closed after it unless `code` is `unknown-peer`. */
+  | { type: "error"; code: ErrorCode; message: string }
   /** Auto-response to RENDEZVOUS_PING. */
   | { type: "pong" };
+
+/**
+ * Why the rendezvous sent an `error`. Every one but `unknown-peer` closes the socket.
+ * - `hello-required`: a signal before `hello`, or no `hello` within the Worker's timeout.
+ * - `invalid-message`: binary, not the contract's, or a second `hello`.
+ * - `too-large`: over MAX_MESSAGE_LENGTH.
+ * - `origin-required`: a guest's `hello` from a socket without an allowed Origin.
+ * - `rate-limit`: this socket (or, for a host, its key) sent too much in its RATE_WINDOW.
+ * - `network-rate-limit`: the network's guests, or its hosts, sent too much, and this socket
+ *   (for a host, its key) had sent the most.
+ * - `host-limit`: the network lists as many host keys as it may.
+ * - `key-limit`: this host's key already has as many sockets as it may.
+ * - `unknown-peer`: a signal to a peer that isn't here (or has the same role).
+ */
+export type ErrorCode =
+  | "hello-required"
+  | "invalid-message"
+  | "too-large"
+  | "origin-required"
+  | "rate-limit"
+  | "network-rate-limit"
+  | "host-limit"
+  | "key-limit"
+  | "unknown-peer";
+export const ERROR_CODES: readonly ErrorCode[] = [
+  "hello-required",
+  "invalid-message",
+  "too-large",
+  "origin-required",
+  "rate-limit",
+  "network-rate-limit",
+  "host-limit",
+  "key-limit",
+  "unknown-peer",
+];
 
 // ── Data channel ──────────────────────────────────────────────────────────────────────────
 

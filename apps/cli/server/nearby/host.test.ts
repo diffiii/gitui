@@ -7,8 +7,11 @@ import {
   guestFinish,
   guestStart,
   HOST_KEY,
+  hostKey,
   type HostMessage,
+  MAX_OFFERS_PER_MINUTE,
   MAX_PENDING,
+  MAX_REFUSALS_PER_WINDOW,
   resumeStart,
   sdpFingerprint,
   type SignalData,
@@ -16,7 +19,6 @@ import {
 import { RTCPeerConnection } from "werift";
 import { type FakeSocket, fakeSockets } from "./fake-socket.ts";
 import { familiesFor, startNearby } from "./host.ts";
-import { MAX_OFFERS_PER_MINUTE } from "./offers.ts";
 
 const until = async (condition: () => boolean, ms = 5000) => {
   for (let t = 0; t < ms && !condition(); t += 10) await new Promise((r) => setTimeout(r, 10));
@@ -61,16 +63,18 @@ test("IP literals in the rendezvous URL pin one family", () => {
   expect(familiesFor("ws://[::1]:8787/v1/connect")).toEqual([6]);
 });
 
-test("the host registers over IPv4 and IPv6 with one key and prints one line", async () => {
+test("the host registers over IPv4 and IPv6 with one secret and prints one line", async () => {
   const { nearby, log, last, sockets } = host();
   expect(nearby.key).toMatch(HOST_KEY);
   expect(sockets.map((s) => s.family)).toEqual([4, 6]);
   welcome(last(4)!, "a");
   expect(log).toEqual([]);
   welcome(last(6)!, "b");
-  const hello: ClientMessage = { type: "hello", role: "host", name: "Desk", key: nearby.key };
-  expect(last(4)!.sent).toEqual([hello]);
+  const [hello] = last(4)!.sent as [Extract<ClientMessage, { role: "host" }>];
+  expect(hello).toEqual({ type: "hello", role: "host", name: "Desk", secret: expect.any(String) });
   expect(last(6)!.sent).toEqual([hello]);
+  // Guests see the key, which the service derives from the secret the same way.
+  expect(hostKey(hello.secret)).toBe(nearby.key);
   expect(log).toEqual([
     "Nearby: visible as 'Desk' (IPv4, IPv6) on this network — open https://gitui.diffiii.dev on your phone",
   ]);
@@ -127,28 +131,44 @@ test("an unreachable service is said once", async () => {
   expect(log.at(-1)).toContain("visible as 'Desk' (IPv4)");
 });
 
-test("a refusal for want of room is said once, not on every retry", async () => {
+test("a refusal for want of room is said once per reason, not on every retry", async () => {
   const { log, last, sockets } = host();
-  const refuse = (family: 4 | 6, message: string) => {
+  const refuse = (family: 4 | 6, code: "host-limit" | "key-limit") => {
     const socket = last(family)!;
     socket.open();
-    socket.receive({ type: "error", message });
+    socket.receive({ type: "error", code, message: "whatever the service says" });
     socket.fail();
   };
   welcome(last(6)!, "b");
   for (let n = 3; n <= 6; n++) {
-    refuse(4, n % 2 ? "Too many hosts on this network" : "Too many sockets for this host");
+    refuse(4, "host-limit");
     await until(() => sockets.length === n);
   }
   const noRoom = "Nearby: too many computers on this network use gitui nearby already, retrying";
+  const stale =
+    "Nearby: the rendezvous service still holds this computer's earlier connections, retrying";
   expect(log.filter((line) => line === noRoom)).toHaveLength(1);
+  refuse(4, "key-limit");
+  await until(() => sockets.length === 7);
+  refuse(4, "key-limit");
+  expect(log.filter((line) => line === stale)).toHaveLength(1);
   expect(log.filter((line) => line.includes("reported"))).toEqual([]);
   // After a welcome, a new refusal is said again.
+  await until(() => sockets.length === 8);
   welcome(last(4)!, "a");
   last(4)!.fail();
-  await until(() => sockets.length === 7);
-  refuse(4, "Too many hosts on this network");
+  await until(() => sockets.length === 9);
+  refuse(4, "host-limit");
   expect(log.filter((line) => line === noRoom)).toHaveLength(2);
+});
+
+test("other errors from the service are printed with their code", () => {
+  const { log, last } = host();
+  welcome(last(4)!, "a");
+  last(4)!.receive({ type: "error", code: "rate-limit", message: "Too many\u001b[2J messages" });
+  expect(log.at(-1)).toBe(
+    "Nearby: the rendezvous service reported: Too many[2J messages (rate-limit)",
+  );
 });
 
 test("a session is bound to the socket its offer came on", async () => {
@@ -309,6 +329,23 @@ test("offers over the limits are refused, with the reason", async () => {
     offerId: "offer-late".padEnd(16, "x"),
     reason: "rate-limited",
   });
+});
+
+test("a flood of offers gets at most MAX_REFUSALS_PER_WINDOW refusals", () => {
+  const { last } = host();
+  const v4 = last(4)!;
+  welcome(v4, "h4");
+  const sent = () => v4.sent.filter((m) => m.type === "signal").length;
+  // MAX_PENDING are taken, and the rest refused as busy.
+  for (let i = 0; i < MAX_PENDING + 3 * MAX_REFUSALS_PER_WINDOW; i++) {
+    v4.receive({
+      type: "signal",
+      from: `g${i}`,
+      data: { kind: "offer", offerId: `offer-${i}`.padEnd(16, "x"), sdp: "v=0" },
+    });
+  }
+  // The sessions answer later (here: refuse as bad-offer); the limiter's refusals are sent now.
+  expect(sent()).toBe(MAX_REFUSALS_PER_WINDOW);
 });
 
 test("an offer the host can't use is refused as such", async () => {

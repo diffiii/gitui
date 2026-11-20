@@ -8,8 +8,11 @@ import { AUTH_ATTEMPTS, AUTH_CODE_DIGITS, type Fingerprints, sdpFingerprint } fr
 export const newCode = () =>
   String(randomInt(10 ** AUTH_CODE_DIGITS)).padStart(AUTH_CODE_DIGITS, "0");
 
-/** This run's HostInfo.key: 16 random bytes, base64url (22 characters). */
-export const newHostKey = () => randomBytes(16).toString("base64url");
+/**
+ * This run's hello secret (HOST_SECRET): 32 random bytes, base64url (43 characters). Guests see
+ * only its hostKey, so nobody else can take this host's key at the rendezvous.
+ */
+export const newHostSecret = () => randomBytes(32).toString("base64url");
 
 /** A resume token: 32 random bytes, base64url. */
 export const newToken = () => randomBytes(32).toString("base64url");

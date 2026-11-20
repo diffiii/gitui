@@ -10,6 +10,8 @@ import {
   guestFinish,
   guestStart,
   HOST_KEY,
+  HOST_SECRET,
+  hostKey,
   type HostMessage,
   parseChunk,
   resumeStart,
@@ -21,7 +23,7 @@ import {
   fingerprints,
   MAX_TOKENS,
   newCode,
-  newHostKey,
+  newHostSecret,
   newToken,
   PairingBudget,
   Tokens,
@@ -41,6 +43,8 @@ const until = async (condition: () => boolean, ms = 5000) => {
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const OFFER_ID = "offer-0123456789ab";
+/** A fingerprint neither side has. */
+const otherPrint = sdpFingerprint(`a=fingerprint:sha-256 ${"00:".repeat(31)}00`)!;
 
 /** Connects a guest to a new session; resolves once the host answered. */
 async function connect({
@@ -240,7 +244,7 @@ test(`after the first resume, resumes and codes share ${AUTH_ATTEMPTS} attempts`
   expect(await guest.pake(wrongCode(await guest.shownCode()))).toBe(false);
   expect(await guest.next()).toEqual({ t: "auth-fail", attemptsLeft: 2 });
   // The right token, proven for another connection.
-  guest.send(resumeStart(token, { guest: guest.prints().guest, host: "sha-256 00" }));
+  guest.send(resumeStart(token, { guest: guest.prints().guest, host: otherPrint }));
   expect(await guest.next()).toEqual({ t: "auth-fail", attemptsLeft: 1 });
   guest.send(resumeStart(newToken(), guest.prints()));
   // Too late: the attempts are spent.
@@ -270,7 +274,7 @@ test("a run bound to other fingerprints fails, even with the right code", async 
   // A guest behind a relay that swapped the offer's certificate sees another fingerprint than
   // the host does. (Not a swap of the two: werift uses one certificate per process, so here
   // both sides have the same one.)
-  const relayed = { ...guest.prints(), guest: `sha-256 ${"00:".repeat(31)}00` };
+  const relayed = { ...guest.prints(), guest: otherPrint };
   expect(await guest.pake(code, relayed)).toBe(false);
   expect(await guest.next()).toEqual({ t: "auth-fail", attemptsLeft: 2 });
   // The same channel still takes the right code.
@@ -320,12 +324,15 @@ test("the code expires", async () => {
   expect(guest.log.at(-1)).toBe(`Nearby: code ${code} expired`);
 });
 
-test("keys, tokens and codes have their formats", () => {
+test("secrets, keys, tokens and codes have their formats", () => {
   for (let i = 0; i < 100; i++) expect(newCode()).toMatch(/^\d{6}$/);
-  expect(newHostKey()).toMatch(HOST_KEY);
-  expect(newHostKey()).toHaveLength(22);
+  const secret = newHostSecret();
+  expect(secret).toMatch(HOST_SECRET);
+  expect(secret).toHaveLength(43);
+  expect(hostKey(secret)).toMatch(HOST_KEY);
+  expect(hostKey(secret)).toHaveLength(22);
   expect(newToken()).toMatch(/^[\w-]{43}$/);
-  expect(newHostKey()).not.toBe(newHostKey());
+  expect(newHostSecret()).not.toBe(newHostSecret());
 
   expect(fingerprints("v=0", "v=0")).toBeNull();
 });

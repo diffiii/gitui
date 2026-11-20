@@ -1,5 +1,5 @@
-// End-to-end check of the rendezvous under `wrangler dev`: host keys, listing a key once, both
-// keepalives, per-network routing, refusals and limits. `wrangler dev` takes CF-Connecting-IP
+// End-to-end check of the rendezvous under `wrangler dev`: host secrets and keys, listing a key
+// once, both keepalives, per-network routing, refusals and limits. `wrangler dev` takes CF-Connecting-IP
 // from the request, so the peers pick their addresses (each step its own network). Starts and
 // stops its own servers on free ports between 5100 and 5199.
 //
@@ -8,6 +8,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  hostKey,
   MAX_MESSAGE_LENGTH,
   RENDEZVOUS_PATH,
   RENDEZVOUS_PING,
@@ -15,7 +16,13 @@ import {
   type HostInfo,
   type ServerMessage,
 } from "@gitui/shared";
-import { GUEST_RATE_LIMIT, HELLO_TIMEOUT, MAX_HOSTS, MAX_SOCKETS } from "../src/network.ts";
+import {
+  GUEST_RATE_LIMIT,
+  HELLO_TIMEOUT,
+  MAX_HOSTS,
+  MAX_SOCKETS,
+  MAX_SOCKETS_PER_KEY,
+} from "../src/network.ts";
 
 const ORIGIN = "http://localhost:5181";
 const TIMEOUT = 5000;
@@ -167,9 +174,9 @@ class Peer {
   }
 
   async hello(role: "guest"): Promise<string>;
-  async hello(role: "host", name: string, key: string): Promise<string>;
-  async hello(role: "host" | "guest", name?: string, key?: string): Promise<string> {
-    this.send(role === "host" ? { type: "hello", role, name, key } : { type: "hello", role });
+  async hello(role: "host", name: string, secret: string): Promise<string>;
+  async hello(role: "host" | "guest", name?: string, secret?: string): Promise<string> {
+    this.send(role === "host" ? { type: "hello", role, name, secret } : { type: "hello", role });
     return (await this.next("welcome")).id;
   }
 }
@@ -188,18 +195,22 @@ async function step(name: string, run: () => Promise<void>): Promise<void> {
   console.log(`ok - ${name}`);
 }
 
-const KEY = "e2e-key-0123456789";
-const OTHER_KEY = "e2e-other-key-0123";
+/** A HOST_SECRET-shaped secret per `label`, and the key it is listed under. */
+const secret = (label: string) => `e2e-secret-${label}`.padEnd(43, "_");
+const SECRET = secret("cli");
+const KEY = hostKey(SECRET);
+const OTHER_SECRET = secret("other");
 const NET_A = "198.51.100.1";
 const NET_A_MAPPED = "::ffff:198.51.100.1"; // IPv4-mapped: the same network as NET_A
 const NET_B = "2001:db8:1:2::5";
 
 async function run(base: string): Promise<void> {
-  await step("host hello needs a HOST_KEY-shaped key", async () => {
-    for (const key of [undefined, "short", "x".repeat(65), "bad key with spaces!"]) {
+  await step("host hello needs a HOST_SECRET-shaped secret", async () => {
+    for (const bad of [undefined, "short", "x".repeat(129), `${"x".repeat(43)} !`]) {
       const host = await Peer.open(base, NET_A);
-      host.send({ type: "hello", role: "host", name: "box", key });
-      equal(await host.next("error"), { type: "error", message: "Invalid message" }, "error");
+      host.send({ type: "hello", role: "host", name: "box", secret: bad });
+      const error = { type: "error", code: "invalid-message", message: "Invalid message" };
+      equal(await host.next("error"), error, "error");
       equal(await host.closed, 1008, "close code");
     }
   });
@@ -217,7 +228,7 @@ async function run(base: string): Promise<void> {
 
   await step("protocol pings get protocol pongs", async () => {
     const host = await Peer.open(base, NET_A);
-    await host.hello("host", "pinger", OTHER_KEY);
+    await host.hello("host", "pinger", OTHER_SECRET);
     const pong = new Promise<void>((resolve) => host.ws.addEventListener("pong", () => resolve()));
     host.ws.ping();
     await Promise.race([pong, Bun.sleep(TIMEOUT).then(() => Promise.reject(new Error("no pong")))]);
@@ -237,9 +248,9 @@ async function run(base: string): Promise<void> {
   let v6Id = "";
 
   await step("a key's two sockets in one object are listed once, first come first", async () => {
-    v4Id = await v4.hello("host", "box", KEY);
+    v4Id = await v4.hello("host", "box", SECRET);
     equal((await guest.next("hosts")).hosts, [{ id: v4Id, name: "box", key: KEY }], "one host");
-    v6Id = await v6.hello("host", "box", KEY);
+    v6Id = await v6.hello("host", "box", SECRET);
     equal((await guest.next("hosts")).hosts, [{ id: v4Id, name: "box", key: KEY }], "still one");
   });
 
@@ -265,7 +276,7 @@ async function run(base: string): Promise<void> {
     await other.hello("guest");
     equal((await other.next("hosts")).hosts, [], "hosts on another network");
     const host = await Peer.open(base, NET_B);
-    const id = await host.hello("host", "box", KEY);
+    const id = await host.hello("host", "box", SECRET);
     equal((await other.next("hosts")).hosts, [{ id, name: "box", key: KEY }], "its own host");
     for (const peer of [other, host]) peer.ws.close();
   });
@@ -279,7 +290,7 @@ async function run(base: string): Promise<void> {
   await step("a guest leaving sends gone to every host", async () => {
     const ip = net();
     const hosts = [await Peer.open(base, ip), await Peer.open(base, ip)];
-    for (const [i, host] of hosts.entries()) await host.hello("host", "box", `${KEY}-${i}`);
+    for (const [i, host] of hosts.entries()) await host.hello("host", "box", secret(`${i}`));
     const leaving = await Peer.open(base, ip, true);
     const id = await leaving.hello("guest");
     leaving.ws.close();
@@ -291,7 +302,8 @@ async function run(base: string): Promise<void> {
     const ip = net();
     const cli = await Peer.open(base, ip);
     cli.send({ type: "hello", role: "guest" });
-    equal(await cli.next("error"), { type: "error", message: "Origin required" }, "no Origin");
+    const noOrigin = { type: "error", code: "origin-required", message: "Origin required" };
+    equal(await cli.next("error"), noOrigin, "no Origin");
     equal(await cli.closed, 1008, "close code");
 
     const [a, b] = [await Peer.open(base, ip, true), await Peer.open(base, ip, true)];
@@ -304,9 +316,11 @@ async function run(base: string): Promise<void> {
       to: bId,
       data: { kind: "offer", offerId: "offer-0123456789ab", sdp: "v=0" },
     });
-    equal(await a.next("error"), { type: "error", message: "Unknown peer" }, "guest to guest");
+    const unknown = { type: "error", code: "unknown-peer", message: "Unknown peer" };
+    equal(await a.next("error"), unknown, "guest to guest");
     b.send({ type: "hello", role: "guest" });
-    equal(await b.next("error"), { type: "error", message: "Already said hello" }, "hello");
+    const again = { type: "error", code: "invalid-message", message: "Already said hello" };
+    equal(await b.next("error"), again, "hello");
     equal(await b.closed, 1008, "close code");
     a.ws.close();
   });
@@ -323,7 +337,7 @@ async function run(base: string): Promise<void> {
   await step(`over ${GUEST_RATE_LIMIT} messages in a window closes with 1008`, async () => {
     const ip = net();
     const host = await Peer.open(base, ip);
-    const hostId = await host.hello("host", "box", KEY);
+    const hostId = await host.hello("host", "box", SECRET);
     const flood = await Peer.open(base, ip, true);
     await flood.hello("guest");
     for (let i = 0; i < GUEST_RATE_LIMIT; i++) {
@@ -334,7 +348,7 @@ async function run(base: string): Promise<void> {
       });
     }
     equal(await flood.closed, 1008, "close code");
-    const relayed = flood.queue.filter((text) => text.includes("Too many messages"));
+    const relayed = flood.queue.filter((text) => text.includes('"code":"rate-limit"'));
     equal(relayed.length, 1, "error before the close");
     host.ws.close();
   });
@@ -344,20 +358,46 @@ async function run(base: string): Promise<void> {
     const hosts: Peer[] = [];
     for (let i = 0; i < MAX_HOSTS; i++) {
       const host = await Peer.open(base, ip);
-      await host.hello("host", "box", `${KEY}-${i}`);
+      await host.hello("host", "box", secret(`${i}`));
       hosts.push(host);
     }
     const extra = await Peer.open(base, ip);
-    extra.send({ type: "hello", role: "host", name: "box", key: OTHER_KEY });
+    extra.send({ type: "hello", role: "host", name: "box", secret: OTHER_SECRET });
+    equal((await extra.next("error")).code, "host-limit", "error code");
     equal(await extra.closed, 1013, "close code");
     // A host reconnecting with its key isn't another host.
     const again = await Peer.open(base, ip);
-    await again.hello("host", "box", `${KEY}-0`);
+    await again.hello("host", "box", secret("0"));
     hosts.push(again);
     const guest = await Peer.open(base, ip, true);
     await guest.hello("guest");
     equal((await guest.next("hosts")).hosts.length, MAX_HOSTS, "hosts listed");
     for (const peer of [...hosts, guest]) peer.ws.close();
+  });
+
+  await step("only the secret's holder takes its key's sockets", async () => {
+    const ip = net();
+    const guest = await Peer.open(base, ip, true);
+    await guest.hello("guest");
+    await guest.next("hosts");
+    // A co-tenant that read the key from the list and sends it as a secret gets its own key.
+    const squatters: Peer[] = [];
+    for (let i = 0; i < MAX_SOCKETS_PER_KEY; i++) {
+      const squatter = await Peer.open(base, ip);
+      await squatter.hello("host", "box", KEY.padEnd(43, "x"));
+      squatters.push(squatter);
+    }
+    const owners: Peer[] = [];
+    for (let i = 0; i < MAX_SOCKETS_PER_KEY; i++) {
+      const owner = await Peer.open(base, ip);
+      await owner.hello("host", "box", SECRET);
+      owners.push(owner);
+    }
+    const extra = await Peer.open(base, ip);
+    extra.send({ type: "hello", role: "host", name: "box", secret: SECRET });
+    equal((await extra.next("error")).code, "key-limit", "error code");
+    equal(await extra.closed, 1013, "close code");
+    for (const peer of [guest, ...squatters, ...owners]) peer.ws.close();
   });
 
   await step(`past ${MAX_SOCKETS} sockets a 503, until silent ones time out`, async () => {

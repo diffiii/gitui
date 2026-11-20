@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   AUTH_ATTEMPTS,
+  ERROR_CODES,
   frameChunk,
   MAX_MESSAGE_LENGTH,
   MAX_NAME_LENGTH,
@@ -24,32 +25,35 @@ import {
 const parse = (value: unknown): unknown => parseClientMessage(JSON.stringify(value));
 
 const key = "k3Y_-0123456789ab";
+const secret = "s3cReT_-".padEnd(43, "0");
 const offerId = "offer_0123456789ab";
 const b43 = "A".repeat(43);
 
 test("parseClientMessage accepts hello from hosts and guests", () => {
   expect(parse({ type: "hello", role: "guest" })).toEqual({ type: "hello", role: "guest" });
-  expect(parse({ type: "hello", role: "host", name: "  Jan's MacBook ", key, x: 1 })).toEqual({
+  expect(parse({ type: "hello", role: "host", name: "  Jan's MacBook ", secret, x: 1 })).toEqual({
     type: "hello",
     role: "host",
     name: "Jan's MacBook",
-    key,
+    secret,
   });
-  expect(parse({ type: "hello", role: "host", key })).toBeNull();
+  expect(parse({ type: "hello", role: "host", secret })).toBeNull();
+  // The key is the rendezvous's to derive; a host sends its secret.
+  expect(parse({ type: "hello", role: "host", name: "box", key })).toBeNull();
   expect(parse({ type: "hello", role: "host", name: "box" })).toBeNull();
   expect(parse({ type: "hello", role: "admin", name: "x" })).toBeNull();
   expect(parse({ type: "hello" })).toBeNull();
 });
 
-test("parseClientMessage requires a HOST_KEY-shaped key from hosts", () => {
-  const hello = (key: unknown) => parse({ type: "hello", role: "host", name: "box", key });
-  expect(hello("a".repeat(16))).toMatchObject({ key: "a".repeat(16) });
-  expect(hello("a".repeat(64))).toMatchObject({ key: "a".repeat(64) });
+test("parseClientMessage requires a HOST_SECRET-shaped secret from hosts", () => {
+  const hello = (secret: unknown) => parse({ type: "hello", role: "host", name: "box", secret });
+  expect(hello("a".repeat(43))).toMatchObject({ secret: "a".repeat(43) });
+  expect(hello("a".repeat(128))).toMatchObject({ secret: "a".repeat(128) });
   for (const bad of [
-    "a".repeat(15),
-    "a".repeat(65),
-    `${"a".repeat(16)}.`,
-    "a b".repeat(8),
+    "a".repeat(42),
+    "a".repeat(129),
+    `${"a".repeat(43)}.`,
+    "a b".repeat(15),
     1,
     null,
   ]) {
@@ -138,7 +142,7 @@ test("parseClientMessage rejects garbage", () => {
 
 test("decoders say what is wrong", () => {
   expect(() =>
-    decodeClientMessage('{"type":"hello","role":"host","name":"a\\nb","key":"x"}'),
+    decodeClientMessage('{"type":"hello","role":"host","name":"a\\nb","secret":"x"}'),
   ).toThrow(new NearbyCodecError("invalid name"));
   expect(() => decodeClientMessage("{")).toThrow(new NearbyCodecError("not JSON"));
 });
@@ -148,7 +152,13 @@ test("parseServerMessage rebuilds every message a peer handles", () => {
   expect(server({ type: "welcome", id: "p1", x: 1 })).toEqual({ type: "welcome", id: "p1" });
   expect(server({ type: "gone", id: "p1" })).toEqual({ type: "gone", id: "p1" });
   expect(server({ type: "pong" })).toEqual({ type: "pong" });
-  expect(server({ type: "error", message: "nope" })).toEqual({ type: "error", message: "nope" });
+  for (const code of ERROR_CODES) {
+    expect(server({ type: "error", code, message: "nope", x: 1 })).toEqual({
+      type: "error",
+      code,
+      message: "nope",
+    });
+  }
   const data = { kind: "answer", offerId, sdp: "v=0" };
   expect(server({ type: "signal", from: "p1", data: { ...data, x: 1 } })).toEqual({
     type: "signal",
@@ -167,7 +177,9 @@ test("parseServerMessage rebuilds every message a peer handles", () => {
     { type: "welcome" },
     { type: "hosts", hosts: {} },
     { type: "signal", from: "p1", data: { kind: "answer", sdp: "v=0" } },
-    { type: "error", message: 1 },
+    { type: "error", code: "rate-limit", message: 1 },
+    { type: "error", message: "no code" },
+    { type: "error", code: "tired", message: "unknown code" },
     { type: "hello", role: "guest" },
   ]) {
     expect(server(bad)).toBeNull();
