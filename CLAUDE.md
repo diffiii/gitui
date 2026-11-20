@@ -23,11 +23,12 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
 - `apps/cli/` (`@diffiii/gitui`, published to npm): the `gitui` bin (`bin/gitui.ts`) and the
   Hono API in `server/`. `app.ts` holds the routes, `git.ts` wraps the git CLI and parses its
   output, `main.ts` starts the server (`@hono/node-server`), serving the UI directory it's given
-  (`bin/gitui.ts` passes `dist/web` only with `--local`; by default the hosted app is the UI),
+  with the headers of `apps/web/public/_headers` (`bin/gitui.ts` passes `dist/web` only with
+  `--local` and `--lan`; by default the hosted app is the UI),
   `dev.ts` is the dev API entry, `lan.ts` picks the `--lan` address. `bun run build`
   (`scripts/build.ts`) bundles `bin/gitui.ts` for Node into `dist/gitui.js`, copies
   `apps/web/dist` to `dist/web` (`scripts/local-ui.ts` adds the `LOCAL_UI_META` tag to that copy
-  only, never to `apps/web/dist`, which is the hosted app) and the root `LICENSE` into the package; with `README.md` that is all the package ships, with no runtime dependencies.
+  only, never to `apps/web/dist`, which is the hosted app, and leaves `_headers` out) and the root `LICENSE` into the package; with `README.md` that is all the package ships, with no runtime dependencies.
   Code in `bin/` and `server/` must run on Node too: no `Bun.*` APIs outside tests, `dev.ts`
   and `test-repo.ts` (a lint rule enforces it). Tests live next to the code (`server/*.test.ts`).
 - `apps/web/` (`@gitui/web`): React app. `src/lib/` holds the API client, graph layout and
@@ -57,8 +58,9 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
 - `/api/*` access policy lives in `apps/cli/server/access.ts`, keyed by the `Listener`: the
   `x-gitui` header always. `loopback`: localhost `Host`; cross-origin callers only from
   `allowedOrigins`, with CORS headers and the pairing token (`loadToken` in `server/config.ts`)
-  as a bearer token. `lan` (`--lan`): `Host` is `<address>:<port>` or localhost, no cross-origin
-  callers, and the session cookie that `/pair?key=<per-run secret>` sets. Don't add checks in
+  as a bearer token. `lan` (`--lan`): `Host` names the listen address (hostnames only, ports
+  aren't checked), no cross-origin callers, and the per-run session cookie that
+  `/pair?key=<per-run secret>` sets. Don't add checks in
   routes or `main.ts`.
 - Frontend data goes through TanStack Query with keys that start with the repo:
   `[repo, "status"]`, `[repo, "log", ...]`. Repo mutations use `useGitMutation` from
