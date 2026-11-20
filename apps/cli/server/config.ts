@@ -8,20 +8,23 @@ export const CONFIG_DIR = path.join(
   process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config"),
   "gitui",
 );
-const RECENT_FILE = path.join(CONFIG_DIR, "recent.json");
+const recentFile = (dir: string) => path.join(dir, "recent.json");
 
-export async function readRecent(): Promise<string[]> {
+/** The recently opened repositories in `<dir>/recent.json`, newest first. */
+export async function readRecent(dir = CONFIG_DIR): Promise<string[]> {
   try {
-    return JSON.parse(await readFile(RECENT_FILE, "utf8"));
+    const list: unknown = JSON.parse(await readFile(recentFile(dir), "utf8"));
+    return Array.isArray(list) ? list.filter((r) => typeof r === "string") : [];
   } catch {
     return [];
   }
 }
 
-export async function pushRecent(repo: string) {
-  const list = [repo, ...(await readRecent()).filter((r) => r !== repo)].slice(0, 20);
-  await mkdir(CONFIG_DIR, { recursive: true });
-  await writeFile(RECENT_FILE, JSON.stringify(list, null, 2));
+/** Puts `repo` first in the recent list, which keeps the last 20. */
+export async function pushRecent(repo: string, dir = CONFIG_DIR) {
+  const list = [repo, ...(await readRecent(dir)).filter((r) => r !== repo)].slice(0, 20);
+  await mkdir(dir, { recursive: true });
+  await writeFile(recentFile(dir), JSON.stringify(list, null, 2));
 }
 
 const TOKEN = /^[\w-]{43}$/; // 32 bytes, base64url

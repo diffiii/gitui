@@ -1,8 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
+import { LoaderCircle } from "lucide-react";
+import { useState } from "react";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { getConfig } from "@/lib/api";
+import { notOpened } from "@/lib/notOpened";
 import { RepoProvider } from "@/lib/repo";
+import { useStatus } from "@/lib/status";
 import { openRepo, select, setView, useUrl } from "@/lib/url";
 import { cn } from "@/lib/utils";
 import type { View } from "@/lib/views";
@@ -32,10 +36,12 @@ export default function App() {
           <div className="flex h-svh flex-col bg-background pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)] md:pb-[env(safe-area-inset-bottom)]">
             <AppHeader view={view} onView={onView} onOpenRepo={openRepo} />
             <main className="min-h-0 flex-1">
-              {view === "changes" && <ChangesView />}
-              {view === "history" && <HistoryView />}
-              {view === "branches" && <BranchesView />}
-              {view === "files" && <FilesView />}
+              <OpenedRepo repo={repo}>
+                {view === "changes" && <ChangesView />}
+                {view === "history" && <HistoryView />}
+                {view === "branches" && <BranchesView />}
+                {view === "files" && <FilesView />}
+              </OpenedRepo>
             </main>
             <ViewTabBar view={view} onView={onView} />
           </div>
@@ -50,6 +56,43 @@ export default function App() {
       />
     </TooltipProvider>
   );
+}
+
+/**
+ * The repo's views, unless this device may only use repositories opened on the computer and
+ * `repo` isn't one (a link from elsewhere): then the picker, saying so. The views wait for the
+ * repo's first status, so such a repo doesn't flash their errors first; the status keeps polling,
+ * so the views come up once the repo is opened on the computer.
+ */
+function OpenedRepo({ repo, children }: { repo: string; children: React.ReactNode }) {
+  const { data, error } = useStatus();
+  // The verdict is kept until the next one (adjusting state while rendering, as React's docs
+  // describe).
+  const [kept, setKept] = useState(false);
+  const verdict = notOpened(kept, { data, error });
+  if (verdict !== kept) setKept(verdict);
+  if (verdict) {
+    return (
+      <RepoWelcome
+        onOpen={openRepo}
+        notOpenedRepo={repo}
+        className="h-full min-h-0 overflow-y-auto p-4"
+      />
+    );
+  }
+  if (data === undefined && !error) {
+    // It fades in late, so a quick first status doesn't flash it.
+    return (
+      <div
+        role="status"
+        aria-label="Loading"
+        className="flex h-full animate-in items-center justify-center fade-in fill-mode-backwards delay-300 duration-300"
+      >
+        <LoaderCircle className="size-5 animate-spin text-muted-foreground" />
+      </div>
+    );
+  }
+  return children;
 }
 
 function HistoryView() {

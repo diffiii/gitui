@@ -13,6 +13,7 @@ bun test                    # bun:test; server tests run against real temp repos
 vp check                    # format, lint (type-aware), type check
 bun run build               # tsc -b, build apps/web, bundle the CLI into apps/cli/dist (+ dist/web)
 cd apps/web && bun run deploy  # build and deploy the hosted UI to Cloudflare (needs wrangler login)
+cd apps/rendezvous && bun run dev  # nearby rendezvous Worker on :8787 (wrangler dev)
 scripts/smoke.sh            # run the built CLI with node (hosted and --local) and probe it
 ```
 
@@ -25,7 +26,13 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   output, `main.ts` starts the server (`@hono/node-server`), serving the UI directory it's given
   with `uiSecurityHeaders` (`bin/gitui.ts` passes `dist/web` only with `--local` and `--lan`;
   by default the hosted app is the UI), `bin/args.ts` parses the command line, `dev.ts` is the
-  dev API entry, `lan.ts` picks the `--lan` address. `bun run build`
+  dev API entry, `lan.ts` picks the `--lan` address. `server/nearby/` is `--nearby`, the host
+  side of `@gitui/shared`'s nearby protocol: `rendezvous.ts` (one `ws` socket, pinned to IPv4
+  or IPv6, with pings and reconnects), `peer.ts` (one guest: answer, trickle, CPace or resume
+  check from `auth.ts`), `bridge.ts` (HTTP over the data channel, pure and unit-tested),
+  `host.ts` (wires them up: two sockets, sessions bound to theirs), `guard.ts` (survives
+  werift's unhandled rejections on malformed SCTP packets; werift callbacks go through
+  `isolate`) and `webrtc.ts`, the only file that imports werift. `bun run build`
   (`scripts/build.ts`) bundles `bin/gitui.ts` for Node into `dist/gitui.js`, copies
   `apps/web/dist` to `dist/web` (`scripts/local-ui.ts` adds the `LOCAL_UI_META` tag to that copy
   only, never to `apps/web/dist`, which is the hosted app, and leaves `_headers` out) and the root `LICENSE` into the package; with `README.md` that is all the package ships, with no runtime dependencies.
@@ -38,12 +45,34 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   dev server, whose `vite.config.ts` plugin adds it) calls its own `/api`; without it, whatever
   the host, it is the hosted app: `src/lib/connection.ts` decides this and holds the pairing with
   the CLI and where requests go (its store reads `window` lazily; `initConnection` does the
-  startup wiring), and `ConnectionGate` gates the app until the CLI answers. `wrangler.jsonc` deploys `dist/` as Cloudflare
-  Workers static assets, with the `_headers` file that a `vite.config.ts` plugin writes into the
-  build from `hostedHeadersFile`, on the custom domain `gitui.diffiii.dev` (`HOSTED_ORIGIN`).
+  startup wiring), and `ConnectionGate` gates the app until the CLI answers. Its `nearby` kind
+  is a `gitui --nearby` found through the rendezvous: `src/lib/nearby/` holds the guest
+  (`createSession` in `session.ts` is the state machine, with its dependencies injected; the
+  connection opens one per nearby host in `update()`, and `apiTransport` sends requests over its
+  data channel; `peer.ts` loads CPace lazily from `@gitui/shared/nearby-pake`; `state.ts` and
+  `tokens.ts` are its pure parts). `wrangler.jsonc` builds the repo (its `build` command,
+  with the production rendezvous) and deploys `dist/` as Cloudflare Workers static assets, with the `_headers` file that a `vite.config.ts` plugin writes into the
+  build from `hostedHeadersFile` (its CSP follows `VITE_GITUI_RENDEZVOUS_URL`), on the custom
+  domain `gitui.diffiii.dev` (`HOSTED_ORIGIN`).
+- `apps/rendezvous/` (`@gitui/rendezvous`): the "nearby" rendezvous Worker (protocol in
+  `packages/shared/src/nearby.ts`). `src/route.ts` checks the upgrade and Origin and names the
+  caller's network with an HMAC keyed by the `NETWORK_KEY_SECRET` secret (500 without it),
+  `src/network.ts` decides what the object does (hello, signal routing, `gone`, the host list
+  once per key, and the socket, host and message limits) over plain socket records, and
+  `src/rendezvous.ts` adapts it to the hibernating Durable Object (one per network),
+  `scripts/e2e.ts` checks it
+  all against `wrangler dev`. Worker code is type-checked with `@cloudflare/workers-types`, tests
+  and scripts with bun's.
 - `packages/shared/` (`@gitui/shared`): API types and the connection contract (default port,
   client header, local UI marker, hosted origin, loopback hosts, pairing links) and the UI's
-  security headers (`headers.ts`), used by both sides, imported as `@gitui/shared`.
+  security headers (`headers.ts`), used by both sides, imported as `@gitui/shared`. The nearby
+  protocol: `nearby.ts` (the contract and its docs), `nearby-codec.ts` (every check on what
+  crosses its wires, used by the Worker, the CLI and the web app alike: messages are rebuilt
+  with only the contract's fields, so a new field goes there) and `nearby-pake.ts` (CPace on
+  ristretto255 for the code and HMAC proofs both ways for resume tokens, pure and synchronous,
+  with `@noble/curves` and `@noble/hashes`, which the CLI bundles). Its public functions are
+  only in the `@gitui/shared/nearby-pake` entry (`pake.ts`), not in `@gitui/shared`, so the
+  Worker and the web app's main chunk carry no curve code.
 - Root: `scripts/dev.ts` (runs both apps), `scripts/smoke.sh` (runs the built bundle with node
   in both modes and checks what it serves; CI and release run it), `vite.config.ts` (workspace
   fmt/lint/type check config, `defaultPackage` points `vp dev`/`vp build` at `apps/web`),
@@ -61,8 +90,15 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   `allowedOrigins`, with CORS headers and the pairing token (`loadToken` in `server/config.ts`)
   as a bearer token. `lan` (`--lan`): `Host` names the listen address (hostnames only, ports
   aren't checked), no cross-origin callers, and the per-run session cookie that
-  `/pair?key=<per-run secret>` sets. Don't add checks in
+  `/pair?key=<per-run secret>` sets. `nearby`: requests from an authenticated data channel,
+  through `nearby/bridge.ts`, which gives them the Host `NEARBY_HOST`. Don't add checks in
   routes or `main.ts`.
+- Each listener also has a `repoScope`: `loopback` is `any`; `lan` and `nearby` (other devices)
+  are `opened`, i.e. only the `initialRepo` and the recent list, compared as realpaths, read per
+  request. Every repo path a request names goes through `repoGate` (`server/repo-scope.ts`): the `repo`
+  middleware and `/open`, which only records repos in the recent list for `any`. A refusal is a
+  403 `{ error, code: REPO_NOT_OPENED }`. New routes that take a repo path must use the gate.
+  Server tests pass `configDir` to `createApp` so they never touch the real recent list.
 - Frontend data goes through TanStack Query with keys that start with the repo:
   `[repo, "status"]`, `[repo, "log", ...]`. Repo mutations use `useGitMutation` from
   `apps/web/src/lib/repo.tsx`, which invalidates `[repo]` when it settles and toasts errors.

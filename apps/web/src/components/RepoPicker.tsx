@@ -15,32 +15,76 @@ import {
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { getConfig, openRepo } from "@/lib/api";
+import { isApiError } from "@/lib/connection";
 
 const basename = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
 
+/**
+ * Opens a repository. A phone or another computer may only open those opened on the computer
+ * running gitui; that refusal shows in the picker (`notOpened`) rather than as a toast.
+ */
 function useOpenRepo(onOpen: (root: string) => void) {
-  return useMutation({
+  const open = useMutation({
     mutationFn: openRepo,
     onSuccess: (r) => onOpen(r.root),
-    onError: (e) => toast.error(e.message),
+    onError: (e) => {
+      if (!isApiError(e, "not-opened")) toast.error(e.message);
+    },
   });
+  return { ...open, notOpened: isApiError(open.error, "not-opened") };
 }
+
+/** Why a path typed on another device can't be opened, and what to do instead. */
+const NOT_OPENED =
+  "Open it on your computer first: this device can only use repositories gitui opened there. Run gitui with its path on the computer, or pick a recent one.";
+
+/** The same, for a path tried on the screen that already says so. */
+const NOT_OPENED_EITHER = "That one isn't opened on the computer either.";
 
 function tildify(p: string, home?: string) {
   return home && p.startsWith(home) ? `~${p.slice(home.length)}` : p;
 }
 
-/** Full-page picker shown when no repository is selected. */
-export function RepoWelcome({ onOpen }: { onOpen: (root: string) => void }) {
+/**
+ * Full-page picker shown when no repository is selected, or when this device may not use the
+ * selected one yet (`notOpenedRepo`, its path): it asks for it to be opened on the computer first.
+ */
+export function RepoWelcome({
+  onOpen,
+  notOpenedRepo,
+  className,
+}: {
+  onOpen: (root: string) => void;
+  notOpenedRepo?: string;
+  className?: string;
+}) {
   const { data: config } = useQuery({ queryKey: ["config"], queryFn: getConfig });
   const [path, setPath] = useState("");
   const open = useOpenRepo(onOpen);
 
   return (
     <CenteredScreen
+      className={className}
       icon={FolderGit2}
-      title="Open a repository"
-      description="Paste a path to any folder inside a git repository, or pick a recent one."
+      title={
+        notOpenedRepo
+          ? `Open ${basename(notOpenedRepo)} on your computer first`
+          : "Open a repository"
+      }
+      description={
+        notOpenedRepo ? (
+          <>
+            This device can only use repositories gitui opened on the computer it runs on. Run gitui
+            with{" "}
+            <span className="font-mono break-all text-foreground">
+              {tildify(notOpenedRepo, config?.home)}
+            </span>{" "}
+            there, and it shows up here. Or pick a recent one.
+          </>
+        ) : (
+          "Paste a path to any folder inside a git repository, or pick a recent one."
+        )
+      }
     >
       <form
         className="flex gap-2"
@@ -60,6 +104,11 @@ export function RepoWelcome({ onOpen }: { onOpen: (root: string) => void }) {
           Open
         </Button>
       </form>
+      {open.notOpened && (
+        <p role="status" className="mt-3 px-1 text-sm text-muted-foreground">
+          {notOpenedRepo ? NOT_OPENED_EITHER : NOT_OPENED}
+        </p>
+      )}
       {!!config?.recent.length && (
         <div className="mt-8">
           <h2 className="mb-2 px-1 text-xs font-medium tracking-wide text-muted-foreground uppercase">
@@ -122,6 +171,11 @@ export function RepoSwitcher({ repo, onOpen }: { repo: string; onOpen: (root: st
             placeholder="Search recent or type a path…"
           />
           <CommandList>
+            {open.notOpened && (
+              <p role="status" className="px-3 py-2 text-xs text-muted-foreground">
+                {NOT_OPENED}
+              </p>
+            )}
             <CommandEmpty>
               {looksLikePath ? "Press enter to open this path" : "No recent repositories"}
             </CommandEmpty>

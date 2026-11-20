@@ -5,7 +5,7 @@ import { getConfig } from "./api.ts";
 import {
   afterRejection,
   ApiError,
-  apiTarget,
+  apiTransport,
   connectionStatus,
   getConnection,
   initConnection,
@@ -13,10 +13,14 @@ import {
   rejectConnection,
   retrySession,
   retryWhileUnreachable,
+  setNearbyHost,
   setPairing,
+  subscribeConnection,
   type Connection,
   type ConnectionStatus,
 } from "./connection.ts";
+import type { NearbySession } from "./nearby/session.ts";
+import type { NearbyHost } from "./nearby/state.ts";
 
 const pairing = { port: 4778, token: "s3cret" };
 const paired: Connection = { kind: "paired", pairing };
@@ -29,21 +33,81 @@ test("initialConnection is local in a page gitui served and uses the saved pairi
   expect(initialConnection(false, "garbage")).toEqual({ kind: "unpaired" });
 });
 
-test("apiTarget stays same-origin for the local UI", () => {
-  expect(apiTarget({ kind: "local" })).toEqual({ base: "", headers: { [CLIENT_HEADER]: "1" } });
-});
+const host = { key: "k".repeat(16), name: "Jan's MacBook" };
 
-test("apiTarget sends paired requests to the CLI on loopback with the token", () => {
-  expect(apiTarget(paired)).toEqual({
-    base: "http://127.0.0.1:4778",
-    headers: { [CLIENT_HEADER]: "1", authorization: "Bearer s3cret" },
+/** A session that records what it is asked, and answers requests with what it was sent. */
+function fakeSession(h: NearbyHost) {
+  const session = {
+    host: h,
+    stopped: 0,
+    woken: 0,
+    getState: () => ({ kind: "connecting" }) as const,
+    subscribe: () => () => {},
+    fetch: async (path: string, init?: RequestInit) =>
+      Response.json({ path, headers: Object.fromEntries(new Headers(init?.headers)) }),
+    submitCode: async () => {},
+    retry: () => {},
+    wake: () => void session.woken++,
+    stop: () => void session.stopped++,
+  } satisfies NearbySession & Record<string, unknown>;
+  return session;
+}
+
+const session = fakeSession(host);
+const nearby: Connection = { kind: "nearby", session };
+
+test("initialConnection returns the saved nearby host, without opening anything", () => {
+  const savedHost = JSON.stringify(host);
+  expect(initialConnection(false, "", savedHost)).toEqual({ kind: "nearby", host });
+  expect(initialConnection(true, "", savedHost)).toEqual({ kind: "local" });
+  expect(initialConnection(false, pairingFragment(pairing), savedHost)).toEqual(paired);
+  expect(initialConnection(false, "", "{bad json")).toEqual({ kind: "unpaired" });
+  expect(initialConnection(false, "", '{"key":"short","name":"x"}')).toEqual({
+    kind: "unpaired",
   });
 });
 
-test("apiTarget fails requests without an accepted pairing or session as unauthorized", () => {
+test("apiTransport sends nearby requests through the session, with the client header", async () => {
+  const res = await apiTransport(nearby)("/api/config", { headers: { "content-type": "x" } });
+  expect(await res.json()).toEqual({
+    path: "/api/config",
+    headers: { [CLIENT_HEADER]: "1", "content-type": "x" },
+  });
+});
+
+test("connectionStatus of a nearby connection is its session", () => {
+  const config = { dataUpdatedAt: 1, errorUpdatedAt: 0, failureReason: null };
+  expect(connectionStatus(nearby, config)).toEqual({ kind: "nearby", session });
+});
+
+describe("apiTransport over HTTP", () => {
+  const sent: { url: string; headers: Record<string, string> }[] = [];
+  beforeAll(() =>
+    stub("fetch", async (url: string, init: RequestInit) => {
+      sent.push({ url, headers: Object.fromEntries(new Headers(init.headers)) });
+      return new Response();
+    }),
+  );
+  afterAll(restoreGlobals);
+
+  test("stays same-origin for the local UI", async () => {
+    await apiTransport({ kind: "local" })("/api/config", {});
+    expect(sent.pop()).toEqual({ url: "/api/config", headers: { [CLIENT_HEADER]: "1" } });
+  });
+
+  test("sends paired requests to the CLI on loopback with the token", async () => {
+    await apiTransport(paired)("/api/config", {});
+    expect(sent.pop()).toEqual({
+      url: "http://127.0.0.1:4778/api/config",
+      headers: { [CLIENT_HEADER]: "1", authorization: "Bearer s3cret" },
+    });
+  });
+});
+
+test("apiTransport fails requests without an accepted pairing or session as unauthorized", () => {
   const connections = [{ kind: "unpaired" }, { kind: "rejected", pairing }, { kind: "noSession" }];
   for (const connection of connections as Connection[]) {
-    const fail = () => apiTarget(connection);
+    const fail = () => apiTransport(connection);
     expect(fail).toThrow(ApiError);
     expect(fail).toThrow(expect.objectContaining({ kind: "unauthorized" }));
   }
@@ -104,9 +168,9 @@ test("afterRejection: a local page loses its session, a pairing is rejected", ()
     { kind: "noSession" },
     { kind: "unpaired" },
     { kind: "rejected", pairing },
+    nearby,
   ]) {
-    const connection = settled as Connection;
-    expect(afterRejection(connection)).toBe(connection);
+    expect(afterRejection(settled as Connection)).toBeNull();
   }
 });
 
@@ -160,13 +224,26 @@ const status401 = () => Promise.resolve(Response.json({ error: "Unauthorized" },
 describe("the connection store in the hosted app", () => {
   const url = new URL("http://localhost:4173/?repo=%2Fr&view=history#port=4778&token=s3cret");
   const storage = new Map<string, string>();
-  const events: Record<string, () => void> = {};
+  const events: Record<string, (event?: unknown) => void> = {};
+  const page = { visibilityState: "visible", listeners: {} as Record<string, () => void> };
+  const sessions: ReturnType<typeof fakeSession>[] = [];
+  const open = (h: NearbyHost) => {
+    const s = fakeSession(h);
+    sessions.push(s);
+    return s;
+  };
   let respond: () => Promise<Response> = () => Promise.reject(new TypeError("Failed to fetch"));
   const queryClient = new QueryClient();
 
   beforeAll(() => {
     stub("location", url);
-    stub("document", { querySelector: () => null }); // no LOCAL_UI_META tag
+    stub("document", {
+      querySelector: () => null, // no LOCAL_UI_META tag
+      addEventListener: (type: string, fn: () => void) => (page.listeners[type] = fn),
+      get visibilityState() {
+        return page.visibilityState;
+      },
+    });
     stub("history", {
       state: null,
       replaceState: (_state: unknown, _title: string, to: string) =>
@@ -179,7 +256,7 @@ describe("the connection store in the hosted app", () => {
     });
     stub("addEventListener", (type: string, fn: () => void) => (events[type] = fn));
     stub("fetch", () => respond());
-    initConnection(queryClient);
+    initConnection(queryClient, open);
   });
   afterAll(restoreGlobals);
 
@@ -234,6 +311,61 @@ describe("the connection store in the hosted app", () => {
     setPairing(null);
     expect(getConnection()).toEqual({ kind: "unpaired" });
     expect(storage.has("gitui-pairing")).toBe(false);
+  });
+
+  test("picking a nearby host saves it in place of a pairing, and drops the cache", () => {
+    setPairing(pairing);
+    queryClient.setQueryData(["/r", "status"], {});
+    setNearbyHost(host);
+    expect(getConnection()).toEqual({ kind: "nearby", session: sessions.at(-1)! });
+    expect(sessions.at(-1)!.host).toEqual(host);
+    expect(storage.has("gitui-pairing")).toBe(false);
+    expect(JSON.parse(storage.get("gitui-nearby-host")!)).toEqual(host);
+    expect(queryClient.getQueryData(["/r", "status"])).toBeUndefined();
+  });
+
+  test("picking the same host again keeps its session", () => {
+    const before = getConnection();
+    setNearbyHost({ ...host });
+    expect(getConnection()).toBe(before);
+    expect(sessions.at(-1)!.stopped).toBe(0);
+  });
+
+  test("showing the page again wakes the session", () => {
+    page.visibilityState = "hidden";
+    page.listeners.visibilitychange!();
+    expect(sessions.at(-1)!.woken).toBe(0);
+    page.visibilityState = "visible";
+    page.listeners.visibilitychange!();
+    events.pageshow!({ persisted: true });
+    expect(sessions.at(-1)!.woken).toBe(2);
+  });
+
+  test("another host stops the session, which forgets its token, once the app moved on", () => {
+    const first = sessions.at(-1)!;
+    const stoppedWhenNotified: number[] = [];
+    const unsubscribe = subscribeConnection(() => stoppedWhenNotified.push(first.stopped));
+    setNearbyHost({ key: "n".repeat(16), name: host.name });
+    unsubscribe();
+    expect(stoppedWhenNotified).toEqual([0]);
+    expect(first.stopped).toBe(1);
+    expect(sessions.at(-1)!.stopped).toBe(0);
+  });
+
+  test("disconnecting stops the session and forgets the nearby host", () => {
+    setNearbyHost(null);
+    expect(sessions.at(-1)!.stopped).toBe(1);
+    expect(getConnection()).toEqual({ kind: "unpaired" });
+    expect(storage.has("gitui-nearby-host")).toBe(false);
+  });
+
+  test("a pairing link replaces the nearby host and stops its session", () => {
+    setNearbyHost(host);
+    setPairing(pairing);
+    expect(sessions.at(-1)!.stopped).toBe(1);
+    expect(getConnection()).toEqual(paired);
+    expect(storage.has("gitui-nearby-host")).toBe(false);
+    setPairing(null);
   });
 });
 
@@ -317,5 +449,37 @@ describe("the connection store in a page gitui served", () => {
     retrySession();
     show("visible");
     expect(getConnection()).toBe(before);
+  });
+});
+
+// A reload of the hosted app connected to a nearby host: initConnection opens its session.
+describe("the connection store in the hosted app with a saved nearby host", () => {
+  const sessions: ReturnType<typeof fakeSession>[] = [];
+
+  beforeAll(() => {
+    stub("location", new URL("http://localhost:4173/"));
+    stub("document", { querySelector: () => null, addEventListener: () => {} });
+    stub("history", { state: null, replaceState: () => {} });
+    stub("localStorage", {
+      getItem: (k: string) => (k === "gitui-nearby-host" ? JSON.stringify(host) : null),
+      setItem: () => {},
+      removeItem: () => {},
+    });
+    stub("addEventListener", () => {});
+  });
+  afterAll(restoreGlobals);
+
+  test("opens one session with it, and only on initConnection", () => {
+    expect(sessions).toHaveLength(0);
+    initConnection(new QueryClient(), (h) => {
+      const s = fakeSession(h);
+      sessions.push(s);
+      return s;
+    });
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]!.host).toEqual(host);
+    expect(getConnection()).toEqual({ kind: "nearby", session: sessions[0]! });
+    setNearbyHost(null);
+    expect(sessions[0]!.stopped).toBe(1);
   });
 });

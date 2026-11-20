@@ -1,14 +1,18 @@
 import os from "node:os";
 import path from "node:path";
 import { Hono } from "hono";
+import { REPO_NOT_OPENED } from "@gitui/shared";
 import { type AccessOptions, installAccess } from "./access.ts";
-import { pushRecent, readRecent } from "./config.ts";
+import { CONFIG_DIR, readRecent } from "./config.ts";
 import { untrackedDiff, workingFile, workingFiles } from "./files.ts";
 import * as g from "./git.ts";
 import { withRepoLock } from "./lock.ts";
+import { RepoNotOpenedError, repoGate } from "./repo-scope.ts";
 
 export interface AppOptions extends AccessOptions {
   initialRepo?: string;
+  /** Where the recent list lives; tests pass a temp dir. */
+  configDir?: string;
 }
 
 /** Refuse anything git could parse as an option. */
@@ -89,9 +93,15 @@ export function createApp(opts: AppOptions) {
   const app = new Hono<Env>();
   const api = new Hono<Env>();
 
-  installAccess(app, opts);
+  const { repoScope } = installAccess(app, opts);
+  const configDir = opts.configDir ?? CONFIG_DIR;
+  const repos = repoGate(repoScope, { initialRepo: opts.initialRepo, configDir });
 
   app.onError((err, c) => {
+    // REPO_NOT_OPENED lets the UI tell this case apart.
+    if (err instanceof RepoNotOpenedError) {
+      return c.json({ error: err.message, code: REPO_NOT_OPENED }, 403);
+    }
     const message = err instanceof g.GitError ? err.message : String(err);
     return c.json({ error: message }, err instanceof g.GitError ? 400 : 500);
   });
@@ -99,24 +109,23 @@ export function createApp(opts: AppOptions) {
   api.get("/config", async (c) =>
     c.json({
       initialRepo: opts.initialRepo ?? null,
-      recent: await readRecent(),
+      recent: await readRecent(configDir),
       home: os.homedir(),
     }),
   );
 
   api.post("/open", async (c) => {
-    const { path: p } = await c.req.json<{ path: string }>();
-    const root = await g.resolveRepo(p);
-    await pushRecent(root);
+    const root = await repos.open(str((await jsonBody(c.req)).path, "path"));
     return c.json({ root, name: path.basename(root) });
   });
 
-  // Everything below operates on ?repo=<absolute path>
+  // Everything below operates on ?repo=<absolute path>, through the gate. A repository path
+  // that comes any other way (a body field) must go through `repos.resolve` as well.
   const repo = new Hono<Env>();
   repo.use("*", async (c, next) => {
     const r = c.req.query("repo");
     if (!r) return c.json({ error: "Missing repo" }, 400);
-    c.set("repo", await g.resolveRepo(r));
+    c.set("repo", await repos.resolve(r));
     await next();
   });
 

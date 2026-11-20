@@ -1,0 +1,16 @@
+// The nearby rendezvous: a Worker that routes WebSockets to one Durable Object per network.
+{
+  "name": "gitui-rendezvous",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-01",
+  "routes": [{ "pattern": "rendezvous.gitui.diffiii.dev", "custom_domain": true }],
+  "workers_dev": false,
+  "preview_urls": false,
+  // No Workers Logs: requests carry the caller's address.
+  "observability": { "enabled": false },
+  "durable_objects": {
+    "bindings": [{ "name": "RENDEZVOUS", "class_name": "Rendezvous" }],
+  },
+  // SQLite-backed, as the free plan requires. The object stores nothing in it.
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Rendezvous"] }],
+}

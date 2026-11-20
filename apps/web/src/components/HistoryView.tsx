@@ -57,7 +57,7 @@ export function HistoryPane({
   const { commit } = useUrl();
   const { data, error, isLoading, isFetching } = useQuery({
     queryKey: [repo, "log", gitRef ?? null, all, limit],
-    queryFn: () => api.log({ limit, all, ref: gitRef }),
+    queryFn: (c) => api.log({ limit, all, ref: gitRef }, c),
     placeholderData: (prev) => prev,
     refetchInterval: 10000,
   });
@@ -267,7 +267,7 @@ function CommitDetail({ hash, onSelect }: { hash: string; onSelect: (hash: strin
   const { repo, api } = useRepo();
   const { data, error } = useQuery({
     queryKey: [repo, "commit", hash],
-    queryFn: () => api.showCommit(hash),
+    queryFn: (c) => api.showCommit(hash, c),
     staleTime: Infinity,
   });
   const files = useParsedPatch(data?.patch ?? "");

@@ -1,21 +1,24 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import { HOSTED_ORIGIN, pairingUrl } from "@gitui/shared";
+import { HOSTED_ORIGIN, pairingUrl, RENDEZVOUS_ORIGIN, rendezvousUrl } from "@gitui/shared";
 import { renderUnicodeCompact } from "uqr";
 import {
-  type Listener,
+  type SocketListener,
   lanListener,
   lanPairingUrl,
   listenAddress,
   loopbackListener,
 } from "../server/access.ts";
+import { createApp } from "../server/app.ts";
 import { pushRecent } from "../server/config.ts";
 import { resolveRepo } from "../server/git.ts";
 import { lanAddresses, PRIVATE_RANGES, pickLanAddress } from "../server/lan.ts";
 import { start } from "../server/main.ts";
-import { ArgsError, HELP, type Options, parseArgs } from "./args.ts";
+import { startNearby } from "../server/nearby/host.ts";
+import { ArgsError, HELP, hostnameAsName, type Nearby, type Options, parseArgs } from "./args.ts";
 
 function fail(message: string): never {
   console.error(message);
@@ -35,6 +38,13 @@ try {
   throw e;
 }
 const { port, open, mode, target } = options;
+
+/** The rendezvous URL for --nearby, checked before anything starts. */
+function nearbyUrl() {
+  const url = rendezvousUrl(process.env.GITUI_RENDEZVOUS_URL || RENDEZVOUS_ORIGIN);
+  return url ?? fail("GITUI_RENDEZVOUS_URL must be a ws: or wss: origin, e.g. ws://localhost:8787");
+}
+const nearby = mode.kind !== "lan" && mode.nearby ? { ...mode.nearby, url: nearbyUrl() } : null;
 
 let repo: string | undefined;
 if (target) {
@@ -56,7 +66,7 @@ function bundledUi() {
 }
 
 /** Starts the server and returns the bound port, or exits with why it couldn't. */
-const listen = (listener: Listener, ui?: string) =>
+const listen = (listener: SocketListener, ui?: string) =>
   start({ port, initialRepo: repo, ui, listener }).catch((e: Error) =>
     fail(`Can't listen on ${listenAddress(listener)}: ${e.message}`),
   );
@@ -70,9 +80,24 @@ async function listenLoopback(origins: string[], ui?: string) {
   return { bound, pairing };
 }
 
+/**
+ * Lists this machine for phones on the network; their requests go to an app of their own, whose
+ * access rules trust the authenticated data channel (see server/access.ts).
+ */
+function listenNearby({ name, url }: Nearby & { url: string }) {
+  const app = createApp({ listener: { kind: "nearby" }, initialRepo: repo });
+  startNearby({
+    url,
+    name: name ?? hostnameAsName(os.hostname()),
+    fetch: app.fetch,
+    log: (line) => console.log(line),
+  });
+}
+
 switch (mode.kind) {
   case "hosted": {
     const { pairing } = await listenLoopback(mode.origins);
+    if (nearby) listenNearby(nearby);
     if (open) openBrowser(pairing);
     break;
   }
@@ -80,6 +105,7 @@ switch (mode.kind) {
     const { bound } = await listenLoopback(mode.origins, bundledUi());
     const url = `http://127.0.0.1:${bound}/${repo ? `?repo=${encodeURIComponent(repo)}` : ""}`;
     console.log(`gitui running at ${url}`);
+    if (nearby) listenNearby(nearby);
     if (open) openBrowser(url);
     break;
   }

@@ -13,9 +13,12 @@ import { createApp } from "./app.ts";
 process.env.GIT_CONFIG_GLOBAL = os.devNull;
 process.env.GIT_CONFIG_NOSYSTEM = "1";
 
-/** The app as served locally, with no cross-origin callers. */
+/** The app as served locally, with no cross-origin callers, and a recent list of its own. */
 export const testApp = () =>
-  createApp({ listener: { kind: "loopback", allowedOrigins: [], token: "unused" } });
+  createApp({
+    listener: { kind: "loopback", allowedOrigins: [], token: "unused" },
+    configDir: tmpDir(),
+  });
 
 const dirs: string[] = [];
 

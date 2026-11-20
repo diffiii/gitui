@@ -16,13 +16,22 @@ const localUiMarker: Plugin = {
   transformIndexHtml: () => [{ tag: "meta", attrs: { name: LOCAL_UI_META }, injectTo: "head" }],
 };
 
-/** Emits the hosted app's `_headers` (its security headers on Cloudflare) into the build. */
-const hostedHeaders: Plugin = {
-  name: "gitui-hosted-headers",
-  apply: "build",
-  generateBundle() {
-    this.emitFile({ type: "asset", fileName: "_headers", source: hostedHeadersFile() });
-  },
+/**
+ * Emits the hosted app's `_headers` (its security headers on Cloudflare) into the build. Its CSP
+ * lets the page reach the rendezvous the build talks to: VITE_GITUI_RENDEZVOUS_URL if set.
+ */
+const hostedHeaders = (): Plugin => {
+  let rendezvous: string | undefined;
+  return {
+    name: "gitui-hosted-headers",
+    apply: "build",
+    configResolved(config) {
+      rendezvous = config.env.VITE_GITUI_RENDEZVOUS_URL || undefined;
+    },
+    generateBundle() {
+      this.emitFile({ type: "asset", fileName: "_headers", source: hostedHeadersFile(rendezvous) });
+    },
+  };
 };
 
 export default defineConfig({
@@ -32,5 +41,5 @@ export default defineConfig({
   server: {
     proxy: { "/api": `http://127.0.0.1:${API_PORT}` },
   },
-  plugins: lazyPlugins(() => [react(), tailwindcss(), localUiMarker, hostedHeaders]),
+  plugins: lazyPlugins(() => [react(), tailwindcss(), localUiMarker, hostedHeaders()]),
 });

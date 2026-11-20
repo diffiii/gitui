@@ -74,3 +74,9 @@ export type WorkingFile =
   | { kind: "symlink"; target: string }
   | { kind: "binary"; size: number }
   | { kind: "tooLarge"; size: number };
+
+/**
+ * `code` of the 403 a device other than the computer running gitui (LAN or nearby) gets for a
+ * repository that wasn't opened on that computer: `{ error, code: REPO_NOT_OPENED }`.
+ */
+export const REPO_NOT_OPENED = "repo-not-opened";
