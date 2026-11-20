@@ -1,7 +1,7 @@
 import { HOST_KEY, hostName, type HostInfo } from "@gitui/shared";
 
-// The pure parts of the nearby connection: what the session store's states are, and the
-// decisions it makes. session.ts runs them against the network; tests run them as they are.
+// The pure parts of the nearby connection: the saved host, the session's states, and the list
+// of hosts.
 
 /** The host the app is connected to, as saved: its per-run key and display name. */
 export interface NearbyHost {
@@ -10,25 +10,26 @@ export interface NearbyHost {
 }
 
 /**
- * The page's connection to its nearby host (session.ts). `off` while the app's connection isn't
- * nearby. `connecting` and `code` block the app, `reconnecting` doesn't: the app stays up while
- * the session comes back. `failed` waits for the user.
+ * A nearby session's state (session.ts). `connecting` and `code` block the app, `reconnecting`
+ * doesn't: the app stays up while the session comes back. `failed` waits for the user. `gone`:
+ * the rendezvous doesn't list the host's key (gitui quit, or restarted with a new one), so the
+ * user picks a computer again. `off` once the session is stopped.
  */
 export type NearbyState =
-  | { kind: "off" }
-  | { kind: "connecting"; host: NearbyHost }
+  | { kind: "connecting" }
   | {
       kind: "code";
-      host: NearbyHost;
       checking: boolean;
       /** After a wrong code. */
       attemptsLeft?: number;
-      /** Why the host asks again: its resume token stopped working, or it restarted. */
-      notice?: "expired" | "restarted";
+      /** Why the host asks again: the saved resume token didn't work. */
+      notice?: "expired";
     }
-  | { kind: "connected"; host: NearbyHost }
-  | { kind: "reconnecting"; host: NearbyHost }
-  | { kind: "failed"; host: NearbyHost; reason: string };
+  | { kind: "connected" }
+  | { kind: "reconnecting" }
+  | { kind: "failed"; reason: string }
+  | { kind: "gone" }
+  | { kind: "off" };
 
 /** `value` as a saved NearbyHost, or null if it isn't one. */
 export function parseNearbyHost(value: unknown): NearbyHost | null {
@@ -53,34 +54,3 @@ export function dedupeHosts(hosts: HostInfo[]): HostInfo[] {
   const order = [...new Set(hosts.map((h) => h.key))];
   return order.map((key) => byKey.get(key)!);
 }
-
-/**
- * Where `host` is among the listed hosts. A CLI makes a new key each run, so a host that is gone
- * while another with the same name is listed most likely restarted: its tokens are gone too,
- * and the guest has to pair with the new run.
- */
-export function findHost(
-  hosts: HostInfo[],
-  host: NearbyHost,
-):
-  | { kind: "listed"; host: HostInfo }
-  | { kind: "restarted"; host: HostInfo }
-  | { kind: "missing" } {
-  const listed = hosts.findLast((h) => h.key === host.key);
-  if (listed) return { kind: "listed", host: listed };
-  const renamed = hosts.filter((h) => h.name === host.name);
-  // Two computers with the same name: there is no telling which one it was.
-  return renamed.length === 1 ? { kind: "restarted", host: renamed[0]! } : { kind: "missing" };
-}
-
-/** How a new data channel opens: `resume` with a saved token, else `auth` with a code. */
-export const opening = (token: string | null): { t: "resume"; token: string } | { t: "auth" } =>
-  token ? { t: "resume", token } : { t: "auth" };
-
-/**
- * After the host turned a `resume` away: ask for the code on the same channel while the host
- * still takes attempts (a refused first `resume` costs none), else on a new one (the host
- * closes after its last failure).
- */
-export const afterRejectedResume = (attemptsLeft: number): "ask-code" | "reopen" =>
-  attemptsLeft > 0 ? "ask-code" : "reopen";

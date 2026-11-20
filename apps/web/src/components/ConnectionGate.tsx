@@ -29,16 +29,16 @@ import {
   type ConnectionStatus,
 } from "@/lib/connection";
 import { rendezvous } from "@/lib/nearby/rendezvous";
-import { retry, submitCode, useNearbySession } from "@/lib/nearby/session";
+import type { NearbySession } from "@/lib/nearby/session";
+import type { NearbyState } from "@/lib/nearby/state";
 
 /**
  * Renders the app once gitui answers; until then, in the hosted app, how to connect to it: a
  * computer nearby, or gitui on this one. A page `gitui --lan` serves shows how to pair instead
- * once gitui turns it away. While a nearby session reconnects, the app stays up under a banner.
+ * once gitui turns it away.
  */
 export function ConnectionGate({ children }: { children: React.ReactNode }) {
   const connection = useConnection();
-  const nearby = useNearbySession();
   const config = useQuery({
     queryKey: ["config"],
     queryFn: getConfig,
@@ -46,17 +46,12 @@ export function ConnectionGate({ children }: { children: React.ReactNode }) {
     ...retryWhileUnreachable,
   });
 
-  const status = connectionStatus(connection, config, nearby);
+  const status = connectionStatus(connection, config);
   switch (status.kind) {
     case "connected":
-    case "reconnecting":
-      // The same tree either way, so the app doesn't remount when the banner comes and goes.
-      return (
-        <>
-          {status.kind === "reconnecting" && <ReconnectingBanner host={status.host} />}
-          {children}
-        </>
-      );
+      return children;
+    case "nearby":
+      return <NearbyGate session={status.session}>{children}</NearbyGate>;
     case "noSession":
       return <NoSessionScreen />;
     case "unpaired":
@@ -65,22 +60,45 @@ export function ConnectionGate({ children }: { children: React.ReactNode }) {
     case "connecting":
     case "unreachable":
       return <UnreachableScreen status={status} />;
-    case "nearbyConnecting":
+  }
+}
+
+/**
+ * The app once the nearby session is connected, and while it reconnects, under a banner; until
+ * then, the session's progress, its code screen, or why it failed.
+ */
+function NearbyGate({ session, children }: { session: NearbySession; children: React.ReactNode }) {
+  const state = useSyncExternalStore(session.subscribe, session.getState);
+  const name = session.host.name;
+  switch (state.kind) {
+    case "connected":
+    case "reconnecting":
+      // The same tree either way, so the app doesn't remount when the banner comes and goes.
       return (
-        <CenteredScreen icon={Laptop} title={status.host} description="Connecting…">
+        <>
+          {state.kind === "reconnecting" && <ReconnectingBanner host={name} />}
+          {children}
+        </>
+      );
+    case "connecting":
+    case "off":
+      return (
+        <CenteredScreen icon={Laptop} title={name} description="Connecting…">
           <div className="flex flex-col items-center gap-4">
             <LoaderCircle className="size-5 animate-spin text-muted-foreground" />
             <ChooseAnotherButton />
           </div>
         </CenteredScreen>
       );
-    case "nearbyCode":
-      return <CodeScreen status={status} />;
-    case "nearbyFailed":
+    case "code":
+      return <CodeScreen session={session} state={state} />;
+    case "gone":
+      return <ConnectScreen gone={name} />;
+    case "failed":
       return (
-        <CenteredScreen icon={CircleAlert} title={status.host} description={status.reason}>
+        <CenteredScreen icon={CircleAlert} title={name} description={state.reason}>
           <div className="flex flex-col gap-2">
-            <Button size="lg" onClick={retry}>
+            <Button size="lg" onClick={session.retry}>
               <RotateCw />
               Try again
             </Button>
@@ -102,8 +120,11 @@ const ChooseAnotherButton = () => (
   </Button>
 );
 
-/** How to connect the hosted app: a computer nearby, or the pairing link of gitui on this one. */
-function ConnectScreen({ rejected }: { rejected: boolean }) {
+/**
+ * How to connect the hosted app: a computer nearby, or the pairing link of gitui on this one.
+ * `gone`: the name of the nearby host the app was connected to, which left the network.
+ */
+function ConnectScreen({ rejected = false, gone }: { rejected?: boolean; gone?: string }) {
   return (
     <CenteredScreen
       icon={Radar}
@@ -111,6 +132,8 @@ function ConnectScreen({ rejected }: { rejected: boolean }) {
       description={
         <>
           {rejected && "gitui didn't accept the saved pairing. "}
+          {gone &&
+            `${gone} isn't on this network any more. If gitui restarted there, pick it again and enter its new code. `}
           Computers on this network running <Code>gitui --nearby</Code> show up here.
         </>
       }
@@ -171,19 +194,23 @@ function NearbyHosts() {
   );
 }
 
-function CodeScreen({ status }: { status: Extract<ConnectionStatus, { kind: "nearbyCode" }> }) {
+function CodeScreen({
+  session,
+  state,
+}: {
+  session: NearbySession;
+  state: Extract<NearbyState, { kind: "code" }>;
+}) {
   const [code, setCode] = useState("");
-  const { host, checking, attemptsLeft, notice } = status;
+  const { checking, attemptsLeft, notice } = state;
   return (
     <CenteredScreen
       icon={KeyRound}
-      title={host}
+      title={session.host.name}
       description={
-        notice === "restarted"
-          ? "gitui restarted on this computer. Enter the new code it printed."
-          : notice === "expired"
-            ? "This device's session with gitui ended. Enter the code gitui printed in your terminal."
-            : "Enter the code gitui printed in your computer's terminal."
+        notice === "expired"
+          ? "This device's session with gitui ended. Enter the code gitui printed in your terminal."
+          : "Enter the code gitui printed in your computer's terminal."
       }
     >
       <form
@@ -191,7 +218,7 @@ function CodeScreen({ status }: { status: Extract<ConnectionStatus, { kind: "nea
         onSubmit={(e) => {
           e.preventDefault();
           setCode("");
-          void submitCode(code);
+          void session.submitCode(code);
         }}
       >
         <Input
