@@ -54,19 +54,20 @@ type RefusedReason = Extract<SignalData, { kind: "refused" }>["reason"];
 
 /**
  * Why a host refused an offer, for each reason it gives. A reason this page doesn't know (a newer
- * CLI's) gets the generic message.
+ * CLI's) decodes as `unknown`.
  */
 const REFUSALS: Record<RefusedReason, (host: string) => string> = {
   busy: (host) => `${host} is busy with other devices connecting. Try again in a moment.`,
   "rate-limited": (host) => `${host} got too many connection requests. Try again in a minute.`,
-  "bad-offer": (host) => `${host} couldn't use this connection request. Try again.`,
+  "pairing-locked": (host) =>
+    `${host} isn't pairing new devices right now: too many wrong codes were tried. Try again in about 10 minutes. Devices paired before can still connect.`,
+  "bad-offer": (host) =>
+    `${host} couldn't use this browser's connection offer. Try another browser, or update gitui.`,
+  unknown: (host) => `${host} refused the connection. Try again, or reload this page.`,
 };
 
 /** What to say when `host` refuses an offer for `reason`. */
-export const refusalMessage = (host: string, reason: string) =>
-  Object.hasOwn(REFUSALS, reason)
-    ? REFUSALS[reason as RefusedReason](host)
-    : `${host} turned the connection down. Try again later.`;
+export const refusalMessage = (host: string, reason: RefusedReason) => REFUSALS[reason](host);
 
 export type AuthResult = { ok: true } | { ok: false; attemptsLeft: number };
 

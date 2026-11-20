@@ -128,12 +128,10 @@ for (const reason of ["busy", "rate-limited"] as const) {
   });
 }
 
-test("a refusal reason this page doesn't know gets a generic message", () => {
+test("each refusal reason has its own message", () => {
   expect(refusalMessage("MacBook", "busy")).toContain("busy");
-  expect(refusalMessage("MacBook", "pairing-locked")).toBe(
-    "MacBook turned the connection down. Try again later.",
-  );
-  expect(refusalMessage("MacBook", "toString")).toBe(
-    "MacBook turned the connection down. Try again later.",
+  expect(refusalMessage("MacBook", "pairing-locked")).toContain("10 minutes");
+  expect(refusalMessage("MacBook", "unknown")).toBe(
+    "MacBook refused the connection. Try again, or reload this page.",
   );
 });
