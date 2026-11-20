@@ -88,7 +88,7 @@ test("parseClientMessage accepts signals and keeps only the contract's fields", 
     data: { kind: "candidate", offerId, candidate: endOfCandidates },
   };
   expect(parse(end)).toEqual(end);
-  for (const reason of ["busy", "rate-limited"]) {
+  for (const reason of ["busy", "rate-limited", "bad-offer"]) {
     const refused = { type: "signal", to: "p1", data: { kind: "refused", offerId, reason } };
     expect(parse(refused)).toEqual(refused);
   }

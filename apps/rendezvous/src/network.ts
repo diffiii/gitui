@@ -3,6 +3,7 @@
 // it can be unit-tested; rendezvous.ts adapts it to the Durable Object's WebSockets.
 import {
   MAX_MESSAGE_LENGTH,
+  MAX_PENDING,
   parseClientMessage,
   type HostInfo,
   type ServerMessage,
@@ -29,11 +30,11 @@ export const RATE_WINDOW = 10_000;
  */
 export const GUEST_RATE_LIMIT = 50;
 /**
- * What a host's socket may send per RATE_WINDOW. The CLI pairs with up to 4 guests at once
- * (MAX_PENDING in apps/cli/server/nearby/host.ts), each with an answer and its trickled
- * candidates, at most about 32: 1 + 4 × (1 + 32) = 133 messages, plus room to spare.
+ * What a host's socket may send per RATE_WINDOW. The CLI pairs with up to MAX_PENDING (4)
+ * guests at once, each with an answer and its trickled candidates, at most about 32:
+ * 1 + 4 × (1 + 32) = 133 messages, plus room to spare: 50 per guest.
  */
-export const HOST_RATE_LIMIT = 200;
+export const HOST_RATE_LIMIT = 50 * MAX_PENDING;
 /**
  * What the network's guests and sockets that haven't said hello may send together per
  * RATE_WINDOW, so filling the network with sockets doesn't multiply GUEST_RATE_LIMIT by

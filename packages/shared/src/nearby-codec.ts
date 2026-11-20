@@ -15,6 +15,8 @@ import {
   MAX_NAME_LENGTH,
   OFFER_ID,
   parseChunk,
+  REFUSAL_REASONS,
+  type RefusalReason,
   RENDEZVOUS_PATH,
   type ServerMessage,
   type SignalData,
@@ -174,8 +176,8 @@ export function decodeSignal(value: unknown): SignalData {
     case "candidate":
       return { kind: "candidate", offerId, candidate: decodeCandidate(data.candidate) };
     case "refused":
-      if (data.reason !== "busy" && data.reason !== "rate-limited") return fail("invalid reason");
-      return { kind: "refused", offerId, reason: data.reason };
+      if (!REFUSAL_REASONS.includes(data.reason as RefusalReason)) return fail("invalid reason");
+      return { kind: "refused", offerId, reason: data.reason as RefusalReason };
     default:
       return fail("unknown signal kind");
   }

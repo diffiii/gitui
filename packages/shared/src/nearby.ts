@@ -50,10 +50,11 @@
 // nothing to test codes against offline. HostInfo.key and names are public hints for finding a
 // host, not proofs: any device on the network can list itself with a copied key and name, and
 // it then fails the code's confirmation and can't prove a resume token. What remains is online
-// guessing (one guess per `pake`, bounded by the attempts per channel and the host's limits on
-// offers), and anyone who can read the code in the host's terminal. The Worker's Origin check
-// only keeps other websites' pages from opening guest sockets in their visitors' browsers;
-// anything that isn't a browser can send whatever Origin it likes.
+// guessing (one guess per `pake`, bounded by the attempts per channel, the host's limits on
+// offers and its pairing budget across every channel), and anyone who can read the code in the
+// host's terminal. The Worker's Origin check only keeps other websites' pages from opening guest
+// sockets in their visitors' browsers; anything that isn't a browser can send whatever Origin it
+// likes.
 
 /** Where the rendezvous Worker lives (apps/rendezvous). */
 export const RENDEZVOUS_ORIGIN = "wss://rendezvous.gitui.diffiii.dev";
@@ -74,6 +75,8 @@ export const CHUNK_SIZE = 16 * 1024;
 export const AUTH_CODE_DIGITS = 6;
 /** `pake`s (and resumes after the first) a channel may fail before the host closes it. */
 export const AUTH_ATTEMPTS = 3;
+/** The most guests a host lets prove themselves at once; it refuses more offers as `busy`. */
+export const MAX_PENDING = 4;
 
 // ── Rendezvous WebSocket (JSON text messages) ─────────────────────────────────────────────
 
@@ -118,9 +121,14 @@ export type SignalData =
   | { kind: "candidate"; offerId: string; candidate: IceCandidate }
   /**
    * Host to guest: it won't answer this offer. `busy`: too many guests are proving themselves
-   * at once; `rate-limited`: too many offers came in the last minute.
+   * at once; `rate-limited`: too many offers or pairing attempts came lately; `bad-offer`: the
+   * host can't use the offer (e.g. its SDP hasn't exactly one SHA-256 fingerprint).
    */
-  | { kind: "refused"; offerId: string; reason: "busy" | "rate-limited" };
+  | { kind: "refused"; offerId: string; reason: RefusalReason };
+
+/** Why a host refused an offer (SignalData's `refused`). */
+export type RefusalReason = "busy" | "rate-limited" | "bad-offer";
+export const REFUSAL_REASONS: readonly RefusalReason[] = ["busy", "rate-limited", "bad-offer"];
 
 /** Messages a peer sends to the rendezvous object. */
 export type ClientMessage =
