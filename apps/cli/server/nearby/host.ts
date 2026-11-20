@@ -10,7 +10,7 @@ import { lockoutLine, newHostSecret, PairingBudget, Tokens } from "./auth.ts";
 import type { Fetch } from "./bridge.ts";
 import { guardWerift } from "./guard.ts";
 import { OfferLimiter } from "./offers.ts";
-import { GuestSession } from "./peer.ts";
+import { errorLine, type GuestOptions, GuestSession } from "./peer.ts";
 import {
   BACKOFF,
   type Family,
@@ -43,9 +43,11 @@ export interface NearbyOptions {
   name: string;
   /** Answers authenticated guests' requests: an app built with the nearby listener. */
   fetch: Fetch;
+  /** Prints a line; every line comes without control characters (`printable`). */
   log: (line: string) => void;
-  /** For tests: how sockets open, the pairing budget, and timings. */
+  /** For tests: how sockets and peer connections open, the pairing budget, and timings. */
   open?: SocketFactory;
+  peer?: GuestOptions["peer"];
   pairingBudget?: number;
   backoff?: typeof BACKOFF;
   keepalive?: typeof KEEPALIVE;
@@ -54,7 +56,9 @@ export interface NearbyOptions {
 
 /** Starts listing this machine and answering guests; `stop` ends every connection. */
 export function startNearby(options: NearbyOptions) {
-  const { url, name, fetch, log } = options;
+  const { url, name, fetch } = options;
+  // Lines quote what others sent (errors, names): none may drive the terminal.
+  const log = (line: string) => options.log(printable(line));
   const secret = newHostSecret();
   /** What guests see: the service lists this host under it. */
   const key = hostKey(secret);
@@ -99,10 +103,15 @@ export function startNearby(options: NearbyOptions) {
     try {
       fn();
     } catch (e) {
-      const line = `Nearby: closed a connection after an error: ${String(e)}`;
+      const line = errorLine(e);
       const session = sessions.get(sessionKey(family, id));
-      if (session) session.close(line);
-      else log(line);
+      try {
+        if (session) session.close(line);
+        else log(line);
+      } catch (again) {
+        // Ending the session threw, but it still ended (GuestSession.close).
+        log(errorLine(again));
+      }
     }
   };
 
@@ -146,7 +155,7 @@ export function startNearby(options: NearbyOptions) {
         error(code, message) {
           if (code === "host-limit") return report({ type: "no-room", why: "hosts" });
           if (code === "key-limit") return report({ type: "no-room", why: "sockets" });
-          log(`Nearby: the rendezvous service reported: ${printable(message)} (${code})`);
+          log(`Nearby: the rendezvous service reported: ${message} (${code})`);
         },
       },
     });
@@ -180,6 +189,7 @@ export function startNearby(options: NearbyOptions) {
       tokens,
       budget,
       log,
+      peer: options.peer,
       onEnd: () => {
         if (sessions.get(at) === session) sessions.delete(at);
       },

@@ -25,7 +25,12 @@ import {
   type Tokens,
 } from "./auth.ts";
 import { Bridge, type Fetch } from "./bridge.ts";
-import { type AnsweringPeer, createAnsweringPeer, type DataChannel } from "./webrtc.ts";
+import {
+  type AnsweringPeer,
+  createAnsweringPeer,
+  type DataChannel,
+  type PeerEvents,
+} from "./webrtc.ts";
 
 /** How long a guest has, from its offer, to prove itself. */
 export const AUTH_TIMEOUT = 60_000;
@@ -34,6 +39,10 @@ export const AUTH_TIMEOUT = 60_000;
 export const MAX_REMOTE_CANDIDATES = 32;
 // This side trickles at most MAX_LOCAL_CANDIDATES, which the rendezvous's limit for hosts
 // counts on (apps/rendezvous/src/network.ts).
+
+/** The line for a connection closed after an error of ours (the session's, or host.ts's). */
+export const errorLine = (error: unknown) =>
+  `Nearby: closed a connection after an error: ${String(error)}`;
 
 /** What the host sends a guest about its offer: its answer and candidates. */
 export type HostSignal =
@@ -60,9 +69,11 @@ export interface GuestOptions {
   budget: PairingBudget;
   /** Prints a line for the person at this machine. */
   log: (line: string) => void;
-  /** Called once, when the session ends for any reason. */
+  /** Called once, when the session ends for any reason, even if ending it throws. */
   onEnd: () => void;
   authTimeout?: number;
+  /** For tests: the peer connection, a werift one (createAnsweringPeer) by default. */
+  peer?: (stunUrls: string[], events: PeerEvents) => AnsweringPeer;
 }
 
 /** A CPace run answered, waiting for the guest's `pake-confirm`. */
@@ -95,14 +106,15 @@ export class GuestSession {
   constructor(options: GuestOptions) {
     this.#options = options;
     this.#gate = new Gatekeeper(options.budget);
-    this.#peer = createAnsweringPeer(options.stunUrls, {
+    const createPeer = options.peer ?? createAnsweringPeer;
+    this.#peer = createPeer(options.stunUrls, {
       candidate: (candidate) => {
         if (++this.#localCandidates > MAX_LOCAL_CANDIDATES) return;
         options.signal({ kind: "candidate", offerId: options.offerId, candidate });
       },
       channel: (channel) => this.#take(channel),
       closed: () => this.close(),
-      error: (error) => this.close(`Nearby: closed a connection after an error: ${String(error)}`),
+      error: (error) => this.close(errorLine(error)),
     });
     this.#timer = setTimeout(
       () =>
@@ -127,18 +139,25 @@ export class GuestSession {
     });
   }
 
-  /** Ends the session, printing `line` if given. Safe to call more than once. */
+  /**
+   * Ends the session, printing `line` if given. Safe to call more than once. If tearing it down
+   * throws, the session still ends (`onEnd`) and prints its line, and the error goes to the
+   * caller.
+   */
   close(line?: string) {
     if (this.#state === "closed") return;
     const wasOpen = this.#state === "open";
     this.#state = "closed";
-    clearTimeout(this.#timer);
-    this.#bridge?.close();
-    this.#channel?.close();
-    this.#peer.close();
-    if (line) this.#options.log(line);
-    else if (wasOpen) this.#options.log("Nearby: device disconnected");
-    this.#options.onEnd();
+    try {
+      this.#bridge?.close();
+      this.#channel?.close();
+      this.#peer.close();
+    } finally {
+      clearTimeout(this.#timer);
+      this.#options.onEnd();
+      if (line) this.#options.log(line);
+      else if (wasOpen) this.#options.log("Nearby: device disconnected");
+    }
   }
 
   async #answer() {
