@@ -7,11 +7,11 @@
   },
   "type": "module",
   "scripts": {
-    "dev": "bun --watch server/main.ts",
-    "start": "bun bin/gitui.ts"
+    "dev": "bun --watch server/main.ts"
   },
   "dependencies": {
     "@gitui/shared": "workspace:*",
+    "@gitui/web": "workspace:*",
     "hono": "^4.13.19"
   },
   "devDependencies": {

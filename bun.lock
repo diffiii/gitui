@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "tpl",
+      "name": "gitui",
       "devDependencies": {
         "@types/bun": "^1.4.5",
         "typescript": "~7.0.2",
@@ -19,6 +19,7 @@
       },
       "dependencies": {
         "@gitui/shared": "workspace:*",
+        "@gitui/web": "workspace:*",
         "hono": "^4.13.19",
       },
       "devDependencies": {

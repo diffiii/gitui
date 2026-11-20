@@ -2,7 +2,11 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { createApp } from "./app.ts";
 
-const DIST = path.resolve(import.meta.dir, "../../web/dist");
+// The built @gitui/web app (a workspace dependency), served in production.
+const DIST = path.join(
+  path.dirname(Bun.resolveSync("@gitui/web/package.json", import.meta.dir)),
+  "dist",
+);
 
 export interface StartOptions {
   port: number;
