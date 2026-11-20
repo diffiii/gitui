@@ -108,10 +108,11 @@ export const RATE_WINDOW = 10_000;
 /**
  * The most offers a host takes per minute, so at most this many in any RATE_WINDOW too. Of
  * these, MAX_RESUMES_PER_MINUTE are kept for offers that resume, and the rest for the others,
- * so offers for a code can't use them all.
+ * so offers for a code can't use them all. Half: a phone that comes back to the tab often may
+ * resume several times a minute, and nobody types 6 codes a minute.
  */
 export const MAX_OFFERS_PER_MINUTE = 12;
-export const MAX_RESUMES_PER_MINUTE = 4;
+export const MAX_RESUMES_PER_MINUTE = 6;
 /** The most local candidates a host trickles for one offer; it drops the rest. */
 export const MAX_LOCAL_CANDIDATES = 16;
 /** The most `refused` signals a host sends per RATE_WINDOW; past that it ignores offers quietly. */

@@ -218,13 +218,17 @@ test("a refused resume costs no attempt and shows the code, which still works", 
   const tokens = new Tokens();
   const { token } = await pair(tokens);
   const guest = await connect({ tokens, resuming: true });
+  const session = sessions.at(-1)!;
   await guest.opened();
   // A guest that said it would resume sees no code until its resume fails.
   await sleep(100);
   expect(guest.code()).toBe("");
+  expect(session.resuming).toBe(true);
   guest.send(resumeStart(newToken(), guest.prints()));
   expect(await guest.next()).toEqual({ t: "auth-fail", attemptsLeft: AUTH_ATTEMPTS });
   const code = await guest.shownCode();
+  // Showing a code makes it a code session, which frees its resume slot.
+  expect(session.resuming).toBe(false);
 
   expect(await guest.pake(code)).toBe(true);
   await until(() => guest.received.length === 4);

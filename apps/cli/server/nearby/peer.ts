@@ -122,9 +122,12 @@ export class GuestSession {
     this.#answered = this.#answer();
   }
 
-  /** Whether the offer said the guest will resume (GuestOptions.resuming). */
+  /**
+   * Whether the offer said the guest will resume (GuestOptions.resuming) and it hasn't fallen
+   * back to a code: once it shows one, it counts as a code session and frees its resume slot.
+   */
   get resuming() {
-    return this.#options.resuming === true;
+    return this.#options.resuming === true && !this.#codeShown;
   }
 
   /** Whether the guest entered the right code or resumed. */
