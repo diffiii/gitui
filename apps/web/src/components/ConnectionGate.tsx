@@ -53,7 +53,7 @@ function PairScreen({ rejected }: { rejected: boolean }) {
       description={
         <>
           {rejected && "gitui didn't accept the saved pairing. "}
-          Open the link <Code>gitui --hosted</Code> printed in your terminal, or paste it here.
+          Open the link gitui printed in your terminal, or paste it here.
         </>
       }
     >
@@ -104,7 +104,7 @@ function UnreachableScreen({
       description={
         <>
           This page works with the gitui CLI running on your machine. Run{" "}
-          <Code>gitui --hosted</Code> in a terminal.
+          <Code>npx @diffiii/gitui@latest</Code> (or <Code>bunx</Code>) in a terminal.
         </>
       }
     >
@@ -114,7 +114,7 @@ function UnreachableScreen({
           it.
         </li>
         <li>
-          Safari may block connections to localhost. If it never connects, run <Code>gitui</Code>{" "}
+          Safari may block connections to localhost. If it never connects, add <Code>--local</Code>{" "}
           and use the page it opens instead.
         </li>
       </ul>
