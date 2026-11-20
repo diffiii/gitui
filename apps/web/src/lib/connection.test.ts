@@ -11,7 +11,6 @@ import {
   initConnection,
   initialConnection,
   rejectConnection,
-  retrySession,
   retryWhileUnreachable,
   setNearbyHost,
   setPairing,
@@ -25,9 +24,9 @@ import type { NearbyHost } from "./nearby/state.ts";
 const pairing = { port: 4778, token: "s3cret" };
 const paired: Connection = { kind: "paired", pairing };
 
-test("initialConnection is local in a page gitui served and uses the saved pairing elsewhere", () => {
+test("initialConnection is dev on the dev server and uses the saved pairing elsewhere", () => {
   const saved = pairingFragment(pairing);
-  expect(initialConnection(true, saved)).toEqual({ kind: "local" });
+  expect(initialConnection(true, saved)).toEqual({ kind: "dev" });
   expect(initialConnection(false, saved)).toEqual(paired);
   expect(initialConnection(false, "")).toEqual({ kind: "unpaired" });
   expect(initialConnection(false, "garbage")).toEqual({ kind: "unpaired" });
@@ -59,7 +58,7 @@ const nearby: Connection = { kind: "nearby", session };
 test("initialConnection returns the saved nearby host, without opening anything", () => {
   const savedHost = JSON.stringify(host);
   expect(initialConnection(false, "", savedHost)).toEqual({ kind: "nearby", host });
-  expect(initialConnection(true, "", savedHost)).toEqual({ kind: "local" });
+  expect(initialConnection(true, "", savedHost)).toEqual({ kind: "dev" });
   expect(initialConnection(false, pairingFragment(pairing), savedHost)).toEqual(paired);
   expect(initialConnection(false, "", "{bad json")).toEqual({ kind: "unpaired" });
   expect(initialConnection(false, "", '{"key":"short","name":"x"}')).toEqual({
@@ -90,8 +89,8 @@ describe("apiTransport over HTTP", () => {
   );
   afterAll(restoreGlobals);
 
-  test("stays same-origin for the local UI", async () => {
-    await apiTransport({ kind: "local" })("/api/config", {});
+  test("stays same-origin on the dev server", async () => {
+    await apiTransport({ kind: "dev" })("/api/config", {});
     expect(sent.pop()).toEqual({ url: "/api/config", headers: { [CLIENT_HEADER]: "1" } });
   });
 
@@ -104,8 +103,8 @@ describe("apiTransport over HTTP", () => {
   });
 });
 
-test("apiTransport fails requests without an accepted pairing or session as unauthorized", () => {
-  const connections = [{ kind: "unpaired" }, { kind: "rejected", pairing }, { kind: "noSession" }];
+test("apiTransport fails requests without an accepted pairing as unauthorized", () => {
+  const connections = [{ kind: "unpaired" }, { kind: "rejected", pairing }];
   for (const connection of connections as Connection[]) {
     const fail = () => apiTransport(connection);
     expect(fail).toThrow(ApiError);
@@ -149,23 +148,20 @@ function observeGate(queryFn: () => Promise<unknown>) {
   };
 }
 
-test("connectionStatus: local is connected, the others need pairing", () => {
+test("connectionStatus: dev is connected, the others need pairing", () => {
   const pending = { dataUpdatedAt: 0, errorUpdatedAt: 0, failureReason: null };
   const failed = { dataUpdatedAt: 0, errorUpdatedAt: 1, failureReason: new Error("boom") };
   for (const config of [pending, failed]) {
-    expect(connectionStatus({ kind: "local" }, config)).toEqual({ kind: "connected" });
-    expect(connectionStatus({ kind: "noSession" }, config)).toEqual({ kind: "noSession" });
+    expect(connectionStatus({ kind: "dev" }, config)).toEqual({ kind: "connected" });
     expect(connectionStatus({ kind: "unpaired" }, config)).toEqual({ kind: "unpaired" });
     expect(connectionStatus({ kind: "rejected", pairing }, config)).toEqual({ kind: "rejected" });
   }
 });
 
-test("afterRejection: a local page loses its session, a pairing is rejected", () => {
-  // Only `gitui --lan` turns a local page away; other local pages never get a 401.
-  expect(afterRejection({ kind: "local" })).toEqual({ kind: "noSession" });
+test("afterRejection: only a pairing is rejected", () => {
   expect(afterRejection(paired)).toEqual({ kind: "rejected", pairing });
   for (const settled of [
-    { kind: "noSession" },
+    { kind: "dev" },
     { kind: "unpaired" },
     { kind: "rejected", pairing },
     nearby,
@@ -220,7 +216,7 @@ function restoreGlobals() {
 
 const status401 = () => Promise.resolve(Response.json({ error: "Unauthorized" }, { status: 401 }));
 
-// A hosted copy on a loopback host (e.g. `vp preview`): without the marker it pairs all the same.
+// A hosted copy on a loopback host (e.g. `vp preview`): it pairs all the same.
 describe("the connection store in the hosted app", () => {
   const url = new URL("http://localhost:4173/?repo=%2Fr&view=history#port=4778&token=s3cret");
   const storage = new Map<string, string>();
@@ -238,7 +234,6 @@ describe("the connection store in the hosted app", () => {
   beforeAll(() => {
     stub("location", url);
     stub("document", {
-      querySelector: () => null, // no LOCAL_UI_META tag
       addEventListener: (type: string, fn: () => void) => (page.listeners[type] = fn),
       get visibilityState() {
         return page.visibilityState;
@@ -256,7 +251,7 @@ describe("the connection store in the hosted app", () => {
     });
     stub("addEventListener", (type: string, fn: () => void) => (events[type] = fn));
     stub("fetch", () => respond());
-    initConnection(queryClient, open);
+    initConnection(queryClient, { open });
   });
   afterAll(restoreGlobals);
 
@@ -369,86 +364,47 @@ describe("the connection store in the hosted app", () => {
   });
 });
 
-// A page `gitui --lan` serves: it has the marker, and its requests need the session cookie.
-describe("the connection store in a page gitui served", () => {
+// A page from the dev server: it calls its own `/api`, and adopts no pairing links.
+describe("the connection store on the dev server", () => {
+  const url = new URL("http://localhost:5173/?repo=%2Fr#port=4778&token=s3cret");
+  const page = { listeners: {} as Record<string, () => void> };
+  const sent: string[] = [];
   const queryClient = new QueryClient();
-  const page = { visibilityState: "visible", listeners: {} as Record<string, () => void> };
-  let calls = 0;
-  let respond: () => Promise<Response> = status401;
 
   beforeAll(() => {
-    stub("location", new URL("http://192.168.1.5:4777/"));
+    stub("location", url);
     stub("document", {
-      querySelector: () => ({}), // the LOCAL_UI_META tag
       addEventListener: (type: string, fn: () => void) => (page.listeners[type] = fn),
-      get visibilityState() {
-        return page.visibilityState;
-      },
     });
-    stub("fetch", () => (++calls, respond()));
-    initConnection(queryClient);
+    stub("localStorage", {
+      getItem: (k: string) => (k === "gitui-pairing" ? pairingFragment(pairing) : null),
+      setItem: () => {},
+      removeItem: () => {},
+    });
+    stub("addEventListener", () => {
+      throw new Error("the dev server's page listens to nothing");
+    });
+    const config = { initialRepo: null, recent: ["/r"], home: "/home/u" };
+    stub("fetch", (path: string) => (sent.push(path), Promise.resolve(Response.json(config))));
+    initConnection(queryClient, { dev: true });
   });
   afterAll(restoreGlobals);
 
-  /**
-   * Mounts what the gate renders once connected, the app's `["config"]` query, until it has data
-   * or the session is lost (which drops the query, and the gate unmounts the app).
-   */
-  async function mountApp() {
-    const observer = new QueryObserver(queryClient, { queryKey: ["config"], queryFn: getConfig });
-    const stop = observer.subscribe(() => {});
-    while (!observer.getCurrentResult().isSuccess && getConnection().kind === "local") {
-      await new Promise((r) => setTimeout(r, 1));
-    }
-    stop();
-    return observer.getCurrentResult();
-  }
-
-  const show = (state: "visible" | "hidden") => {
-    page.visibilityState = state;
-    page.listeners.visibilitychange!();
-  };
-
-  test("starts local", () => {
-    expect(getConnection()).toEqual({ kind: "local" });
+  test("is dev whatever was saved, and leaves the address alone", () => {
+    expect(getConnection()).toEqual({ kind: "dev" });
+    expect(url.hash).toBe("#port=4778&token=s3cret");
+    expect(page.listeners).toEqual({});
   });
 
-  test("a 401 loses the session and drops what was fetched", async () => {
-    queryClient.setQueryData(["/r", "status"], {});
-    await mountApp();
-    expect(getConnection()).toEqual({ kind: "noSession" });
-    expect(queryClient.getQueryData(["/r", "status"])).toBeUndefined();
+  test("sends requests to its own /api", async () => {
+    expect(await getConfig()).toMatchObject({ recent: ["/r"] });
+    expect(sent).toEqual(["/api/config"]);
   });
 
-  test("being hidden doesn't retry, being shown again does", () => {
-    show("hidden");
-    expect(getConnection()).toEqual({ kind: "noSession" });
-    show("visible");
-    expect(getConnection()).toEqual({ kind: "local" });
-  });
-
-  test("a retry without a session lands back in noSession, once", async () => {
-    calls = 0;
-    await mountApp();
-    expect(calls).toBe(1);
-    expect(getConnection()).toEqual({ kind: "noSession" });
-    await new Promise((r) => setTimeout(r, 10));
-    expect(calls).toBe(1);
-  });
-
-  test("trying again once paired elsewhere brings the app back, refetching its config", async () => {
-    const config = { initialRepo: null, recent: ["/r"], home: "/home/u" };
-    respond = () => Promise.resolve(Response.json(config));
-    retrySession();
-    expect(getConnection()).toEqual({ kind: "local" });
-    expect((await mountApp()).data).toEqual(config);
-  });
-
-  test("retrying is a no-op unless the session was lost", () => {
-    const before = getConnection();
-    retrySession();
-    show("visible");
-    expect(getConnection()).toBe(before);
+  test("a 401 is just an error response", async () => {
+    stub("fetch", status401);
+    expect(await failure(getConfig())).toMatchObject({ kind: "unauthorized" });
+    expect(getConnection()).toEqual({ kind: "dev" });
   });
 });
 
@@ -458,7 +414,7 @@ describe("the connection store in the hosted app with a saved nearby host", () =
 
   beforeAll(() => {
     stub("location", new URL("http://localhost:4173/"));
-    stub("document", { querySelector: () => null, addEventListener: () => {} });
+    stub("document", { addEventListener: () => {} });
     stub("history", { state: null, replaceState: () => {} });
     stub("localStorage", {
       getItem: (k: string) => (k === "gitui-nearby-host" ? JSON.stringify(host) : null),
@@ -471,10 +427,12 @@ describe("the connection store in the hosted app with a saved nearby host", () =
 
   test("opens one session with it, and only on initConnection", () => {
     expect(sessions).toHaveLength(0);
-    initConnection(new QueryClient(), (h) => {
-      const s = fakeSession(h);
-      sessions.push(s);
-      return s;
+    initConnection(new QueryClient(), {
+      open: (h) => {
+        const s = fakeSession(h);
+        sessions.push(s);
+        return s;
+      },
     });
     expect(sessions).toHaveLength(1);
     expect(sessions[0]!.host).toEqual(host);

@@ -40,10 +40,11 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
 - `apps/web/` (`@gitui/web`): React app. `src/lib/` holds the API client, graph layout and
   prefs, `src/components/` the views, and `src/components/ui/` the shadcn components. Unit
   tests sit next to their module (`src/**/*.test.ts`, type-checked by `tsconfig.test.json`).
-  `@/` maps to `apps/web/src`. A page with the `LOCAL_UI_META` tag (served by the CLI, or by the
-  dev server, whose `vite.config.ts` plugin adds it) calls its own `/api`; without it, whatever
-  the host, it is the hosted app: `src/lib/connection.ts` decides this and holds the pairing with
-  the CLI and where requests go (its store reads `window` lazily; `initConnection` does the
+  `@/` maps to `apps/web/src`. A page from the dev server (`import.meta.env.DEV`, which `main.tsx`
+  passes to `initConnection`) is the `dev` connection and calls its own `/api`, which
+  `vite.config.ts` proxies to the dev API (`GITUI_PORT`, default 4777); any other page, whatever
+  the host, is the hosted app: `src/lib/connection.ts` holds its pairing with the CLI on
+  127.0.0.1 and where requests go (its store reads `window` lazily; `initConnection` does the
   startup wiring), and `ConnectionGate` gates the app until the CLI answers. Its `nearby` kind
   is a `gitui --nearby` found through the rendezvous: `src/lib/nearby/` holds the guest
   (`createSession` in `session.ts` is the state machine, with its dependencies injected; the
@@ -63,8 +64,8 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   all against `wrangler dev`. Worker code is type-checked with `@cloudflare/workers-types`, tests
   and scripts with bun's.
 - `packages/shared/` (`@gitui/shared`): API types and the connection contract (default port,
-  client header, local UI marker, hosted origin, loopback hosts, pairing links) and the UI's
-  security headers (`headers.ts`), used by both sides, imported as `@gitui/shared`. The nearby
+  client header, hosted origin, loopback hosts, pairing links) and the UI's security headers
+  (`headers.ts`, with the hosted app's `_headers` file), used by both sides, imported as `@gitui/shared`. The nearby
   protocol: `nearby.ts` (the contract and its docs), `nearby-codec.ts` (every check on what
   crosses its wires, used by the Worker, the CLI and the web app alike: messages are rebuilt
   with only the contract's fields, so a new field goes there) and `nearby-pake.ts` (CPace on

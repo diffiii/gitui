@@ -76,7 +76,7 @@ export type WorkingFile =
   | { kind: "tooLarge"; size: number };
 
 /**
- * `code` of the 403 a device other than the computer running gitui (LAN or nearby) gets for a
+ * `code` of the 403 a device other than the computer running gitui (over nearby) gets for a
  * repository that wasn't opened on that computer: `{ error, code: REPO_NOT_OPENED }`.
  */
 export const REPO_NOT_OPENED = "repo-not-opened";
