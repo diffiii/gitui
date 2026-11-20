@@ -15,7 +15,7 @@ import {
   type ServerMessage,
 } from "@gitui/shared";
 import { MAX_MESSAGE_LENGTH } from "../src/messages.ts";
-import { HELLO_TIMEOUT, MAX_ERRORS, MAX_HOSTS, MAX_SOCKETS, RATE_LIMIT } from "../src/network.ts";
+import { GUEST_RATE_LIMIT, HELLO_TIMEOUT, MAX_HOSTS, MAX_SOCKETS } from "../src/network.ts";
 
 const ORIGIN = "http://localhost:5181";
 const TIMEOUT = 5000;
@@ -306,13 +306,13 @@ async function run(base: string): Promise<void> {
     equal(await large.closed, 1009, "oversized");
   });
 
-  await step(`over ${RATE_LIMIT} messages in a window closes with 1008`, async () => {
+  await step(`over ${GUEST_RATE_LIMIT} messages in a window closes with 1008`, async () => {
     const ip = net();
     const host = await Peer.open(base, ip);
     const hostId = await host.hello("host", "box", KEY);
     const flood = await Peer.open(base, ip, true);
     await flood.hello("guest");
-    for (let i = 0; i < RATE_LIMIT; i++) {
+    for (let i = 0; i < GUEST_RATE_LIMIT; i++) {
       flood.send({ type: "signal", to: hostId, data: { kind: "offer", sdp: `${i}` } });
     }
     equal(await flood.closed, 1008, "close code");
@@ -321,18 +321,7 @@ async function run(base: string): Promise<void> {
     host.ws.close();
   });
 
-  await step(`${MAX_ERRORS} Unknown peer errors, then a close`, async () => {
-    const guest = await Peer.open(base, net(), true);
-    await guest.hello("guest");
-    await guest.next("hosts");
-    for (let i = 0; i <= MAX_ERRORS; i++) {
-      guest.send({ type: "signal", to: "nobody", data: { kind: "offer", sdp: "v=0" } });
-    }
-    equal(await guest.closed, 1008, "close code");
-    equal(guest.queue.filter((text) => text.includes("Unknown peer")).length, MAX_ERRORS, "errors");
-  });
-
-  await step(`host ${MAX_HOSTS + 1} gets 1013, and guests still get in`, async () => {
+  await step(`host ${MAX_HOSTS + 1} gets 1013, a known key and guests still get in`, async () => {
     const ip = net();
     const hosts: Peer[] = [];
     for (let i = 0; i < MAX_HOSTS; i++) {
@@ -343,6 +332,10 @@ async function run(base: string): Promise<void> {
     const extra = await Peer.open(base, ip);
     extra.send({ type: "hello", role: "host", name: "box", key: OTHER_KEY });
     equal(await extra.closed, 1013, "close code");
+    // A host reconnecting with its key isn't another host.
+    const again = await Peer.open(base, ip);
+    await again.hello("host", "box", `${KEY}-0`);
+    hosts.push(again);
     const guest = await Peer.open(base, ip, true);
     await guest.hello("guest");
     equal((await guest.next("hosts")).hosts.length, MAX_HOSTS, "hosts listed");

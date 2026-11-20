@@ -2,23 +2,36 @@ import { expect, test } from "bun:test";
 import type { ServerMessage } from "@gitui/shared";
 import { MAX_MESSAGE_LENGTH } from "./messages.ts";
 import {
+  GUEST_RATE_LIMIT,
   HELLO_TIMEOUT,
-  MAX_ERRORS,
+  HOST_RATE_LIMIT,
   MAX_HOSTS,
   MAX_SOCKETS,
+  MAX_SOCKETS_PER_KEY,
   NETWORK_RATE_LIMIT,
   Network,
-  RATE_LIMIT,
   RATE_WINDOW,
   type Attachment,
   type Socket,
 } from "./network.ts";
 
-/** A socket that records what it's sent and how it was closed. */
+/**
+ * A socket that records what it's sent and how it was closed. Like the runtime's, its attachment
+ * is a copy on every read, so only write() changes it.
+ */
 class FakeSocket implements Socket {
   readonly sent: ServerMessage[] = [];
   closed: { code: number; reason: string } | null = null;
-  constructor(public attachment: Attachment) {}
+  #attachment: string;
+  constructor(attachment: Attachment) {
+    this.#attachment = JSON.stringify(attachment);
+  }
+  read(): Attachment {
+    return JSON.parse(this.#attachment) as Attachment;
+  }
+  write(attachment: Attachment) {
+    this.#attachment = JSON.stringify(attachment);
+  }
   get open() {
     return this.closed === null;
   }
@@ -38,10 +51,16 @@ class FakeSocket implements Socket {
 function setup() {
   const sockets: FakeSocket[] = [];
   const clock = { now: 1_000_000 };
-  const network = new Network(
-    () => sockets,
-    () => clock.now,
-  );
+  const start = () =>
+    new Network(
+      () => sockets,
+      () => clock.now,
+    );
+  let network = start();
+  /** Hibernation: a new Network over the same sockets, with only their attachments. */
+  const hibernate = () => {
+    network = start();
+  };
   const connect = (browser: boolean) => {
     const admitted = network.connect(browser);
     if ("status" in admitted) throw new Error(`refused: ${admitted.status}`);
@@ -70,7 +89,19 @@ function setup() {
     if (welcome?.type !== "welcome") throw new Error(`no welcome: ${JSON.stringify(welcome)}`);
     return Object.assign(socket, { id: welcome.id });
   };
-  return { network, sockets, clock, connect, send, leave, host, guest };
+  return {
+    get network() {
+      return network;
+    },
+    hibernate,
+    sockets,
+    clock,
+    connect,
+    send,
+    leave,
+    host,
+    guest,
+  };
 }
 
 const OFFER = { kind: "offer", sdp: "v=0" } as const;
@@ -245,7 +276,7 @@ test("a full network makes room by closing silent sockets", () => {
   expect(stale.every((socket) => socket.closed?.code === 1008)).toBe(true);
 });
 
-test("a network takes MAX_HOSTS host sockets, and guests after that", () => {
+test("a network takes MAX_HOSTS hosts, and guests after that", () => {
   const { connect, send, host, guest, leave } = setup();
   const hosts = Array.from({ length: MAX_HOSTS }, () => host());
   const extra = connect(false);
@@ -257,13 +288,31 @@ test("a network takes MAX_HOSTS host sockets, and guests after that", () => {
   expect(host().closed).toBeNull();
 });
 
-test("a socket over RATE_LIMIT messages per RATE_WINDOW is closed with 1008", () => {
+test("hosts count by key: a key already here gets in, up to MAX_SOCKETS_PER_KEY sockets", () => {
+  const { connect, send, host, leave } = setup();
+  // A CLI reconnecting with its key while its old socket lingers.
+  const sockets = Array.from({ length: MAX_SOCKETS_PER_KEY }, () =>
+    host("box", "reconnecting-key-01"),
+  );
+  for (let i = 1; i < MAX_HOSTS; i++) host();
+  expect(sockets.every((socket) => socket.closed === null)).toBe(true);
+  // Full by key, and the key has its sockets.
+  const another = connect(false);
+  send(another, { type: "hello", role: "host", name: "box", key: "reconnecting-key-01" });
+  expect(another.take()).toEqual([{ type: "error", message: "Too many sockets for this host" }]);
+  expect(another.closed?.code).toBe(1013);
+  // One of them goes: the key may open another, even though the network is full.
+  leave(sockets[0]);
+  expect(host("box", "reconnecting-key-01").closed).toBeNull();
+});
+
+test("a guest over GUEST_RATE_LIMIT messages per RATE_WINDOW is closed with 1008", () => {
   const { clock, send, guest, host } = setup();
   const g = guest(); // 1 message
   const h = host();
-  for (let i = 1; i < RATE_LIMIT; i++) send(g, { type: "signal", to: h.id, data: OFFER });
+  for (let i = 1; i < GUEST_RATE_LIMIT; i++) send(g, { type: "signal", to: h.id, data: OFFER });
   expect(g.closed).toBeNull();
-  expect(h.take()).toHaveLength(RATE_LIMIT - 1);
+  expect(h.take()).toHaveLength(GUEST_RATE_LIMIT - 1);
   send(g, { type: "signal", to: h.id, data: OFFER });
   expect(g.closed).toEqual({ code: 1008, reason: "Too many messages" });
   expect(h.take()).toEqual([]);
@@ -271,7 +320,7 @@ test("a socket over RATE_LIMIT messages per RATE_WINDOW is closed with 1008", ()
   // A new window starts RATE_WINDOW after the first.
   const other = guest();
   for (let round = 0; round < 3; round++) {
-    for (let i = round === 0 ? 1 : 0; i < RATE_LIMIT; i++) {
+    for (let i = round === 0 ? 1 : 0; i < GUEST_RATE_LIMIT; i++) {
       send(other, { type: "signal", to: h.id, data: OFFER });
     }
     clock.now += RATE_WINDOW;
@@ -279,32 +328,61 @@ test("a socket over RATE_LIMIT messages per RATE_WINDOW is closed with 1008", ()
   expect(other.closed).toBeNull();
 });
 
-test("the network's sockets together get NETWORK_RATE_LIMIT messages per RATE_WINDOW", () => {
-  const { clock, send, guest, host } = setup();
+test("a host over HOST_RATE_LIMIT messages per RATE_WINDOW is closed with 1008", () => {
+  const { send, guest, host } = setup();
+  const g = guest();
   const h = host(); // 1 message
-  const guests = Array.from({ length: 5 }, () => guest()); // 5 more
-  // Round robin, so no socket reaches its own RATE_LIMIT.
-  for (let sent = 6; sent < NETWORK_RATE_LIMIT; sent++) {
-    send(guests[sent % guests.length], { type: "signal", to: h.id, data: OFFER });
-  }
-  expect(guests.every((g) => g.closed === null)).toBe(true);
-  const [last, other] = guests;
-  send(last, { type: "signal", to: h.id, data: OFFER });
-  expect(last.closed).toEqual({ code: 1013, reason: "Too many messages on this network" });
-  clock.now += RATE_WINDOW;
-  send(other, { type: "signal", to: h.id, data: OFFER });
-  expect(other.closed).toBeNull();
+  for (let i = 1; i < HOST_RATE_LIMIT; i++) send(h, { type: "signal", to: g.id, data: OFFER });
+  expect(h.closed).toBeNull();
+  send(h, { type: "signal", to: g.id, data: OFFER });
+  expect(h.closed).toEqual({ code: 1008, reason: "Too many messages" });
 });
 
-test("Unknown peer is answered MAX_ERRORS times, then the socket is closed", () => {
-  const { send, guest } = setup();
-  const g = guest();
-  g.take();
-  for (let i = 0; i < MAX_ERRORS; i++) send(g, { type: "signal", to: "nobody", data: OFFER });
-  expect(g.take()).toHaveLength(MAX_ERRORS);
-  expect(g.closed).toBeNull();
-  send(g, { type: "signal", to: "nobody", data: OFFER });
-  expect(g.closed).toEqual({ code: 1008, reason: "Too many errors" });
+test("over NETWORK_RATE_LIMIT, the socket that sent the most is closed, not the sender", () => {
+  const { clock, send, guest, host } = setup();
+  const h = host(); // its hello counts: it wasn't a host yet
+  // Once a host, it doesn't count toward the network's budget.
+  for (let i = 1; i < HOST_RATE_LIMIT; i++) send(h, { type: "signal", to: "nobody", data: OFFER });
+  const flooder = guest();
+  for (let i = 1; i < 44; i++) send(flooder, { type: "signal", to: h.id, data: OFFER });
+  const others = Array.from({ length: 5 }, () => guest());
+  for (const g of others) {
+    for (let i = 1; i < 31; i++) send(g, { type: "signal", to: h.id, data: OFFER });
+  }
+  expect(1 + 44 + 5 * 31).toBe(NETWORK_RATE_LIMIT);
+  expect([h, flooder, ...others].every((socket) => socket.closed === null)).toBe(true);
+  h.take();
+
+  const [sender, next] = others;
+  send(sender, { type: "signal", to: h.id, data: OFFER });
+  expect(flooder.closed).toEqual({ code: 1013, reason: "Too many messages on this network" });
+  expect(sender.closed).toBeNull();
+  expect(h.take()).toEqual([{ type: "signal", from: sender.id, data: OFFER }]);
+  // The flooder's messages stopped counting, so the others go on.
+  for (let i = 0; i < 15; i++) send(next, { type: "signal", to: h.id, data: OFFER });
+  expect(others.every((g) => g.closed === null)).toBe(true);
+  expect(h.closed).toBeNull();
+
+  clock.now += RATE_WINDOW;
+  for (let i = 0; i < 40; i++) send(next, { type: "signal", to: h.id, data: OFFER });
+  expect(next.closed).toBeNull();
+});
+
+test("over NETWORK_RATE_LIMIT, a sender that sent the most is closed and its message dropped", () => {
+  const { send, guest, host } = setup();
+  const h = host();
+  const others = Array.from({ length: 4 }, () => guest());
+  for (const g of others) {
+    for (let i = 1; i < 39; i++) send(g, { type: "signal", to: h.id, data: OFFER });
+  }
+  const sender = guest();
+  for (let i = 1; i < 43; i++) send(sender, { type: "signal", to: h.id, data: OFFER });
+  expect(1 + 4 * 39 + 43).toBe(NETWORK_RATE_LIMIT);
+  h.take();
+  send(sender, { type: "signal", to: h.id, data: OFFER });
+  expect(sender.closed).toEqual({ code: 1013, reason: "Too many messages on this network" });
+  expect(h.take()).toEqual([]);
+  expect(others.every((g) => g.closed === null)).toBe(true);
 });
 
 test("a pairing with trickled candidates, and a resume, stay well under the budget", () => {
@@ -325,4 +403,54 @@ test("a pairing with trickled candidates, and a resume, stay well under the budg
   }
   expect(g.closed).toBeNull();
   expect(h.closed).toBeNull();
+});
+
+test("a host pairs with 4 guests at once, 25 candidates each way, within the limits", () => {
+  const { send, guest, host } = setup();
+  const h = host();
+  const guests = Array.from({ length: 4 }, () => guest());
+  const candidate = {
+    kind: "candidate",
+    candidate: { candidate: "candidate:1 1 udp 1 1.2.3.4 5 typ host" },
+  };
+  const CANDIDATES = 25;
+  for (const g of guests) send(g, { type: "signal", to: h.id, data: OFFER });
+  for (const g of guests)
+    send(h, { type: "signal", to: g.id, data: { kind: "answer", sdp: "v=0" } });
+  // Interleaved, as candidates trickle in from every pairing at once.
+  for (let i = 0; i < CANDIDATES; i++) {
+    for (const g of guests) {
+      send(g, { type: "signal", to: h.id, data: candidate });
+      send(h, { type: "signal", to: g.id, data: candidate });
+    }
+  }
+  expect([h, ...guests].every((socket) => socket.closed === null)).toBe(true);
+  expect(h.take()).toHaveLength(guests.length * (1 + CANDIDATES));
+  for (const g of guests) {
+    expect(g.take().filter((m) => m.type === "signal")).toHaveLength(1 + CANDIDATES);
+  }
+});
+
+test("after hibernation, budgets start over and the attachments keep the rest", () => {
+  const env = setup();
+  const { clock, send, guest, host, connect, leave } = env;
+  const first = host("box", "hibernating-key-01");
+  const g = guest();
+  for (let i = 1; i < GUEST_RATE_LIMIT; i++) send(g, { type: "signal", to: first.id, data: OFFER });
+  const silent = connect(false);
+  clock.now += 1000;
+
+  env.hibernate();
+  // The guest's budget is new.
+  send(g, { type: "signal", to: first.id, data: OFFER });
+  expect(g.closed).toBeNull();
+  // Join order comes from the attachments: the first socket of the key stays listed.
+  const second = host("box", "hibernating-key-01");
+  expect(env.network.hosts()).toEqual([{ id: first.id, name: "box", key: first.key }]);
+  leave(first);
+  expect(env.network.hosts()).toEqual([{ id: second.id, name: "box", key: second.key }]);
+  // The silent socket's `opened` is from before: it times out on schedule.
+  clock.now += HELLO_TIMEOUT - 1000;
+  expect(env.network.connect(true)).toHaveProperty("attachment");
+  expect(silent.closed).toEqual({ code: 1008, reason: "Say hello first" });
 });

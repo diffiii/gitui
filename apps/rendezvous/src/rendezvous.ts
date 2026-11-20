@@ -46,11 +46,11 @@ export class Rendezvous extends DurableObject<Env> {
 
 function socket(ws: WebSocket): Socket {
   return {
-    get attachment() {
+    read() {
       return ws.deserializeAttachment() as Attachment;
     },
-    set attachment(value) {
-      ws.serializeAttachment(value);
+    write(attachment) {
+      ws.serializeAttachment(attachment);
     },
     get open() {
       return ws.readyState === WebSocket.OPEN;
