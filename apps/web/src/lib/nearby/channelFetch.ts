@@ -24,6 +24,8 @@ export interface ChannelTransport {
 
 /** Above this many queued bytes, senders wait for the buffer to drain before sending more. */
 export const SEND_HIGH_WATER = CHANNEL_HIGH_WATER;
+/** The largest response body a request takes; past it, the request fails and is cancelled. */
+export const MAX_RESPONSE_BYTES = 64 * 1024 * 1024;
 
 /** An incoming data channel message from the host, decoded (@gitui/shared's codec). */
 export type Incoming = ChannelIncoming<HostMessage>;
@@ -62,6 +64,8 @@ interface Pending {
   reject(error: Error): void;
   head?: { status: number; headers: [string, string][] };
   body: Uint8Array[];
+  /** Body bytes so far. */
+  size: number;
 }
 
 export class ChannelClosedError extends Error {
@@ -96,6 +100,8 @@ export function createChannelClient(
   const pending = new Map<number, Pending>();
   /** Requests whose head went out, so the host knows them and must hear when they're cancelled. */
   const sent = new Set<number>();
+  /** Cancelled requests, whose rest the host may still send until it sees the `cancel`. */
+  const cancelled = new Set<number>();
   let nextId = 1;
   let closed: string | null = null;
 
@@ -111,6 +117,7 @@ export function createChannelClient(
     const known = sent.has(id);
     fail(id, reason);
     if (!known || closed !== null) return;
+    cancelled.add(id);
     try {
       transport.send(JSON.stringify({ t: "cancel", id } satisfies GuestMessage));
     } catch {
@@ -134,9 +141,20 @@ export function createChannelClient(
     if (incoming.kind === "invalid") return onProtocolError(incoming.reason);
     if (incoming.kind === "chunk") {
       const request = pending.get(incoming.id);
-      if (!request) return onProtocolError(`frame for unknown request ${incoming.id}`);
+      if (!request) {
+        if (cancelled.has(incoming.id)) return;
+        return onProtocolError(`frame for unknown request ${incoming.id}`);
+      }
       if (!request.head) {
         return fail(incoming.id, new ChannelRequestError("body frame before the response head"));
+      }
+      request.size += incoming.payload.byteLength;
+      if (request.size > MAX_RESPONSE_BYTES) {
+        const mib = MAX_RESPONSE_BYTES / 1024 / 1024;
+        return cancel(
+          incoming.id,
+          new ChannelRequestError(`The response is larger than ${mib} MiB, so it was stopped.`),
+        );
       }
       // The payload views the channel's buffer; copy it out, the buffer isn't ours to keep.
       request.body.push(incoming.payload.slice());
@@ -147,7 +165,14 @@ export function createChannelClient(
       return onProtocolError(`unexpected ${message.t} message`);
     }
     const request = pending.get(message.id);
-    if (!request) return onProtocolError(`${message.t} for unknown request ${message.id}`);
+    if (!request) {
+      if (!cancelled.has(message.id)) {
+        return onProtocolError(`${message.t} for unknown request ${message.id}`);
+      }
+      // Its last message: nothing more comes for it.
+      if (message.t !== "res") cancelled.delete(message.id);
+      return;
+    }
     switch (message.t) {
       case "res":
         if (request.head) return fail(message.id, new ChannelRequestError("second response head"));
@@ -188,7 +213,7 @@ export function createChannelClient(
       const url = new URL(request.url);
       const id = nextId++;
       return new Promise<Response>((resolve, reject) => {
-        pending.set(id, { resolve, reject, body: [] });
+        pending.set(id, { resolve, reject, body: [], size: 0 });
         const { signal } = request;
         if (signal.aborted) return cancel(id, signal.reason);
         // Whatever the host sent before it saw the `cancel` is dropped as an unknown id.

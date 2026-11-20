@@ -5,6 +5,7 @@ import {
   ChannelRequestError,
   createChannelClient,
   decodeIncoming,
+  MAX_RESPONSE_BYTES,
   SEND_HIGH_WATER,
   type ChannelTransport,
 } from "./channelFetch.ts";
@@ -171,7 +172,7 @@ test("protocol violations fail the request they concern", async () => {
   );
 });
 
-test("a caller's abort sends cancel, and later answers are dropped", async () => {
+test("a caller's abort sends cancel, and later answers are dropped quietly", async () => {
   const errors: string[] = [];
   const transport = fakeTransport();
   const client = createChannelClient(transport, (e) => errors.push(e));
@@ -188,7 +189,31 @@ test("a caller's abort sends cancel, and later answers are dropped", async () =>
   ]);
   client.receive(frame(1, "late"));
   client.receive(text({ t: "end", id: 1 }));
-  expect(errors).toEqual(["frame for unknown request 1", "end for unknown request 1"]);
+  expect(errors).toEqual([]);
+  // Once its `end` came, the id is unknown again.
+  client.receive(text({ t: "end", id: 1 }));
+  expect(errors).toEqual(["end for unknown request 1"]);
+});
+
+test("a response past MAX_RESPONSE_BYTES fails alone and is cancelled", async () => {
+  const transport = fakeTransport();
+  const client = createChannelClient(transport);
+  const big = client.fetch("/big");
+  const small = client.fetch("/small");
+  await tick();
+  client.receive(text({ t: "res", id: 1, status: 200, headers: [] }));
+  client.receive(text({ t: "res", id: 2, status: 200, headers: [] }));
+  const payload = new Uint8Array(CHUNK_SIZE);
+  for (let sent = 0; sent <= MAX_RESPONSE_BYTES; sent += CHUNK_SIZE) {
+    client.receive(frameChunk(1, payload));
+  }
+  const error = await rejection(big);
+  expect(error).toBeInstanceOf(ChannelRequestError);
+  expect((error as Error).message).toBe("The response is larger than 64 MiB, so it was stopped.");
+  expect(messages(transport.sent).at(-1)).toEqual({ t: "cancel", id: 1 });
+  client.receive(frame(2, "ok"));
+  client.receive(text({ t: "end", id: 2 }));
+  expect(await (await small).text()).toBe("ok");
 });
 
 test("a request aborted before it went out sends nothing", async () => {
