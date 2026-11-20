@@ -1,6 +1,6 @@
 import type { HostInfo, SignalData } from "@gitui/shared";
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { connectToHost, RefusedError, refusalMessage } from "./peer.ts";
+import { connectToHost, PageOutdatedError, RefusedError, refusalMessage } from "./peer.ts";
 import type { Rendezvous, SignalHandlers } from "./rendezvous.ts";
 
 const host: HostInfo = { id: "peer-1", name: "MacBook", key: "k".repeat(16) };
@@ -122,7 +122,8 @@ for (const reason of ["busy", "rate-limited"] as const) {
       (e: unknown) => e,
     );
     expect(error).toBeInstanceOf(RefusedError);
-    expect((error as Error).message).toContain("MacBook");
+    expect((error as RefusedError).reason).toBe(reason);
+    expect((error as Error).message).toBe(refusalMessage("MacBook", reason));
     expect(FakePeerConnection.last.connectionState).toBe("closed");
     expect(r.listening()).toBe(false);
   });
@@ -134,4 +135,39 @@ test("each refusal reason has its own message", () => {
   expect(refusalMessage("MacBook", "unknown")).toBe(
     "MacBook refused the connection. Try again, or reload this page.",
   );
+});
+
+test("a page that can't load CPace sends no offer, and asks for a reload", async () => {
+  const r = fakeRendezvous();
+  const error = await connectToHost(r.rendezvous, host, {
+    timeout: 1000,
+    answerTimeout: 1000,
+    pake: () => Promise.reject(new TypeError("Failed to fetch dynamically imported module")),
+  }).then(
+    () => null,
+    (e: unknown) => e,
+  );
+  expect(error).toBeInstanceOf(PageOutdatedError);
+  expect((error as Error).message).toBe("This page is out of date. Reload it.");
+  expect(r.sent).toEqual([]);
+  expect(FakePeerConnection.last.connectionState).toBe("closed");
+  expect(r.listening()).toBe(false);
+});
+
+test("the offer waits for CPace to load", async () => {
+  const r = fakeRendezvous();
+  let loaded!: () => void;
+  const pake = import("@gitui/shared/nearby-pake");
+  const connecting = connectToHost(r.rendezvous, host, {
+    timeout: 1000,
+    answerTimeout: 1000,
+    pake: () => new Promise((resolve) => (loaded = () => resolve(pake))),
+  });
+  await flush();
+  expect(r.sent).toEqual([]);
+  loaded();
+  await flush();
+  expect(r.sent[0]).toMatchObject({ kind: "offer" });
+  r.receive({ kind: "refused", offerId: r.sent[0]!.offerId, reason: "busy" });
+  await connecting.catch(() => {});
 });

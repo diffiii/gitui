@@ -30,11 +30,22 @@ import type { RemoteAction } from "@/lib/remote";
 import { cn } from "@/lib/utils";
 import { DisconnectButton } from "./ConnectionGate";
 
-/** The header's controls after the views: remotes, diff style, theme and disconnect. */
-export function HeaderActions({ remote, className }: { remote: RemoteAction; className?: string }) {
+/**
+ * The header's controls after the views: remotes (unless `disabled`), diff style, theme and
+ * disconnect.
+ */
+export function HeaderActions({
+  remote,
+  disabled = false,
+  className,
+}: {
+  remote: RemoteAction;
+  disabled?: boolean;
+  className?: string;
+}) {
   return (
     <div className={cn("flex items-center gap-1", className)}>
-      <RemoteButtons run={remote} />
+      <RemoteButtons run={remote} disabled={disabled} />
       <div className="mx-1 h-5 w-px bg-border" />
       <DiffStyleToggle />
       <ThemeMenu />
@@ -49,7 +60,7 @@ const REMOTE_ACTIONS = [
   { action: "push" as const, icon: Upload, label: "Push" },
 ];
 
-function RemoteButtons({ run }: { run: RemoteAction }) {
+function RemoteButtons({ run, disabled }: { run: RemoteAction; disabled: boolean }) {
   return (
     <>
       {REMOTE_ACTIONS.map(({ action, icon: Icon, label }) => (
@@ -58,7 +69,7 @@ function RemoteButtons({ run }: { run: RemoteAction }) {
             <Button
               variant="ghost"
               size="sm"
-              disabled={run.isPending}
+              disabled={disabled || run.isPending}
               onClick={() => run.mutate(action)}
               className="touch-target gap-1.5 capitalize"
             >
@@ -75,8 +86,14 @@ function RemoteButtons({ run }: { run: RemoteAction }) {
   );
 }
 
-/** HeaderActions as a menu, for narrow screens: remotes, theme, disconnect. */
-export function MoreMenu({ remote: run }: { remote: RemoteAction }) {
+/** HeaderActions as a menu, for narrow screens: remotes (unless `disabled`), theme, disconnect. */
+export function MoreMenu({
+  remote: run,
+  disabled = false,
+}: {
+  remote: RemoteAction;
+  disabled?: boolean;
+}) {
   const connected = useDisconnect();
   return (
     <DropdownMenu>
@@ -94,7 +111,7 @@ export function MoreMenu({ remote: run }: { remote: RemoteAction }) {
         {REMOTE_ACTIONS.map(({ action, icon: Icon, label }) => (
           <DropdownMenuItem
             key={action}
-            disabled={run.isPending}
+            disabled={disabled || run.isPending}
             onSelect={() => run.mutate(action)}
           >
             <Icon />

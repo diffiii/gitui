@@ -6,6 +6,7 @@ import {
   connectToHost,
   HostUnverifiedError,
   NearbyError,
+  PageOutdatedError,
   RefusedError,
   type AuthResult,
   type GuestPeer,
@@ -37,7 +38,7 @@ export const PROBE_TIMEOUT = 4000;
 export const MISSING_GRACE = 3000;
 /** How long a request may wait for its response to start before the channel is checked. */
 export const HEAD_TIMEOUT = 8000;
-/** The pause before another offer to a host that refused one while the session reconnects. */
+/** The pause before another offer to a host that was busy while the session reconnects. */
 export const REFUSED_PAUSE = 5000;
 
 /** The rendezvous doesn't list the host's key. */
@@ -71,9 +72,10 @@ export interface NearbySession {
   /** Try again after a failure. */
   retry: () => void;
   /**
-   * The page is shown again: check that the channel still works before requests use it, and
-   * start (re)connecting over with a fresh RETRY_WINDOW, since a suspended page's attempts are
-   * stale, and so is a failure that only ran out of time.
+   * The page is shown again: check that the channel still works before requests use it. An
+   * attempt to (re)connect whose RETRY_WINDOW ran out meanwhile (the page was suspended, so its
+   * timers are stale) starts over with a fresh one, and so does a failure that only ran out of
+   * time; an attempt still within its window goes on.
    */
   wake: () => void;
   /** End the session and forget its resume token: the user disconnected, or chose another host. */
@@ -92,8 +94,8 @@ export function createSession(host: NearbyHost, deps: SessionDeps): NearbySessio
   let peer: GuestPeer | null = null;
   /** Aborts the step in progress: finding the host, connecting, a pause between attempts. */
   let attempt = new AbortController();
-  /** Starts the current establish() over, with a fresh deadline. */
-  let restart = () => {};
+  /** When the current establish() gives up; wake() starts it over (from `state`) once it's past. */
+  let deadline = 0;
   /**
    * The host turned the saved token away in this session. The token stays (only a new `session`
    * replaces it: whatever turned it away may not be the real host), but isn't offered again.
@@ -104,7 +106,8 @@ export function createSession(host: NearbyHost, deps: SessionDeps): NearbySessio
     state = next;
     listeners.forEach((l) => l());
   };
-  const fail = (why: string, timedOut: boolean) => set({ kind: "failed", reason: why, timedOut });
+  const fail = (why: string, retryOnWake: boolean) =>
+    set({ kind: "failed", reason: why, retryOnWake });
 
   const closePeer = () => {
     const p = peer;
@@ -141,19 +144,18 @@ export function createSession(host: NearbyHost, deps: SessionDeps): NearbySessio
   async function establish(mode: "connecting" | "reconnecting", notice?: "expired") {
     attempt.abort();
     const { signal } = (attempt = new AbortController());
-    restart = () => void establish(mode, notice);
     closePeer();
-    set({ kind: mode });
-    const deadline = deps.now() + RETRY_WINDOW;
-    const left = () => deadline - deps.now();
+    set({ kind: mode, notice });
+    const until = (deadline = deps.now() + RETRY_WINDOW);
+    const left = () => until - deps.now();
     for (let failures = 0; ; failures++) {
       try {
-        const listed = await locate(deadline, signal);
+        const listed = await locate(until, signal);
         const timeout = Math.min(CONNECT_TIMEOUT, left());
         const token = tokenRefused ? null : deps.tokens.load(host.key);
         const p = await deps.connect(listed, { signal, timeout, resume: token !== null });
         if (signal.aborted) return p.close();
-        return await authenticate(p, signal, token, deadline, notice);
+        return await authenticate(p, signal, token, until, notice);
       } catch (e) {
         if (signal.aborted) return;
         closePeer();
@@ -161,11 +163,16 @@ export function createSession(host: NearbyHost, deps: SessionDeps): NearbySessio
         // the code; the token stays, for the real host): the user decides what to do.
         if (e instanceof HostUnverifiedError) return fail(e.message, false);
         if (e instanceof HostGoneError) return set({ kind: "gone" });
-        // The host refused the offer (more offers at once would only add to its load or limit).
-        // Connecting, the user decides when to try again; reconnecting, the app is up, so wait
-        // longer between offers until the window is up.
+        // Another offer can't help; only a reload can.
+        if (e instanceof PageOutdatedError)
+          return set({ kind: "failed", reason: e.message, retryOnWake: false, reload: true });
+        // The host refused the offer (more offers would only add to its load or limit, which all
+        // its guests share). Connecting, the user decides when to try again. Reconnecting, the app
+        // is up, so a busy host gets another offer after a longer pause, until the window is up;
+        // any other refusal won't change that soon.
         const refused = e instanceof RefusedError;
-        if (refused && mode === "connecting") return fail(e.message, false);
+        if (refused && (mode === "connecting" || e.reason !== "busy"))
+          return fail(e.message, false);
         const pause = refused ? REFUSED_PAUSE : Math.min(4000, 500 * 2 ** failures);
         if (left() > 0) await sleep(Math.min(pause, left()), signal);
         if (signal.aborted) return;
@@ -290,7 +297,8 @@ export function createSession(host: NearbyHost, deps: SessionDeps): NearbySessio
       .fetch("/api/config", withHeaders({ signal: controller.signal }))
       .then(
         () => true,
-        () => false,
+        // An `abort` is an answer from the host: the channel works.
+        (e: unknown) => e instanceof ChannelRequestError,
       )
       .then((alive) => {
         deps.clearTimeout(timer);
@@ -417,9 +425,12 @@ export function createSession(host: NearbyHost, deps: SessionDeps): NearbySessio
     wake() {
       if (state.kind === "off") return;
       deps.rendezvous.wake();
-      if (state.kind === "connecting" || state.kind === "reconnecting") return restart();
+      if (state.kind === "connecting" || state.kind === "reconnecting") {
+        if (deps.now() >= deadline) void establish(state.kind, state.notice);
+        return;
+      }
       if (state.kind === "failed") {
-        if (state.timedOut) void establish("connecting");
+        if (state.retryOnWake) void establish("connecting");
         return;
       }
       const p = peer;

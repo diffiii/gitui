@@ -47,15 +47,15 @@ function tildify(p: string, home?: string) {
 
 /**
  * Full-page picker shown when no repository is selected, or when this device may not use the
- * selected one yet (`notOpened`, its path): it asks for it to be opened on the computer first.
+ * selected one yet (`notOpenedRepo`, its path): it asks for it to be opened on the computer first.
  */
 export function RepoWelcome({
   onOpen,
-  notOpened,
+  notOpenedRepo,
   className,
 }: {
   onOpen: (root: string) => void;
-  notOpened?: string;
+  notOpenedRepo?: string;
   className?: string;
 }) {
   const { data: config } = useQuery({ queryKey: ["config"], queryFn: getConfig });
@@ -66,14 +66,18 @@ export function RepoWelcome({
     <CenteredScreen
       className={className}
       icon={FolderGit2}
-      title={notOpened ? `Open ${basename(notOpened)} on your computer first` : "Open a repository"}
+      title={
+        notOpenedRepo
+          ? `Open ${basename(notOpenedRepo)} on your computer first`
+          : "Open a repository"
+      }
       description={
-        notOpened ? (
+        notOpenedRepo ? (
           <>
             This device can only use repositories gitui opened on the computer it runs on. Run gitui
             with{" "}
             <span className="font-mono break-all text-foreground">
-              {tildify(notOpened, config?.home)}
+              {tildify(notOpenedRepo, config?.home)}
             </span>{" "}
             there, and it shows up here. Or pick a recent one.
           </>
@@ -102,7 +106,7 @@ export function RepoWelcome({
       </form>
       {open.notOpened && (
         <p role="status" className="mt-3 px-1 text-sm text-muted-foreground">
-          {notOpened ? NOT_OPENED_EITHER : NOT_OPENED}
+          {notOpenedRepo ? NOT_OPENED_EITHER : NOT_OPENED}
         </p>
       )}
       {!!config?.recent.length && (

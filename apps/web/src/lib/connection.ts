@@ -224,8 +224,11 @@ export function setNearbyHost(host: NearbyHost | null) {
   update(host ? { kind: "nearby", host } : { kind: "unpaired" });
 }
 
-/** The connection once the CLI has turned away (401) a request that went out over `used`. */
-export function afterRejection(used: Connection): Connection {
+/**
+ * The connection once the CLI has turned away (401) a request that went out over `used`, or null
+ * if that doesn't change it.
+ */
+export function afterRejection(used: Connection): Target | null {
   switch (used.kind) {
     case "local":
       return { kind: "noSession" };
@@ -236,7 +239,7 @@ export function afterRejection(used: Connection): Connection {
     case "noSession":
     case "unpaired":
     case "rejected":
-      return used;
+      return null;
   }
 }
 
@@ -246,8 +249,7 @@ export function afterRejection(used: Connection): Connection {
  */
 export function rejectConnection(used: Connection) {
   const next = afterRejection(used);
-  // (A nearby connection is never rejected: `next` is `used`.)
-  if (next !== used && next.kind !== "nearby" && used === getConnection()) update(next);
+  if (next && used === getConnection()) update(next);
 }
 
 /**
