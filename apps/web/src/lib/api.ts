@@ -1,7 +1,15 @@
-import type { Branch, Commit, CommitDetail, FileStatus, Status } from "@gitui/shared";
+import type {
+  Branch,
+  Commit,
+  CommitDetail,
+  FileStatus,
+  Status,
+  WorkingFile,
+  WorkingFiles,
+} from "@gitui/shared";
 import { ApiError, apiTarget, getConnection, rejectConnection } from "./connection.ts";
 
-export type { Branch, Commit, CommitDetail, FileStatus, Status };
+export type { Branch, Commit, CommitDetail, FileStatus, Status, WorkingFile, WorkingFiles };
 
 async function request<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
   const connection = getConnection();
@@ -66,6 +74,8 @@ export function repoApi(repo: string) {
       ),
     showCommit: (hash: string) =>
       request<CommitDetail>("GET", u(`/commit/${encodeURIComponent(hash)}`)),
+    files: () => request<WorkingFiles>("GET", u("/files")),
+    file: (path: string) => request<WorkingFile>("GET", u("/file", { path })),
     branches: () => request<{ branches: Branch[] }>("GET", u("/branches")),
     checkout: (name: string, remote: boolean) => request("POST", u("/checkout"), { name, remote }),
     createBranch: (name: string, from?: string) => request("POST", u("/branch"), { name, from }),

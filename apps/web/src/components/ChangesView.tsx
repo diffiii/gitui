@@ -125,7 +125,7 @@ function useToggleStaged() {
   return (staged: boolean, paths?: string[]) => toggle.mutate({ staged, paths });
 }
 
-function FileTitle({ path }: { path: string }) {
+export function FileTitle({ path }: { path: string }) {
   const { dir, name } = splitPath(path);
   return (
     <div className="flex min-w-0 flex-col leading-tight">

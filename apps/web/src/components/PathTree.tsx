@@ -1,5 +1,5 @@
 import type { ContextMenuItem, ContextMenuOpenContext, GitStatusEntry } from "@pierre/trees";
-import { FileTree, useFileTree } from "@pierre/trees/react";
+import { FileTree, useFileTree, type UseFileTreeResult } from "@pierre/trees/react";
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { COARSE, useMediaQuery } from "@/lib/media";
 import { useTheme } from "@/lib/prefs";
@@ -19,6 +19,13 @@ interface PathTreeProps {
   onSelect?: (path: string) => void;
   /** Row actions shown in the context menu (right-click or the row button). */
   actions?: (item: ContextMenuItem) => TreeAction[];
+  /**
+   * Folders start closed, but for the selected path's, and stay as they were when the paths
+   * change. Without it, every folder is open.
+   */
+  collapsed?: boolean;
+  /** Shows only the paths that contain this text, with their folders open. */
+  search?: string;
   className?: string;
 }
 
@@ -35,6 +42,8 @@ function FileTreeView({
   selected,
   onSelect,
   actions,
+  collapsed = false,
+  search = "",
   className,
   coarse,
 }: PathTreeProps & { coarse: boolean }) {
@@ -49,7 +58,8 @@ function FileTreeView({
   const { model } = useFileTree({
     paths,
     gitStatus,
-    initialExpansion: "open",
+    initialExpansion: collapsed ? "closed" : "open",
+    initialExpandedPaths: collapsed && selected ? dirsOf([selected]) : undefined,
     flattenEmptyDirectories: true,
     // Taller rows under a finger.
     density: coarse ? "relaxed" : "compact",
@@ -71,12 +81,20 @@ function FileTreeView({
   });
 
   const pathsKey = paths.join("\0");
-  const prevKey = useRef(pathsKey);
+  const prev = useRef({ key: pathsKey, paths });
   useEffect(() => {
-    if (prevKey.current === pathsKey) return;
-    prevKey.current = pathsKey;
-    model.resetPaths(paths, { initialExpandedPaths: dirsOf(paths) });
-  }, [model, pathsKey, paths]);
+    if (prev.current.key === pathsKey) return;
+    // A search opens folders of its own: close it to read the user's, then search the new paths.
+    model.setSearch(null);
+    const expanded = collapsed ? expandedDirs(model, prev.current.paths) : dirsOf(paths);
+    prev.current = { key: pathsKey, paths };
+    model.resetPaths(paths, { initialExpandedPaths: expanded });
+    model.setSearch(search || null);
+  }, [model, pathsKey, paths, collapsed, search]);
+
+  useEffect(() => {
+    model.setSearch(search || null);
+  }, [model, search]);
 
   useEffect(() => {
     model.setGitStatus(gitStatus);
@@ -115,6 +133,14 @@ function FileTreeView({
       }
     />
   );
+}
+
+/** The folders of `paths` that are open in `model`. */
+function expandedDirs(model: UseFileTreeResult["model"], paths: string[]) {
+  return dirsOf(paths).filter((dir) => {
+    const item = model.getItem(dir);
+    return item && "isExpanded" in item && item.isExpanded();
+  });
 }
 
 function dirsOf(paths: string[]) {

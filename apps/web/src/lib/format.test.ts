@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { shortAge } from "./format.ts";
+import { formatBytes, shortAge } from "./format.ts";
 
 test("shortAge names the largest whole unit", () => {
   const now = 1_000_000_000;
@@ -14,4 +14,12 @@ test("shortAge names the largest whole unit", () => {
 
 test("shortAge treats future dates (clock skew) as now", () => {
   expect(shortAge(2000, 1000)).toBe("now");
+});
+
+test("formatBytes names the largest unit the size fills", () => {
+  expect(formatBytes(0)).toBe("0 B");
+  expect(formatBytes(1023)).toBe("1023 B");
+  expect(formatBytes(1024)).toBe("1.0 KB");
+  expect(formatBytes(2.3 * 1024 * 1024)).toBe("2.3 MB");
+  expect(formatBytes(5 * 1024 ** 4)).toBe("5120.0 GB");
 });
