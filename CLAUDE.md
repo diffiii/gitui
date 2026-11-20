@@ -30,7 +30,7 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   `src/lib/connection.ts` holds the pairing with the CLI and where requests go (its store reads
   `window` lazily; `initConnection` does the startup wiring), and `ConnectionGate` gates the app
   until the CLI answers. `wrangler.jsonc` and `public/_headers` deploy `dist/` as Cloudflare
-  Workers static assets.
+  Workers static assets on the custom domain `gitui.diffiii.dev` (`HOSTED_ORIGIN`).
 - `packages/shared/` (`@gitui/shared`): API types and the connection contract (default port,
   client header, hosted origin, loopback hosts, pairing links) used by both sides, imported as
   `@gitui/shared`.

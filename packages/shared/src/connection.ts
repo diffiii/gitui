@@ -7,7 +7,7 @@ export const DEFAULT_PORT = 4777;
 export const CLIENT_HEADER = "x-gitui";
 
 /** Origin of the hosted web app, the only cross-origin page the CLI accepts by default. */
-export const HOSTED_ORIGIN = "https://gitui.diffiii.workers.dev";
+export const HOSTED_ORIGIN = "https://gitui.diffiii.dev";
 
 /** Hostnames that only reach this machine, spelled as in `location.hostname` and `Host`. */
 export const LOOPBACK_HOSTS: readonly string[] = ["localhost", "127.0.0.1", "[::1]"];
