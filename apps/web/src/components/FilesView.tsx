@@ -101,7 +101,6 @@ function FileContents({ path }: { path: string }) {
     queryKey: [repo, "file", path],
     queryFn: () => api.file(path),
     refetchInterval: 3000,
-    placeholderData: (prev) => prev,
   });
 
   if (error) return <div className="p-6 text-sm text-destructive">{error.message}</div>;

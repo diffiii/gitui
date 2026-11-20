@@ -1,4 +1,4 @@
-import type { FileTreeBatchOperation } from "@pierre/trees";
+import type { FileTree, FileTreeBatchOperation } from "@pierre/trees";
 
 /** Every folder that holds one of `paths`, as the tree names them: with a trailing `/`. */
 export function dirsOf(paths: Iterable<string>): string[] {
@@ -34,4 +34,22 @@ export function treeChanges(prev: readonly string[], next: readonly string[]) {
   const prevFiles = new Set(prev);
   for (const p of next) if (!prevFiles.has(p)) ops.push({ type: "add", path: p });
   return ops;
+}
+
+/**
+ * Turns `model`, a tree of `prev`, into one of `next` in place, so the folders the user opened or
+ * closed and the search stay; new folders take the tree's `initialExpansion`. Should the tree not
+ * hold `prev` after all, the batch throws partway (on a path it lacks, or already has); then the
+ * tree is built afresh from `next`, so the next change starts from what it shows.
+ */
+export function updatePaths(
+  model: Pick<FileTree, "batch" | "resetPaths">,
+  prev: readonly string[],
+  next: readonly string[],
+) {
+  try {
+    model.batch(treeChanges(prev, next));
+  } catch {
+    model.resetPaths(next);
+  }
 }

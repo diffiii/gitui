@@ -2,7 +2,7 @@ import type { ContextMenuItem, ContextMenuOpenContext, GitStatusEntry } from "@p
 import { FileTree, useFileTree } from "@pierre/trees/react";
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { COARSE, useMediaQuery } from "@/lib/media";
-import { dirsOf, treeChanges } from "@/lib/pathTree";
+import { dirsOf, updatePaths } from "@/lib/pathTree";
 import { useTheme } from "@/lib/prefs";
 import { cn } from "@/lib/utils";
 
@@ -21,8 +21,8 @@ interface PathTreeProps {
   /** Row actions shown in the context menu (right-click or the row button). */
   actions?: (item: ContextMenuItem) => TreeAction[];
   /**
-   * Folders start closed, but for the selected path's, and stay as they were when the paths
-   * change. Without it, every folder is open.
+   * Folders start closed, but for the selected path's; without it, every folder starts open. Either
+   * way, a folder stays as the user left it when the paths change.
    */
   collapsed?: boolean;
   /** Shows only the paths that contain this text, with their folders open. */
@@ -85,12 +85,9 @@ function FileTreeView({
   const prev = useRef({ key: pathsKey, paths });
   useEffect(() => {
     if (prev.current.key === pathsKey) return;
-    const old = prev.current.paths;
+    updatePaths(model, prev.current.paths, paths);
     prev.current = { key: pathsKey, paths };
-    // In place, so the folders the user opened and the search stay, and new folders start closed.
-    if (collapsed) model.batch(treeChanges(old, paths));
-    else model.resetPaths(paths, { initialExpandedPaths: dirsOf(paths) });
-  }, [model, pathsKey, paths, collapsed]);
+  }, [model, pathsKey, paths]);
 
   useEffect(() => {
     model.setSearch(search || null);
