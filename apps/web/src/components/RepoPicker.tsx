@@ -38,20 +38,25 @@ function useOpenRepo(onOpen: (root: string) => void) {
 const NOT_OPENED =
   "Open it on your computer first: this device can only use repositories gitui opened there. Run gitui with its path on the computer, or pick a recent one.";
 
+/** The same, for a path tried on the screen that already says so. */
+const NOT_OPENED_EITHER = "That one isn't opened on the computer either.";
+
 function tildify(p: string, home?: string) {
   return home && p.startsWith(home) ? `~${p.slice(home.length)}` : p;
 }
 
 /**
  * Full-page picker shown when no repository is selected, or when this device may not use the
- * selected one yet (`notOpened`): it asks for it to be opened on the computer first.
+ * selected one yet (`notOpened`, its path): it asks for it to be opened on the computer first.
  */
 export function RepoWelcome({
   onOpen,
-  notOpened = false,
+  notOpened,
+  className,
 }: {
   onOpen: (root: string) => void;
-  notOpened?: boolean;
+  notOpened?: string;
+  className?: string;
 }) {
   const { data: config } = useQuery({ queryKey: ["config"], queryFn: getConfig });
   const [path, setPath] = useState("");
@@ -59,12 +64,22 @@ export function RepoWelcome({
 
   return (
     <CenteredScreen
+      className={className}
       icon={FolderGit2}
-      title={notOpened ? "Open this repository on your computer first" : "Open a repository"}
+      title={notOpened ? `Open ${basename(notOpened)} on your computer first` : "Open a repository"}
       description={
-        notOpened
-          ? "This device can only use repositories gitui opened on the computer it runs on. Run gitui with this repository's path there, and it shows up here. Or pick a recent one."
-          : "Paste a path to any folder inside a git repository, or pick a recent one."
+        notOpened ? (
+          <>
+            This device can only use repositories gitui opened on the computer it runs on. Run gitui
+            with{" "}
+            <span className="font-mono break-all text-foreground">
+              {tildify(notOpened, config?.home)}
+            </span>{" "}
+            there, and it shows up here. Or pick a recent one.
+          </>
+        ) : (
+          "Paste a path to any folder inside a git repository, or pick a recent one."
+        )
       }
     >
       <form
@@ -87,7 +102,7 @@ export function RepoWelcome({
       </form>
       {open.notOpened && (
         <p role="status" className="mt-3 px-1 text-sm text-muted-foreground">
-          {NOT_OPENED}
+          {notOpened ? NOT_OPENED_EITHER : NOT_OPENED}
         </p>
       )}
       {!!config?.recent.length && (
