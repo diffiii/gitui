@@ -2,7 +2,8 @@
 
 /**
  * Headers for every UI response. `connectSrc` is the CSP connect-src: where the page may send
- * requests (its own origin for the CLI's bundled UI; the CLI on 127.0.0.1 too for the hosted app).
+ * requests (its own origin for the CLI's bundled UI; the CLI on 127.0.0.1 and the rendezvous too
+ * for the hosted app). It doesn't govern WebRTC, so it needn't list STUN servers or peers.
  */
 export function uiSecurityHeaders(connectSrc: string): Record<string, string> {
   return {
@@ -12,12 +13,15 @@ export function uiSecurityHeaders(connectSrc: string): Record<string, string> {
   };
 }
 
+/** Origin of the nearby rendezvous Worker, which the hosted app opens a WebSocket to. */
+export const RENDEZVOUS_ORIGIN = "wss://rendezvous.gitui.diffiii.dev";
+
 /**
  * The hosted app's `_headers` file (Cloudflare's format: a path pattern, then its headers
  * indented), which the web build emits next to the UI.
  */
 export function hostedHeadersFile(): string {
-  const headers = uiSecurityHeaders("'self' http://127.0.0.1:*");
+  const headers = uiSecurityHeaders(`'self' http://127.0.0.1:* ${RENDEZVOUS_ORIGIN}`);
   return ["/*", ...Object.entries(headers).map(([name, value]) => `  ${name}: ${value}`), ""].join(
     "\n",
   );
