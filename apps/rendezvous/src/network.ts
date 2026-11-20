@@ -97,7 +97,8 @@ interface Budget {
 
 const budget = (epoch: number): Budget => ({ epoch, n: 0 });
 
-export type Admission = { attachment: Attachment } | { status: number; message: string };
+/** What connect decided about a new socket. */
+export type Arrival = { attachment: Attachment } | { status: number; message: string };
 
 export class Network {
   /** The budget of each socket that isn't a host's, by peer id. */
@@ -116,7 +117,7 @@ export class Network {
    * 503 when the network is full. Closes the sockets that never said hello first, so silent
    * sockets can't hold the slots.
    */
-  connect(browser: boolean): Admission {
+  connect(browser: boolean): Arrival {
     const now = this.now();
     for (const socket of this.#open()) {
       const peer = socket.read();
