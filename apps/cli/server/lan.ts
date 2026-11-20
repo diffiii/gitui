@@ -29,8 +29,12 @@ async function defaultRouteAddress(): Promise<string | null> {
   }
 }
 
-/** Private ranges: RFC 1918, and the shared range of carrier-grade NAT and Tailscale. */
-export const PRIVATE_RANGES = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10"];
+/**
+ * Private ranges (RFC 1918). Not 100.64.0.0/10: that is carrier-grade NAT's shared space, which
+ * other customers of the ISP share, not a LAN. Tailscale addresses are in it, so pass one with
+ * `--lan <address>`.
+ */
+export const PRIVATE_RANGES = ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"];
 
 const privateRanges = new net.BlockList();
 for (const range of PRIVATE_RANGES) {
