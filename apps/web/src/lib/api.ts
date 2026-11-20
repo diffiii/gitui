@@ -1,22 +1,10 @@
 import type { Branch, Commit, CommitDetail, FileStatus, Status } from "@gitui/shared";
-import { apiTarget } from "./connection.ts";
-import { getPairing } from "./pairing.ts";
+import { ApiError, apiTarget, getConnection } from "./connection.ts";
 
 export type { Branch, Commit, CommitDetail, FileStatus, Status };
 
-/** `unreachable`: no CLI answered. `unauthorized`: the CLI rejected the pairing token. */
-export type ApiErrorKind = "unreachable" | "unauthorized" | "failed";
-
-export class ApiError extends Error {
-  readonly kind: ApiErrorKind;
-  constructor(message: string, kind: ApiErrorKind) {
-    super(message);
-    this.kind = kind;
-  }
-}
-
 async function request<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
-  const { base, headers } = apiTarget(getPairing());
+  const { base, headers } = apiTarget(getConnection());
   const res = await fetch(base + path, {
     method,
     headers: {
@@ -29,10 +17,7 @@ async function request<T>(method: "GET" | "POST", path: string, body?: unknown):
   });
   const data = await res.json().catch(() => ({ error: res.statusText }));
   if (!res.ok) {
-    throw new ApiError(
-      data.error ?? res.statusText,
-      res.status === 401 ? "unauthorized" : "failed",
-    );
+    throw new ApiError(data.error ?? res.statusText, res.status === 401 ? "unauthorized" : "http");
   }
   return data as T;
 }

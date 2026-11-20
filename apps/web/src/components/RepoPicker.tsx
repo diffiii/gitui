@@ -2,6 +2,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { ChevronsUpDown, FolderGit2, FolderOpen } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
+import { CenteredScreen } from "@/components/CenteredScreen";
 import { Button } from "@/components/ui/button";
 import {
   Command,
@@ -36,63 +37,56 @@ export function RepoWelcome({ onOpen }: { onOpen: (root: string) => void }) {
   const open = useOpenRepo(onOpen);
 
   return (
-    <div className="flex min-h-svh items-center justify-center bg-background p-4">
-      <div className="w-full max-w-md">
-        <div className="mb-8 flex flex-col items-center gap-3 text-center">
-          <div className="rounded-2xl border bg-muted/50 p-3">
-            <FolderGit2 className="size-6" />
-          </div>
-          <h1 className="text-xl font-semibold tracking-tight">Open a repository</h1>
-          <p className="text-sm text-muted-foreground">
-            Paste a path to any folder inside a git repository, or pick a recent one.
-          </p>
-        </div>
-        <form
-          className="flex gap-2"
-          onSubmit={(e) => {
-            e.preventDefault();
-            if (path.trim()) open.mutate(path.trim());
-          }}
-        >
-          <Input
-            autoFocus
-            value={path}
-            onChange={(e) => setPath(e.target.value)}
-            placeholder="~/code/my-project"
-            className="font-mono"
-          />
-          <Button type="submit" disabled={!path.trim() || open.isPending}>
-            Open
-          </Button>
-        </form>
-        {!!config?.recent.length && (
-          <div className="mt-8">
-            <h2 className="mb-2 px-1 text-xs font-medium tracking-wide text-muted-foreground uppercase">
-              Recent
-            </h2>
-            <ul className="overflow-hidden rounded-lg border">
-              {config.recent.map((r) => (
-                <li key={r} className="border-b last:border-b-0">
-                  <button
-                    type="button"
-                    onClick={() => open.mutate(r)}
-                    className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-accent"
-                  >
-                    <FolderOpen className="size-4 shrink-0 text-muted-foreground" />
-                    <span className="min-w-0">
-                      <span className="block truncate text-sm font-medium">{basename(r)}</span>
-                      <span className="block truncate font-mono text-xs text-muted-foreground">
-                        {tildify(r, config.home)}
-                      </span>
+    <CenteredScreen
+      icon={FolderGit2}
+      title="Open a repository"
+      description="Paste a path to any folder inside a git repository, or pick a recent one."
+    >
+      <form
+        className="flex gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (path.trim()) open.mutate(path.trim());
+        }}
+      >
+        <Input
+          autoFocus
+          value={path}
+          onChange={(e) => setPath(e.target.value)}
+          placeholder="~/code/my-project"
+          className="font-mono"
+        />
+        <Button type="submit" disabled={!path.trim() || open.isPending}>
+          Open
+        </Button>
+      </form>
+      {!!config?.recent.length && (
+        <div className="mt-8">
+          <h2 className="mb-2 px-1 text-xs font-medium tracking-wide text-muted-foreground uppercase">
+            Recent
+          </h2>
+          <ul className="overflow-hidden rounded-lg border">
+            {config.recent.map((r) => (
+              <li key={r} className="border-b last:border-b-0">
+                <button
+                  type="button"
+                  onClick={() => open.mutate(r)}
+                  className="flex w-full items-center gap-3 px-3 py-2.5 text-left hover:bg-accent"
+                >
+                  <FolderOpen className="size-4 shrink-0 text-muted-foreground" />
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-medium">{basename(r)}</span>
+                    <span className="block truncate font-mono text-xs text-muted-foreground">
+                      {tildify(r, config.home)}
                     </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-      </div>
-    </div>
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </CenteredScreen>
   );
 }
 

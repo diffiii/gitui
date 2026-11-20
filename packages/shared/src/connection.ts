@@ -15,17 +15,27 @@ export interface Pairing {
   token: string;
 }
 
+/** The URL fragment (`#port=…&token=…`) that carries a pairing. */
+export function pairingFragment({ port, token }: Pairing): string {
+  return `#${new URLSearchParams({ port: String(port), token }).toString()}`;
+}
+
 /**
  * The link the CLI prints to open the hosted app. The pairing travels in the URL fragment,
  * which browsers never send to the server.
  */
-export function pairingUrl(origin: string, { port, token }: Pairing): string {
-  return `${origin}/#${new URLSearchParams({ port: String(port), token }).toString()}`;
+export function pairingUrl(origin: string, pairing: Pairing): string {
+  return `${origin}/${pairingFragment(pairing)}`;
 }
 
-/** Read a pairing from a URL fragment (`location.hash`); null if it has none. */
-export function parsePairing(hash: string): Pairing | null {
-  const sp = new URLSearchParams(hash.replace(/^#/, ""));
+/**
+ * Read a pairing from what follows the first `#` in `link`: `location.hash`, a whole pairing
+ * link or a saved fragment. Null if it has no valid pairing.
+ */
+export function parsePairing(link: string): Pairing | null {
+  const i = link.indexOf("#");
+  if (i < 0) return null;
+  const sp = new URLSearchParams(link.slice(i + 1));
   const port = Number(sp.get("port"));
   const token = sp.get("token");
   if (!token || !Number.isInteger(port) || port < 1 || port > 65535) return null;

@@ -1,61 +1,39 @@
+import { parsePairing } from "@gitui/shared";
 import { useQuery } from "@tanstack/react-query";
-import { Link2, LoaderCircle, Terminal, Unplug, type LucideIcon } from "lucide-react";
+import { Link2, LoaderCircle, Terminal, Unplug } from "lucide-react";
 import { useState } from "react";
+import { CenteredScreen } from "@/components/CenteredScreen";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { ApiError, getConfig } from "@/lib/api";
-import { pairingFromLink } from "@/lib/connection";
-import { hosted, setPairing, usePairing } from "@/lib/pairing";
+import { getConfig } from "@/lib/api";
+import { connectionStatus, setPairing, useConnection } from "@/lib/connection";
 
-const unauthorized = (e: unknown) => e instanceof ApiError && e.kind === "unauthorized";
-
-/** In the hosted app, shows how to connect to the gitui CLI until its API answers. */
+/** Renders the app once gitui answers; until then, in the hosted app, how to connect to it. */
 export function ConnectionGate({ children }: { children: React.ReactNode }) {
-  return hosted ? <HostedGate>{children}</HostedGate> : children;
-}
-
-function HostedGate({ children }: { children: React.ReactNode }) {
-  const pairing = usePairing();
+  const connection = useConnection();
   const config = useQuery({
     queryKey: ["config"],
     queryFn: getConfig,
-    enabled: pairing !== null,
+    enabled: connection.kind === "paired",
     // Keep trying while gitui isn't running, so the page connects as soon as it starts.
-    refetchInterval: (q) => (q.state.error && !unauthorized(q.state.error) ? 2000 : false),
+    refetchInterval: (q) =>
+      connectionStatus(connection, q.state).kind === "unreachable" ? 2000 : false,
   });
 
-  if (!pairing || unauthorized(config.error)) return <PairScreen rejected={pairing !== null} />;
-  if (config.isSuccess) return children;
-  if (config.error) return <UnreachableScreen port={pairing.port} error={config.error.message} />;
-  return null;
-}
-
-function Screen({
-  icon: Icon,
-  title,
-  description,
-  children,
-}: {
-  icon: LucideIcon;
-  title: string;
-  description: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="flex min-h-svh items-center justify-center bg-background p-4">
-      <div className="w-full max-w-md">
-        <div className="mb-8 flex flex-col items-center gap-3 text-center">
-          <div className="rounded-2xl border bg-muted/50 p-3">
-            <Icon className="size-6" />
-          </div>
-          <h1 className="text-xl font-semibold tracking-tight">{title}</h1>
-          <p className="text-sm text-muted-foreground">{description}</p>
-        </div>
-        {children}
-      </div>
-    </div>
-  );
+  const status = connectionStatus(connection, config);
+  switch (status.kind) {
+    case "connected":
+      return children;
+    case "connecting":
+      return null;
+    case "unpaired":
+      return <PairScreen rejected={false} />;
+    case "rejected":
+      return <PairScreen rejected />;
+    case "unreachable":
+      return <UnreachableScreen port={status.port} />;
+  }
 }
 
 const Code = ({ children }: { children: React.ReactNode }) => (
@@ -67,7 +45,7 @@ function PairScreen({ rejected }: { rejected: boolean }) {
   const [invalid, setInvalid] = useState(false);
 
   return (
-    <Screen
+    <CenteredScreen
       icon={Link2}
       title="Connect to gitui"
       description={
@@ -81,7 +59,7 @@ function PairScreen({ rejected }: { rejected: boolean }) {
         className="flex gap-2"
         onSubmit={(e) => {
           e.preventDefault();
-          const next = pairingFromLink(link.trim());
+          const next = parsePairing(link.trim());
           setInvalid(!next);
           if (next) setPairing(next);
         }}
@@ -106,13 +84,13 @@ function PairScreen({ rejected }: { rejected: boolean }) {
           That isn't a gitui link. Copy the whole link, including the part after #.
         </p>
       )}
-    </Screen>
+    </CenteredScreen>
   );
 }
 
-function UnreachableScreen({ port, error }: { port: number; error: string }) {
+function UnreachableScreen({ port }: { port: number }) {
   return (
-    <Screen
+    <CenteredScreen
       icon={Terminal}
       title="Start gitui on your computer"
       description={
@@ -135,22 +113,20 @@ function UnreachableScreen({ port, error }: { port: number; error: string }) {
       <div className="mt-4 flex items-center justify-between gap-2 px-1 text-xs text-muted-foreground">
         <span className="flex min-w-0 items-center gap-2">
           <LoaderCircle className="size-3.5 shrink-0 animate-spin" />
-          <span className="truncate">
-            {error}. Retrying on port {port}…
-          </span>
+          <span className="truncate">Can't reach gitui on port {port}. Retrying…</span>
         </span>
         <Button variant="link" size="xs" className="px-0" onClick={() => setPairing(null)}>
           Use another link
         </Button>
       </div>
-    </Screen>
+    </CenteredScreen>
   );
 }
 
 /** Header button that forgets the pairing; renders nothing outside the hosted app. */
 export function DisconnectButton() {
-  const pairing = usePairing();
-  if (!pairing) return null;
+  const connection = useConnection();
+  if (connection.kind !== "paired") return null;
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -158,7 +134,7 @@ export function DisconnectButton() {
           <Unplug />
         </Button>
       </TooltipTrigger>
-      <TooltipContent>Disconnect from gitui on port {pairing.port}</TooltipContent>
+      <TooltipContent>Disconnect from gitui on port {connection.pairing.port}</TooltipContent>
     </Tooltip>
   );
 }
