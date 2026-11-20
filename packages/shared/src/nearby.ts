@@ -160,16 +160,32 @@ export type SignalData =
   | { kind: "offer"; offerId: string; sdp: string; resume?: boolean }
   | { kind: "answer"; offerId: string; sdp: string }
   | { kind: "candidate"; offerId: string; candidate: IceCandidate }
-  /**
-   * Host to guest: it won't answer this offer. `busy`: too many guests are proving themselves
-   * at once; `rate-limited`: too many offers or pairing attempts came lately; `bad-offer`: the
-   * host can't use the offer (e.g. its SDP hasn't exactly one SHA-256 fingerprint).
-   */
+  /** Host to guest: it won't answer this offer, and why. */
   | { kind: "refused"; offerId: string; reason: RefusalReason };
 
-/** Why a host refused an offer (SignalData's `refused`). */
-export type RefusalReason = "busy" | "rate-limited" | "bad-offer";
-export const REFUSAL_REASONS: readonly RefusalReason[] = ["busy", "rate-limited", "bad-offer"];
+/**
+ * Why a host refused an offer (SignalData's `refused`).
+ * - `busy`: too many guests are proving themselves at once (MAX_PENDING).
+ * - `rate-limited`: too many offers came lately (MAX_OFFERS_PER_MINUTE).
+ * - `pairing-locked`: too many codes were tried on the host lately, so it pairs no new device
+ *   for a while; paired devices can still resume.
+ * - `bad-offer`: the host can't use the offer (e.g. its SDP hasn't exactly one SHA-256
+ *   fingerprint).
+ * - `unknown`: a reason this version doesn't know, from a newer host. Hosts don't send it.
+ *
+ * New reasons decode as `unknown` where they aren't known yet (the rendezvous, older guests),
+ * so adding one breaks nothing.
+ */
+export type RefusalReason = "busy" | "rate-limited" | "pairing-locked" | "bad-offer" | "unknown";
+export const REFUSAL_REASONS: readonly RefusalReason[] = [
+  "busy",
+  "rate-limited",
+  "pairing-locked",
+  "bad-offer",
+  "unknown",
+];
+export const isRefusalReason = (value: unknown): value is RefusalReason =>
+  (REFUSAL_REASONS as readonly unknown[]).includes(value);
 
 /** Messages a peer sends to the rendezvous object. */
 export type ClientMessage =
@@ -204,6 +220,9 @@ export type ServerMessage =
  * - `host-limit`: the network lists as many host keys as it may.
  * - `key-limit`: this host's key already has as many sockets as it may.
  * - `unknown-peer`: a signal to a peer that isn't here (or has the same role).
+ * - `unknown`: a code this version doesn't know, from a newer rendezvous. It doesn't send it.
+ *
+ * New codes decode as `unknown` where they aren't known yet, so adding one breaks nothing.
  */
 export type ErrorCode =
   | "hello-required"
@@ -214,7 +233,8 @@ export type ErrorCode =
   | "network-rate-limit"
   | "host-limit"
   | "key-limit"
-  | "unknown-peer";
+  | "unknown-peer"
+  | "unknown";
 export const ERROR_CODES: readonly ErrorCode[] = [
   "hello-required",
   "invalid-message",
@@ -225,7 +245,10 @@ export const ERROR_CODES: readonly ErrorCode[] = [
   "host-limit",
   "key-limit",
   "unknown-peer",
+  "unknown",
 ];
+export const isErrorCode = (value: unknown): value is ErrorCode =>
+  (ERROR_CODES as readonly unknown[]).includes(value);
 
 // ── Data channel ──────────────────────────────────────────────────────────────────────────
 
