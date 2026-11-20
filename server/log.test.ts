@@ -38,7 +38,6 @@ describe("log", () => {
     commit(dir, "one");
     const err = await log(dir, { limit: 10, all: false, ref: "refs/heads/nope" }).catch((e) => e);
     expect(err).toBeInstanceOf(GitError);
-    expect((err as GitError).message).toBeTruthy();
   });
 
   test("full refname picks the branch over a tag with the same name", async () => {
@@ -63,6 +62,15 @@ describe("log", () => {
     expect(await log(dir, { limit: 10, all: false })).toEqual([]);
   });
 
+  test("all: true in an unborn repo still walks fetched remote branches", async () => {
+    const upstream = makeRepo();
+    commit(upstream, "upstream");
+    const dir = makeRepo();
+    sh(dir, "fetch", "-q", upstream, "main:refs/remotes/origin/main");
+    expect((await log(dir, { limit: 10, all: true })).map((c) => c.subject)).toEqual(["upstream"]);
+    expect(await log(dir, { limit: 10, all: false })).toEqual([]);
+  });
+
   test("all: true walks branches and tags", async () => {
     const dir = makeRepo();
     commit(dir, "one");
@@ -74,14 +82,17 @@ describe("log", () => {
   });
 });
 
+function getLog(params: Record<string, string>) {
+  return createApp().request(`/api/repo/log?${new URLSearchParams(params).toString()}`, {
+    headers: { host: "localhost", "x-gitui": "1" },
+  });
+}
+
 describe("GET /api/repo/log", () => {
   test("returns 400 with an error for an unknown ref", async () => {
     const dir = makeRepo();
     commit(dir, "one");
-    const q = new URLSearchParams({ repo: dir, ref: "refs/heads/nope" });
-    const res = await createApp().request(`/api/repo/log?${q.toString()}`, {
-      headers: { host: "localhost", "x-gitui": "1" },
-    });
+    const res = await getLog({ repo: dir, ref: "refs/heads/nope" });
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
     expect(body.error).toBeTruthy();
@@ -90,10 +101,7 @@ describe("GET /api/repo/log", () => {
   test("returns commits for a full refname", async () => {
     const dir = makeRepo();
     commit(dir, "one");
-    const q = new URLSearchParams({ repo: dir, ref: "refs/heads/main" });
-    const res = await createApp().request(`/api/repo/log?${q.toString()}`, {
-      headers: { host: "localhost", "x-gitui": "1" },
-    });
+    const res = await getLog({ repo: dir, ref: "refs/heads/main" });
     expect(res.status).toBe(200);
     const body = (await res.json()) as { commits: { subject: string }[] };
     expect(body.commits.map((c) => c.subject)).toEqual(["one"]);

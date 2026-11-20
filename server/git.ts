@@ -246,25 +246,31 @@ function parseLog(raw: string): Commit[] {
     });
 }
 
-export async function log(
-  repo: string,
-  opts: { limit: number; all: boolean; ref?: string },
-): Promise<Commit[]> {
-  const head = await hasHead(repo);
-  if (!head && !opts.all && !opts.ref) return [];
-  const args = [
-    "log",
-    "--topo-order",
-    "--decorate=full",
-    `-n${opts.limit}`,
-    `--format=${LOG_FORMAT}`,
-  ];
-  if (opts.ref) args.push(opts.ref, "--");
+type LogOptions = { limit: number; all: boolean; ref?: string };
+
+/** What to walk. An unborn HEAD would make git fail, so it is only named when it resolves. */
+async function logRevisions(repo: string, opts: LogOptions): Promise<string[]> {
+  if (opts.ref) return [opts.ref];
+  const head = (await hasHead(repo)) ? ["HEAD"] : [];
   // Not --all: that would include tool-internal refs (refs/t3/*, refs/codex/*, refs/original/*, stash).
-  // With no matching refs (an unborn repo) git walks nothing and prints nothing; HEAD is only
-  // added when it resolves, since an unborn HEAD would make git fail.
-  else if (opts.all) args.push("--branches", "--remotes", "--tags", ...(head ? ["HEAD"] : []));
-  return parseLog(await git(repo, args));
+  // These patterns may match nothing (an unborn repo); git then walks nothing and prints nothing.
+  return opts.all ? ["--branches", "--remotes", "--tags", ...head] : head;
+}
+
+export async function log(repo: string, opts: LogOptions): Promise<Commit[]> {
+  const revisions = await logRevisions(repo, opts);
+  if (revisions.length === 0) return [];
+  return parseLog(
+    await git(repo, [
+      "log",
+      "--topo-order",
+      "--decorate=full",
+      `-n${opts.limit}`,
+      `--format=${LOG_FORMAT}`,
+      ...revisions,
+      "--",
+    ]),
+  );
 }
 
 export async function showCommit(repo: string, hash: string): Promise<CommitDetail> {
