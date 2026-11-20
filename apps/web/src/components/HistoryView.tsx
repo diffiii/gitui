@@ -13,31 +13,35 @@ import {
 import { usePanelRef } from "react-resizable-panels";
 import { useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
-import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Commit } from "@/lib/api";
 import { fullDate, initials, relativeTime } from "@/lib/format";
 import { layoutGraph } from "@/lib/graph";
+import { useListChoice } from "@/lib/listChoice";
 import { COARSE, NARROW, useMediaQuery } from "@/lib/media";
 import { useHistoryDetails } from "@/lib/prefs";
 import { useGitMutation, useRepo } from "@/lib/repo";
+import { closeDetail, select, useUrl } from "@/lib/url";
 import { cn } from "@/lib/utils";
 import { useWindowedRows } from "@/lib/windowing";
 import { Age } from "./Age";
 import { GraphCell, ROW_H, TOUCH_ROW_H } from "./CommitGraph";
 import { CommitTitle } from "./CommitTitle";
-import { DetailScreen } from "./DetailScreen";
 import { DiffFiles, fileKey, useParsedPatch } from "./DiffView";
 import { EmptyState } from "./EmptyState";
+import { ListDetail } from "./ListDetail";
 import { PathTree } from "./PathTree";
 import { type ParsedRef, RefBadges } from "./RefBadges";
 import { TruncatedNotice } from "./TruncatedNotice";
 
 const PAGE = 300;
 
-/** Commit graph on the left, selected commit's details on the right. Remount (key) to reset. */
+/**
+ * Commit graph on the left, the URL's commit (or the newest) on the right. Remount (key) to reset
+ * the paging.
+ */
 export function HistoryPane({
   gitRef,
   all,
@@ -45,11 +49,12 @@ export function HistoryPane({
 }: {
   gitRef?: string;
   all: boolean;
+  /** Leading controls in the bar over the graph. */
   toolbar?: React.ReactNode;
 }) {
   const { repo, api } = useRepo();
   const [limit, setLimit] = useState(PAGE);
-  const [choice, setSelected] = useState<string | null>(null);
+  const { commit } = useUrl();
   const { data, error, isLoading, isFetching } = useQuery({
     queryKey: [repo, "log", gitRef ?? null, all, limit],
     queryFn: () => api.log({ limit, all, ref: gitRef }),
@@ -57,9 +62,7 @@ export function HistoryPane({
     refetchInterval: 10000,
   });
   const commits = useMemo(() => data?.commits ?? [], [data]);
-  const narrow = useMediaQuery(NARROW);
-  // Until a commit is chosen, wide screens show the newest one and narrow ones show the list.
-  const selected = choice ?? (narrow ? null : (commits[0]?.hash ?? null));
+  const { stacked, shown } = useListChoice(NARROW, commit, commits[0]?.hash ?? null);
   const details = usePanelRef();
   const [detailsPref, setDetailsPref] = useHistoryDetails();
   const closed = detailsPref === "closed";
@@ -71,100 +74,95 @@ export function HistoryPane({
     if (panel.getSize().inPixels < 400) panel.resize("45%");
   };
   const toggleDetails = () => (closed ? openDetails() : details.current?.collapse());
-
-  const list = (
-    <>
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b px-3">
-        {toolbar}
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              className="touch-target ml-auto max-md:hidden"
-              onClick={toggleDetails}
-            >
-              {closed ? <PanelRightOpen /> : <PanelRightClose />}
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>{closed ? "Show commit details" : "Hide commit details"}</TooltipContent>
-        </Tooltip>
-      </div>
-      {isLoading ? (
-        <ListSkeleton />
-      ) : error ? (
-        <div className="p-6 text-sm text-destructive">{error.message}</div>
-      ) : commits.length === 0 ? (
-        <EmptyState icon={History} title="No commits yet" />
-      ) : (
-        <CommitList
-          commits={commits}
-          selected={selected}
-          onSelect={setSelected}
-          onOpen={(hash) => {
-            setSelected(hash);
-            openDetails();
-          }}
-          footer={
-            commits.length >= limit && (
-              <div className="p-3">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="w-full pointer-coarse:h-10"
-                  disabled={isFetching}
-                  onClick={() => setLimit((l) => l + PAGE)}
-                >
-                  {isFetching && <Loader2 className="animate-spin" />}
-                  Load more
-                </Button>
-              </div>
-            )
-          }
-        />
-      )}
-    </>
-  );
-
-  if (narrow) {
-    return choice ? (
-      <DetailScreen
-        title={<span className="font-mono text-sm">{choice.slice(0, 7)}</span>}
-        backLabel="Back to commits"
-        onBack={() => setSelected(null)}
-      >
-        <CommitDetail hash={choice} onSelect={setSelected} />
-      </DetailScreen>
-    ) : (
-      <div className="flex h-full flex-col">{list}</div>
-    );
-  }
+  const choose = (hash: string) =>
+    select({ commit: hash }, stacked && !shown ? "commit" : undefined);
 
   return (
-    <ResizablePanelGroup orientation="horizontal">
-      <ResizablePanel
-        defaultSize={closed ? "100%" : "55%"}
-        minSize="320px"
-        className="flex flex-col"
-      >
-        {list}
-      </ResizablePanel>
-      <ResizableHandle />
-      <ResizablePanel
-        panelRef={details}
-        defaultSize={closed ? "0%" : "45%"}
-        minSize="360px"
-        collapsible
-        collapsedSize="0%"
-        onResize={(size) => setDetailsPref(size.asPercentage === 0 ? "closed" : "open")}
-      >
-        {closed ? null : selected ? (
-          <CommitDetail hash={selected} onSelect={setSelected} />
-        ) : (
-          <EmptyState icon={GitCommitHorizontal} title="Select a commit" />
-        )}
-      </ResizablePanel>
-    </ResizablePanelGroup>
+    <ListDetail
+      breakpoint={NARROW}
+      listPanel={{ defaultSize: closed ? "100%" : "55%", minSize: "320px" }}
+      detailPanel={{
+        panelRef: details,
+        defaultSize: closed ? "0%" : "45%",
+        minSize: "360px",
+        collapsible: true,
+        collapsedSize: "0%",
+        onResize: (size) => setDetailsPref(size.asPercentage === 0 ? "closed" : "open"),
+      }}
+      detailCollapsed={closed}
+      list={
+        <>
+          {/* With no toolbar, a phone has nothing to show here: the details toggle is for panels. */}
+          <div
+            className={cn(
+              "flex h-10 shrink-0 items-center gap-2 border-b px-3",
+              !toolbar && "max-md:hidden",
+            )}
+          >
+            {toolbar}
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="touch-target ml-auto max-md:hidden"
+                  onClick={toggleDetails}
+                >
+                  {closed ? <PanelRightOpen /> : <PanelRightClose />}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                {closed ? "Show commit details" : "Hide commit details"}
+              </TooltipContent>
+            </Tooltip>
+          </div>
+          {isLoading ? (
+            <ListSkeleton />
+          ) : error ? (
+            <div className="p-6 text-sm text-destructive">{error.message}</div>
+          ) : commits.length === 0 ? (
+            <EmptyState icon={History} title="No commits yet" />
+          ) : (
+            <CommitList
+              commits={commits}
+              selected={shown}
+              onSelect={choose}
+              onOpen={(hash) => {
+                choose(hash);
+                openDetails();
+              }}
+              footer={
+                commits.length >= limit && (
+                  <div className="p-3">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full pointer-coarse:h-10"
+                      disabled={isFetching}
+                      onClick={() => setLimit((l) => l + PAGE)}
+                    >
+                      {isFetching && <Loader2 className="animate-spin" />}
+                      Load more
+                    </Button>
+                  </div>
+                )
+              }
+            />
+          )}
+        </>
+      }
+      detail={
+        shown === null
+          ? null
+          : {
+              content: <CommitDetail hash={shown} onSelect={(hash) => select({ commit: hash })} />,
+              title: <span className="font-mono text-sm">{shown.slice(0, 7)}</span>,
+              backLabel: "Back to commits",
+              onBack: () => closeDetail("commit"),
+            }
+      }
+      empty={<EmptyState icon={GitCommitHorizontal} title="Select a commit" />}
+    />
   );
 }
 
@@ -197,7 +195,8 @@ function CommitList({
     "Switched branch",
   );
   // Only the rows in (or near) the viewport are mounted; spacers keep the scroll height.
-  const rowH = useMediaQuery(COARSE) ? TOUCH_ROW_H : ROW_H;
+  const coarse = useMediaQuery(COARSE);
+  const rowH = coarse ? TOUCH_ROW_H : ROW_H;
   const { viewportRef, start, end, before, after } = useWindowedRows(commits.length, rowH);
   return (
     <ScrollArea className="@container min-h-0 flex-1" viewportRef={viewportRef}>
@@ -218,9 +217,10 @@ function CommitList({
             <span className="flex min-w-0 flex-1 items-center gap-2">
               <RefBadges
                 refs={c.refs}
-                onCheckout={(r) => !checkout.isPending && checkout.mutate(r)}
-                // Leave the subject room. (Below lg, where ScrollArea lets rows truncate.)
-                className="max-lg:max-w-1/2 max-lg:overflow-hidden"
+                // Under a finger, a tap meant for the row would switch branches.
+                onCheckout={coarse ? undefined : (r) => !checkout.isPending && checkout.mutate(r)}
+                // Leave the subject room.
+                className="max-w-1/2 overflow-hidden"
               />
               <CommitTitle title={c.subject} />
             </span>
@@ -288,7 +288,7 @@ function CommitDetail({ hash, onSelect }: { hash: string; onSelect: (hash: strin
       <div className="flex flex-col gap-4 p-4">
         <header className="flex flex-col gap-3">
           <div className="flex flex-wrap items-center gap-2">
-            <RefBadges refs={data.refs} className="max-lg:shrink max-lg:flex-wrap" />
+            <RefBadges refs={data.refs} className="shrink flex-wrap" />
           </div>
           <h2 className="text-base leading-snug font-semibold [&_.truncate]:whitespace-normal">
             <CommitTitle title={data.subject} />

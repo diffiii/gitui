@@ -1,8 +1,8 @@
 import type { FileStatus } from "./api.ts";
 
-/** A file in the Changes view: its path, and whether it's the staged or the unstaged entry. */
-export interface FileChoice {
-  path: string;
+/** A file in the Changes view: its status entry, and whether that's from the staged list. */
+export interface ShownFile {
+  file: FileStatus;
   staged: boolean;
 }
 
@@ -14,27 +14,29 @@ export function splitChanges(files: FileStatus[]) {
   };
 }
 
-const has = (list: FileStatus[], path: string) => list.some((f) => f.path === path);
+const find = (list: FileStatus[], path: string) => list.find((f) => f.path === path);
 
 /**
- * The chosen file as the lists stand now: as chosen, or in the other list once it was staged or
- * unstaged entirely. Null when there is no choice or the file has no changes left.
+ * The chosen file as the lists stand now: in the list it was chosen from, or in the other one
+ * once it was staged or unstaged entirely. Null when there is no choice or the file has no
+ * changes left.
  */
 export function resolveChoice(
-  choice: FileChoice | null,
+  choice: { path: string; staged: boolean } | null,
   staged: FileStatus[],
   unstaged: FileStatus[],
-): FileChoice | null {
+): ShownFile | null {
   if (!choice) return null;
-  if (has(choice.staged ? staged : unstaged, choice.path)) return choice;
-  if (has(choice.staged ? unstaged : staged, choice.path))
-    return { path: choice.path, staged: !choice.staged };
-  return null;
+  const [same, other] = choice.staged ? [staged, unstaged] : [unstaged, staged];
+  const inSame = find(same, choice.path);
+  if (inSame) return { file: inSame, staged: choice.staged };
+  const inOther = find(other, choice.path);
+  return inOther ? { file: inOther, staged: !choice.staged } : null;
 }
 
 /** The file shown when none is chosen: the first unstaged one, else the first staged one. */
-export function firstChange(staged: FileStatus[], unstaged: FileStatus[]): FileChoice | null {
-  if (unstaged[0]) return { path: unstaged[0].path, staged: false };
-  if (staged[0]) return { path: staged[0].path, staged: true };
+export function firstChange(staged: FileStatus[], unstaged: FileStatus[]): ShownFile | null {
+  if (unstaged[0]) return { file: unstaged[0], staged: false };
+  if (staged[0]) return { file: staged[0], staged: true };
   return null;
 }

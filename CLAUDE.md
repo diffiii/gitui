@@ -66,8 +66,11 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
 - Frontend data goes through TanStack Query with keys that start with the repo:
   `[repo, "status"]`, `[repo, "log", ...]`. Repo mutations use `useGitMutation` from
   `apps/web/src/lib/repo.tsx`, which invalidates `[repo]` when it settles and toasts errors.
-- Prefs (`apps/web/src/lib/prefs.ts`) and URL state (`apps/web/src/App.tsx`) are external
-  stores read with `useSyncExternalStore`. Don't use effects to sync or derive state.
+- Prefs (`apps/web/src/lib/prefs.ts`), URL state (`apps/web/src/lib/url.ts`: repo, view and the
+  open detail) and media queries (`apps/web/src/lib/media.ts`) are external stores read with
+  `useSyncExternalStore`. Don't use effects to sync or derive state.
+- List/detail views go through `ListDetail` (`apps/web/src/components/ListDetail.tsx`): side by
+  side, or stacked on narrow screens, where opening a detail pushes a history entry.
 - Put each dependency in the package that uses it (in `apps/cli` as devDependencies, since
   they're bundled); shared tooling (typescript, vite-plus, @types/bun) stays at the root.
 - Add shadcn components under `apps/web/src/components/ui` (run `shadcn` from `apps/web`).

@@ -12,17 +12,18 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { ResizableHandle, ResizablePanel, ResizablePanelGroup } from "@/components/ui/resizable";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import type { FileStatus } from "@/lib/api";
-import { type FileChoice, firstChange, resolveChoice, splitChanges } from "@/lib/changes";
+import { firstChange, resolveChoice, type ShownFile, splitChanges } from "@/lib/changes";
 import { splitPath } from "@/lib/format";
-import { NARROW, useMediaQuery } from "@/lib/media";
+import { useListChoice } from "@/lib/listChoice";
+import { NARROW } from "@/lib/media";
 import { useGitMutation, useRepo } from "@/lib/repo";
-import { DetailScreen } from "./DetailScreen";
+import { closeDetail, select, useUrl } from "@/lib/url";
 import { DiffView } from "./DiffView";
 import { EmptyState } from "./EmptyState";
+import { ListDetail } from "./ListDetail";
 import { PathTree } from "./PathTree";
 import { TruncatedNotice } from "./TruncatedNotice";
 
@@ -38,85 +39,76 @@ export function useStatus() {
 export function ChangesView() {
   const { data } = useStatus();
   const { staged, unstaged } = useMemo(() => splitChanges(data?.files ?? []), [data]);
-  const [choice, setChoice] = useState<FileChoice | null>(null);
+  const url = useUrl();
   const [discarding, setDiscarding] = useState<FileStatus[] | null>(null);
-  const narrow = useMediaQuery(NARROW);
 
-  // Keep the choice valid as files move between lists (e.g. after staging). Until a file is
-  // chosen, wide screens show the first one and narrow ones show the list.
-  const picked = useMemo(() => resolveChoice(choice, staged, unstaged), [choice, staged, unstaged]);
-  const sel = picked ?? (narrow ? null : firstChange(staged, unstaged));
-
-  const selected = sel
-    ? (sel.staged ? staged : unstaged).find((f) => f.path === sel.path)
-    : undefined;
-
-  const list = (
-    <>
-      <div className="flex min-h-0 flex-1 flex-col">
-        <FileSection
-          title="Staged"
-          files={staged}
-          staged
-          selected={sel?.staged ? sel.path : null}
-          onSelect={(path) => setChoice({ path, staged: true })}
-          onDiscard={setDiscarding}
-          empty="Nothing staged"
-        />
-        <FileSection
-          title="Changes"
-          files={unstaged}
-          staged={false}
-          selected={sel && !sel.staged ? sel.path : null}
-          onSelect={(path) => setChoice({ path, staged: false })}
-          onDiscard={setDiscarding}
-          empty="Working tree clean"
-        />
-      </div>
-      <CommitBox stagedCount={staged.length} />
-    </>
+  // The chosen file follows a stage or unstage into the other list.
+  const chosen = resolveChoice(
+    url.file ? { path: url.file, staged: url.staged } : null,
+    staged,
+    unstaged,
   );
-  const discardDialog = <DiscardDialog files={discarding} onClose={() => setDiscarding(null)} />;
-
-  if (narrow) {
-    return (
-      <>
-        {selected ? (
-          <DetailScreen
-            title={<FileTitle path={selected.path} />}
-            backLabel="Back to changes"
-            onBack={() => setChoice(null)}
-            actions={<FileActions file={selected} staged={sel!.staged} onDiscard={setDiscarding} />}
-          >
-            <FileDiffPane file={selected} staged={sel!.staged} />
-          </DetailScreen>
-        ) : (
-          <div className="flex h-full flex-col">{list}</div>
-        )}
-        {discardDialog}
-      </>
-    );
-  }
+  const { stacked, shown } = useListChoice(NARROW, chosen, firstChange(staged, unstaged));
+  const choose = (path: string, staged: boolean) =>
+    select({ file: path, staged }, stacked && !shown ? "file" : undefined);
+  const close = () => closeDetail("file");
 
   return (
-    <ResizablePanelGroup orientation="horizontal">
-      <ResizablePanel defaultSize="30%" minSize="260px" className="flex flex-col">
-        {list}
-      </ResizablePanel>
-      <ResizableHandle />
-      <ResizablePanel minSize="400px">
-        {selected ? (
-          <FileDiffPane file={selected} staged={sel!.staged} />
-        ) : (
-          <EmptyState
-            icon={CheckCheck}
-            title="All clean"
-            description="No changes in the working tree."
-          />
-        )}
-      </ResizablePanel>
-      {discardDialog}
-    </ResizablePanelGroup>
+    <ListDetail
+      breakpoint={NARROW}
+      listPanel={{ defaultSize: "30%", minSize: "260px" }}
+      detailPanel={{ minSize: "400px" }}
+      list={
+        <>
+          <div className="flex min-h-0 flex-1 flex-col">
+            <FileSection
+              title="Staged"
+              files={staged}
+              staged
+              selected={shown?.staged ? shown.file.path : null}
+              onSelect={(path) => choose(path, true)}
+              onDiscard={setDiscarding}
+              empty="Nothing staged"
+            />
+            <FileSection
+              title="Changes"
+              files={unstaged}
+              staged={false}
+              selected={shown && !shown.staged ? shown.file.path : null}
+              onSelect={(path) => choose(path, false)}
+              onDiscard={setDiscarding}
+              empty="Working tree clean"
+            />
+          </div>
+          <CommitBox stagedCount={staged.length} />
+        </>
+      }
+      detail={
+        shown && {
+          content: <FileDiffPane file={shown.file} staged={shown.staged} />,
+          title: <FileTitle path={shown.file.path} />,
+          backLabel: "Back to changes",
+          onBack: close,
+          actions: <FileActions shown={shown} onDone={close} onDiscard={setDiscarding} />,
+        }
+      }
+      empty={
+        <EmptyState
+          icon={CheckCheck}
+          title="All clean"
+          description="No changes in the working tree."
+        />
+      }
+    >
+      <DiscardDialog
+        files={discarding}
+        onClose={() => setDiscarding(null)}
+        onConfirm={(files) => {
+          // A discarded file has nothing left to show.
+          if (chosen && files.some((f) => f.path === chosen.file.path)) close();
+        }}
+      />
+    </ListDetail>
   );
 }
 
@@ -138,14 +130,17 @@ function FileTitle({ path }: { path: string }) {
   );
 }
 
-/** The open file's row actions, as buttons in its detail bar on narrow screens. */
+/**
+ * The shown file's row actions, in its detail bar when it covers the list. Staging is what's
+ * done with a file once it's reviewed, so it goes back to the list too.
+ */
 function FileActions({
-  file,
-  staged,
+  shown: { file, staged },
+  onDone,
   onDiscard,
 }: {
-  file: FileStatus;
-  staged: boolean;
+  shown: ShownFile;
+  onDone: () => void;
   onDiscard: (files: FileStatus[]) => void;
 }) {
   const toggle = useToggleStaged();
@@ -162,7 +157,13 @@ function FileActions({
           <Undo2 />
         </Button>
       )}
-      <Button variant="outline" onClick={() => toggle(staged, [file.path])}>
+      <Button
+        variant="outline"
+        onClick={() => {
+          toggle(staged, [file.path]);
+          onDone();
+        }}
+      >
         {staged ? <Minus /> : <Plus />}
         {staged ? "Unstage" : "Stage"}
       </Button>
@@ -265,7 +266,15 @@ function FileSection({
   );
 }
 
-function DiscardDialog({ files, onClose }: { files: FileStatus[] | null; onClose: () => void }) {
+function DiscardDialog({
+  files,
+  onClose,
+  onConfirm,
+}: {
+  files: FileStatus[] | null;
+  onClose: () => void;
+  onConfirm: (files: FileStatus[]) => void;
+}) {
   const discard = useGitMutation(async (api, fs: FileStatus[]) => {
     for (const f of fs) await api.discard(f);
   }, "Changes discarded");
@@ -298,7 +307,10 @@ function DiscardDialog({ files, onClose }: { files: FileStatus[] | null; onClose
           <Button
             variant="destructive"
             onClick={() => {
-              if (files) discard.mutate(files);
+              if (files) {
+                discard.mutate(files);
+                onConfirm(files);
+              }
               onClose();
             }}
           >

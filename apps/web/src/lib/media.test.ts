@@ -1,15 +1,18 @@
 import { expect, test } from "bun:test";
-import { mediaQueryStore } from "./media.ts";
+import { readFileSync } from "node:fs";
+import { BELOW_LG, type MediaQuery, mediaQueryStore, NARROW } from "./media.ts";
 
-function fakeMedia(matches: boolean) {
+function fakeMedia(initial: boolean) {
   const listeners = new Set<() => void>();
-  const list = {
-    matches,
-    addEventListener: (_: string, cb: () => void) => listeners.add(cb),
-    removeEventListener: (_: string, cb: () => void) => listeners.delete(cb),
-  } as unknown as MediaQueryList;
+  const list: MediaQuery & { matches: boolean } = {
+    matches: initial,
+    addEventListener: (_type: string, cb: EventListenerOrEventListenerObject) =>
+      listeners.add(cb as () => void),
+    removeEventListener: (_type: string, cb: EventListenerOrEventListenerObject) =>
+      listeners.delete(cb as () => void),
+  };
   const change = (next: boolean) => {
-    (list as { matches: boolean }).matches = next;
+    list.matches = next;
     listeners.forEach((l) => l());
   };
   return { list, listeners, change };
@@ -30,7 +33,7 @@ test("reads matchMedia lazily and only once", () => {
 
 test("notifies subscribers of changes until they unsubscribe", () => {
   const media = fakeMedia(false);
-  const store = mediaQueryStore("(hover: none)", () => media.list);
+  const store = mediaQueryStore("(pointer: coarse)", () => media.list);
   let calls = 0;
   const unsubscribe = store.subscribe(() => calls++);
   media.change(true);
@@ -41,4 +44,12 @@ test("notifies subscribers of changes until they unsubscribe", () => {
   media.change(false);
   expect(calls).toBe(1);
   expect(store.getSnapshot()).toBe(false);
+});
+
+test("the width queries match Tailwind's md and lg breakpoints", () => {
+  const theme = readFileSync(Bun.resolveSync("tailwindcss/theme.css", import.meta.dir), "utf8");
+  const breakpoint = (name: string) =>
+    new RegExp(`--breakpoint-${name}: ([^;]+);`).exec(theme)?.[1];
+  expect(NARROW).toBe(`(width < ${breakpoint("md")})`);
+  expect(BELOW_LG).toBe(`(width < ${breakpoint("lg")})`);
 });

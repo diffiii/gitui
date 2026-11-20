@@ -16,7 +16,13 @@ export function CenteredScreen({
   className?: string;
 }) {
   return (
-    <div className={cn("flex min-h-svh items-center justify-center bg-background p-4", className)}>
+    // At least 1rem from each edge, and clear of the notch and home indicator (viewport-fit=cover).
+    <div
+      className={cn(
+        "flex min-h-svh items-center justify-center bg-background pt-[max(1rem,env(safe-area-inset-top))] pr-[max(1rem,env(safe-area-inset-right))] pb-[max(1rem,env(safe-area-inset-bottom))] pl-[max(1rem,env(safe-area-inset-left))]",
+        className,
+      )}
+    >
       <div className="w-full max-w-md">
         <div className="mb-8 flex flex-col items-center gap-3 text-center">
           <div className="rounded-2xl border bg-muted/50 p-3">

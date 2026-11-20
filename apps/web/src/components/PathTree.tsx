@@ -1,7 +1,7 @@
 import type { ContextMenuItem, ContextMenuOpenContext, GitStatusEntry } from "@pierre/trees";
 import { FileTree, useFileTree } from "@pierre/trees/react";
 import { useEffect, useLayoutEffect, useRef } from "react";
-import { COARSE, NO_HOVER, useMediaQuery } from "@/lib/media";
+import { COARSE, useMediaQuery } from "@/lib/media";
 import { useTheme } from "@/lib/prefs";
 import { cn } from "@/lib/utils";
 
@@ -24,10 +24,9 @@ interface PathTreeProps {
 
 /** A Pierre file tree kept in sync with a changing list of paths. */
 export function PathTree(props: PathTreeProps) {
-  const noHover = useMediaQuery(NO_HOVER);
   const coarse = useMediaQuery(COARSE);
   // The tree reads these options only when it's created, so a change makes a new one.
-  return <FileTreeView key={`${noHover}:${coarse}`} {...props} noHover={noHover} coarse={coarse} />;
+  return <FileTreeView key={String(coarse)} {...props} coarse={coarse} />;
 }
 
 function FileTreeView({
@@ -37,9 +36,8 @@ function FileTreeView({
   onSelect,
   actions,
   className,
-  noHover,
   coarse,
-}: PathTreeProps & { noHover: boolean; coarse: boolean }) {
+}: PathTreeProps & { coarse: boolean }) {
   const { resolved } = useTheme();
   const onSelectRef = useRef(onSelect);
   const files = useRef(new Set(paths));
@@ -61,8 +59,8 @@ function FileTreeView({
           contextMenu: {
             enabled: true,
             triggerMode: "both",
-            // The row button shows on hover, so without hover every row shows it.
-            buttonVisibility: noHover ? "always" : "when-needed",
+            // The row button shows on hover; under a finger, which doesn't hover, every row has it.
+            buttonVisibility: coarse ? "always" : "when-needed",
           },
         }
       : undefined,

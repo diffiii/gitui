@@ -1,19 +1,23 @@
 import { useSyncExternalStore } from "react";
 
 // Media queries the components act on in JS. Each mirrors a Tailwind variant, so markup styled with
-// that variant and code branching on the query switch together. Prefer the variant where CSS can
-// do the job.
+// that variant and code branching on the query switch together; media.test.ts checks the widths
+// against Tailwind's `--breakpoint-*`. Prefer the variant where CSS can do the job.
 
-/** Phones: below Tailwind's `md`, where two-pane views show one pane at a time (`max-md:`). */
+/** Phones: below `--breakpoint-md`, where two-pane views show one pane at a time (`max-md:`). */
 export const NARROW = "(width < 48rem)";
-/** Below `lg`, too narrow for the Branches view's three columns (`max-lg:`). */
+/** Below `--breakpoint-lg`, too narrow for the Branches view's three columns (`max-lg:`). */
 export const BELOW_LG = "(width < 64rem)";
-/** Touch screens, where hover-only affordances have to stay visible (`hover-none:`, index.css). */
-export const NO_HOVER = "(hover: none)";
-/** A finger rather than a mouse, which needs taller rows to tap (`pointer-coarse:`). */
+/**
+ * A finger rather than a mouse (`pointer-coarse:`): nothing hovers, so hover-only affordances
+ * must show, and tap targets must be bigger.
+ */
 export const COARSE = "(pointer: coarse)";
 
-type MediaQuery = Pick<MediaQueryList, "matches" | "addEventListener" | "removeEventListener">;
+export type MediaQuery = Pick<
+  MediaQueryList,
+  "matches" | "addEventListener" | "removeEventListener"
+>;
 
 /** An external store for whether `query` matches. It calls `matchMedia` on first use. */
 export function mediaQueryStore(query: string, matchMedia: (query: string) => MediaQuery) {

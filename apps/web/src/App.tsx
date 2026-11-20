@@ -1,56 +1,27 @@
 import { useQuery } from "@tanstack/react-query";
-import { useState, useSyncExternalStore } from "react";
+import { useState } from "react";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { getConfig } from "@/lib/api";
 import { RepoProvider } from "@/lib/repo";
+import { openRepo, select, setView, useUrl } from "@/lib/url";
 import { cn } from "@/lib/utils";
-import { AppHeader, type View, ViewTabBar } from "./components/AppHeader";
+import type { View } from "@/lib/views";
+import { AppHeader } from "./components/AppHeader";
 import { BranchesView } from "./components/BranchesView";
 import { ChangesView } from "./components/ChangesView";
 import { HistoryPane } from "./components/HistoryView";
 import { RepoWelcome } from "./components/RepoPicker";
 import { Button } from "./components/ui/button";
-
-const VIEWS: View[] = ["changes", "history", "branches"];
-
-function readUrl() {
-  const sp = new URLSearchParams(location.search);
-  const view = sp.get("view") as View | null;
-  return { repo: sp.get("repo"), view: view && VIEWS.includes(view) ? view : "changes" };
-}
-
-// The URL is the source of truth for repo and view; components read it as an external store.
-let urlState = readUrl();
-const urlListeners = new Set<() => void>();
-const syncUrl = () => {
-  urlState = readUrl();
-  urlListeners.forEach((l) => l());
-};
-addEventListener("popstate", syncUrl);
-const subscribeUrl = (cb: () => void) => {
-  urlListeners.add(cb);
-  return () => urlListeners.delete(cb);
-};
-
-function writeUrl(repo: string | null, view: View, push: boolean) {
-  const sp = new URLSearchParams();
-  if (repo) sp.set("repo", repo);
-  if (view !== "changes") sp.set("view", view);
-  const url = `${location.pathname}${sp.size ? `?${sp}` : ""}`;
-  if (push) history.pushState(null, "", url);
-  else history.replaceState(null, "", url);
-  syncUrl();
-}
+import { ViewTabBar } from "./components/ViewTabs";
 
 export default function App() {
-  const { repo: urlRepo, view } = useSyncExternalStore(subscribeUrl, () => urlState);
+  const { repo: urlRepo, view } = useUrl();
   const { data: config, isLoading } = useQuery({ queryKey: ["config"], queryFn: getConfig });
   // `gitui <path>` passes the repo to the server; use it while the URL has none.
   const repo = urlRepo ?? config?.initialRepo ?? null;
 
-  const openRepo = (root: string) => writeUrl(root, "changes", true);
-  const setView = (v: View) => writeUrl(repo, v, false);
+  const onView = (v: View) => setView(repo, v);
 
   return (
     <TooltipProvider delayDuration={400}>
@@ -59,13 +30,13 @@ export default function App() {
         <RepoProvider key={repo} repo={repo}>
           {/* viewport-fit=cover (index.html) lays the page under iOS's notch and home indicator. */}
           <div className="flex h-svh flex-col bg-background pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)] md:pb-[env(safe-area-inset-bottom)]">
-            <AppHeader view={view} onView={setView} onOpenRepo={openRepo} />
+            <AppHeader view={view} onView={onView} onOpenRepo={openRepo} />
             <main className="min-h-0 flex-1">
               {view === "changes" && <ChangesView />}
               {view === "history" && <HistoryView />}
               {view === "branches" && <BranchesView />}
             </main>
-            <ViewTabBar view={view} onView={setView} />
+            <ViewTabBar view={view} onView={onView} />
           </div>
         </RepoProvider>
       ) : isLoading ? null : (
@@ -100,7 +71,11 @@ function HistoryView() {
                 "touch-target",
                 all === o.v ? "bg-background shadow-sm" : "text-muted-foreground",
               )}
-              onClick={() => setAll(o.v)}
+              onClick={() => {
+                setAll(o.v);
+                // The other list starts at its newest commit.
+                select({ commit: null });
+              }}
             >
               {o.label}
             </Button>
