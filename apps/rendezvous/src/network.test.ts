@@ -1,6 +1,5 @@
 import { expect, test } from "bun:test";
-import type { ServerMessage } from "@gitui/shared";
-import { MAX_MESSAGE_LENGTH } from "./messages.ts";
+import { MAX_MESSAGE_LENGTH, type ServerMessage } from "@gitui/shared";
 import {
   GUEST_RATE_LIMIT,
   HELLO_TIMEOUT,
@@ -104,7 +103,7 @@ function setup() {
   };
 }
 
-const OFFER = { kind: "offer", sdp: "v=0" } as const;
+const OFFER = { kind: "offer", offerId: "offer-0123456789ab", sdp: "v=0" } as const;
 
 test("a guest gets its id, then the hosts, and hears of new hosts", () => {
   const { guest, host } = setup();
@@ -130,11 +129,15 @@ test("signals go between a guest and a host", () => {
   const h = host();
   send(g, { type: "signal", to: h.id, data: OFFER });
   expect(h.take()).toEqual([{ type: "signal", from: g.id, data: OFFER }]);
-  send(h, { type: "signal", to: g.id, data: { kind: "answer", sdp: "v=0" } });
+  send(h, {
+    type: "signal",
+    to: g.id,
+    data: { kind: "answer", offerId: "offer-0123456789ab", sdp: "v=0" },
+  });
   expect(g.take().at(-1)).toEqual({
     type: "signal",
     from: h.id,
-    data: { kind: "answer", sdp: "v=0" },
+    data: { kind: "answer", offerId: "offer-0123456789ab", sdp: "v=0" },
   });
 });
 
@@ -391,11 +394,16 @@ test("a pairing with trickled candidates, and a resume, stay well under the budg
   const h = host();
   const candidate = {
     kind: "candidate",
+    offerId: "offer-0123456789ab",
     candidate: { candidate: "candidate:1 1 udp 1 1.2.3.4 5 typ host" },
   };
   for (let pairing = 0; pairing < 2; pairing++) {
     send(g, { type: "signal", to: h.id, data: { ...OFFER, resume: pairing === 1 } });
-    send(h, { type: "signal", to: g.id, data: { kind: "answer", sdp: "v=0" } });
+    send(h, {
+      type: "signal",
+      to: g.id,
+      data: { kind: "answer", offerId: "offer-0123456789ab", sdp: "v=0" },
+    });
     for (let i = 0; i < 12; i++) {
       send(g, { type: "signal", to: h.id, data: candidate });
       send(h, { type: "signal", to: g.id, data: candidate });
@@ -411,12 +419,17 @@ test("a host pairs with 4 guests at once, 25 candidates each way, within the lim
   const guests = Array.from({ length: 4 }, () => guest());
   const candidate = {
     kind: "candidate",
+    offerId: "offer-0123456789ab",
     candidate: { candidate: "candidate:1 1 udp 1 1.2.3.4 5 typ host" },
   };
   const CANDIDATES = 25;
   for (const g of guests) send(g, { type: "signal", to: h.id, data: OFFER });
   for (const g of guests)
-    send(h, { type: "signal", to: g.id, data: { kind: "answer", sdp: "v=0" } });
+    send(h, {
+      type: "signal",
+      to: g.id,
+      data: { kind: "answer", offerId: "offer-0123456789ab", sdp: "v=0" },
+    });
   // Interleaved, as candidates trickle in from every pairing at once.
   for (let i = 0; i < CANDIDATES; i++) {
     for (const g of guests) {

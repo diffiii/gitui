@@ -8,13 +8,13 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  MAX_MESSAGE_LENGTH,
   RENDEZVOUS_PATH,
   RENDEZVOUS_PING,
   RENDEZVOUS_PONG,
   type HostInfo,
   type ServerMessage,
 } from "@gitui/shared";
-import { MAX_MESSAGE_LENGTH } from "../src/messages.ts";
 import { GUEST_RATE_LIMIT, HELLO_TIMEOUT, MAX_HOSTS, MAX_SOCKETS } from "../src/network.ts";
 
 const ORIGIN = "http://localhost:5181";
@@ -299,7 +299,11 @@ async function run(base: string): Promise<void> {
     await a.next("hosts");
     const bId = await b.hello("guest");
     await b.next("hosts");
-    a.send({ type: "signal", to: bId, data: { kind: "offer", sdp: "v=0" } });
+    a.send({
+      type: "signal",
+      to: bId,
+      data: { kind: "offer", offerId: "offer-0123456789ab", sdp: "v=0" },
+    });
     equal(await a.next("error"), { type: "error", message: "Unknown peer" }, "guest to guest");
     b.send({ type: "hello", role: "guest" });
     equal(await b.next("error"), { type: "error", message: "Already said hello" }, "hello");
@@ -323,7 +327,11 @@ async function run(base: string): Promise<void> {
     const flood = await Peer.open(base, ip, true);
     await flood.hello("guest");
     for (let i = 0; i < GUEST_RATE_LIMIT; i++) {
-      flood.send({ type: "signal", to: hostId, data: { kind: "offer", sdp: `${i}` } });
+      flood.send({
+        type: "signal",
+        to: hostId,
+        data: { kind: "offer", offerId: "offer-0123456789ab", sdp: `${i}` },
+      });
     }
     equal(await flood.closed, 1008, "close code");
     const relayed = flood.queue.filter((text) => text.includes("Too many messages"));

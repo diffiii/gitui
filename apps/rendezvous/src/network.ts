@@ -1,7 +1,12 @@
 // What one network's rendezvous object decides: who may connect, `hello`, signal routing, who
 // learns that a peer left, the host list and each socket's budget. Pure, over plain records, so
 // it can be unit-tested; rendezvous.ts adapts it to the Durable Object's WebSockets.
-import { MAX_MESSAGE_LENGTH, parseClientMessage, type HostInfo, type ServerMessage } from "@gitui/shared";
+import {
+  MAX_MESSAGE_LENGTH,
+  parseClientMessage,
+  type HostInfo,
+  type ServerMessage,
+} from "@gitui/shared";
 
 /** Most sockets one network may hold open. */
 export const MAX_SOCKETS = 50;
