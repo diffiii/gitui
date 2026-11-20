@@ -1,23 +1,14 @@
-import { afterEach, beforeEach, expect, test } from "bun:test";
-import { execFileSync } from "node:child_process";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
+import { afterAll, beforeEach, expect, test } from "bun:test";
 import { createApp } from "./app.ts";
+import { initRepo, removeTempDirs } from "./test-repo.ts";
+
+afterAll(removeTempDirs);
 
 const app = createApp();
 let repo: string;
 
 beforeEach(() => {
-  repo = fs.mkdtempSync(path.join(os.tmpdir(), "gitui-"));
-  const git = (...args: string[]) => execFileSync("git", args, { cwd: repo });
-  git("init", "-q", "-b", "main");
-  git("config", "user.name", "Test");
-  git("config", "user.email", "test@example.com");
-});
-
-afterEach(() => {
-  fs.rmSync(repo, { recursive: true, force: true });
+  repo = initRepo();
 });
 
 const req = (url: string, headers: Record<string, string>, init: RequestInit = {}) =>

@@ -1,51 +1,29 @@
-import { afterEach, describe, expect, test } from "bun:test";
-import { execFileSync } from "node:child_process";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
+import { afterAll, describe, expect, test } from "bun:test";
 import { createApp } from "./app.ts";
 import { GitError, log } from "./git.ts";
+import { git, initRepo, removeTempDirs, revParse } from "./test-repo.ts";
 
-const dirs: string[] = [];
-
-function sh(cwd: string, ...args: string[]) {
-  return execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
-}
-
-function makeRepo() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gitui-"));
-  dirs.push(dir);
-  sh(dir, "init", "-q", "-b", "main");
-  sh(dir, "config", "user.name", "Test");
-  sh(dir, "config", "user.email", "test@example.com");
-  sh(dir, "config", "commit.gpgsign", "false");
-  sh(dir, "config", "tag.gpgsign", "false");
-  return dir;
-}
+afterAll(removeTempDirs);
 
 function commit(dir: string, message: string) {
-  sh(dir, "commit", "-q", "--allow-empty", "-m", message);
-  return sh(dir, "rev-parse", "HEAD");
+  git(dir, "commit", "-q", "--allow-empty", "-m", message);
+  return revParse(dir);
 }
-
-afterEach(() => {
-  for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
-});
 
 describe("log", () => {
   test("rejects an unknown ref with a GitError", async () => {
-    const dir = makeRepo();
+    const dir = initRepo();
     commit(dir, "one");
     const err = await log(dir, { limit: 10, all: false, ref: "refs/heads/nope" }).catch((e) => e);
     expect(err).toBeInstanceOf(GitError);
   });
 
   test("full refname picks the branch over a tag with the same name", async () => {
-    const dir = makeRepo();
+    const dir = initRepo();
     const base = commit(dir, "base");
-    sh(dir, "tag", "x");
+    git(dir, "tag", "x");
     const tip = commit(dir, "on x");
-    sh(dir, "branch", "x");
+    git(dir, "branch", "x");
 
     const branch = await log(dir, { limit: 10, all: false, ref: "refs/heads/x" });
     expect(branch.map((c) => c.subject)).toEqual(["on x", "base"]);
@@ -57,26 +35,26 @@ describe("log", () => {
   });
 
   test("an unborn repo has no commits", async () => {
-    const dir = makeRepo();
+    const dir = initRepo();
     expect(await log(dir, { limit: 10, all: true })).toEqual([]);
     expect(await log(dir, { limit: 10, all: false })).toEqual([]);
   });
 
   test("all: true in an unborn repo still walks fetched remote branches", async () => {
-    const upstream = makeRepo();
+    const upstream = initRepo();
     commit(upstream, "upstream");
-    const dir = makeRepo();
-    sh(dir, "fetch", "-q", upstream, "main:refs/remotes/origin/main");
+    const dir = initRepo();
+    git(dir, "fetch", "-q", upstream, "main:refs/remotes/origin/main");
     expect((await log(dir, { limit: 10, all: true })).map((c) => c.subject)).toEqual(["upstream"]);
     expect(await log(dir, { limit: 10, all: false })).toEqual([]);
   });
 
   test("all: true walks branches and tags", async () => {
-    const dir = makeRepo();
+    const dir = initRepo();
     commit(dir, "one");
-    sh(dir, "checkout", "-q", "-b", "side");
+    git(dir, "checkout", "-q", "-b", "side");
     commit(dir, "two");
-    sh(dir, "checkout", "-q", "main");
+    git(dir, "checkout", "-q", "main");
     const commits = await log(dir, { limit: 10, all: true });
     expect(commits.map((c) => c.subject).sort()).toEqual(["one", "two"]);
   });
@@ -90,7 +68,7 @@ function getLog(params: Record<string, string>) {
 
 describe("GET /api/repo/log", () => {
   test("returns 400 with an error for an unknown ref", async () => {
-    const dir = makeRepo();
+    const dir = initRepo();
     commit(dir, "one");
     const res = await getLog({ repo: dir, ref: "refs/heads/nope" });
     expect(res.status).toBe(400);
@@ -99,7 +77,7 @@ describe("GET /api/repo/log", () => {
   });
 
   test("returns commits for a full refname", async () => {
-    const dir = makeRepo();
+    const dir = initRepo();
     commit(dir, "one");
     const res = await getLog({ repo: dir, ref: "refs/heads/main" });
     expect(res.status).toBe(200);
