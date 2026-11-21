@@ -4,14 +4,14 @@
 // a cap, and `untrackedDiff` diffs one.
 //
 // These read with node:fs rather than Effect's FileSystem: they need O_NOFOLLOW and O_NONBLOCK,
-// lstat, and bigint device and inode numbers, which it doesn't offer. Each call is wrapped in an
-// Effect, so these compose like the rest of the server.
+// lstat, and bigint device and inode numbers, which it doesn't offer. The file system work is
+// plain async code, made an Effect once where git's Effects meet it.
 import { constants } from "node:fs";
 import { lstat, open, readlink, stat, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import type { WorkingFile, WorkingFiles } from "@gitui/shared";
 import { Effect } from "effect";
-import { git, GitError, gitError, gitPatch, run } from "./git.ts";
+import { git, GitError, gitError, type GitServices, gitPatch, run } from "./git.ts";
 
 export type { WorkingFile, WorkingFiles };
 
@@ -20,9 +20,8 @@ const WINDOWS = process.platform === "win32";
 /** Why a directory on a path's way can't be read through, or `ok`. */
 type DirCheck = "ok" | "symlink" | "missing" | "gitDir";
 
-/** Node's `promise`, as an Effect that never fails: a rejection is `null`. */
-const orNull = <A>(promise: () => Promise<A>): Effect.Effect<A | null> =>
-  Effect.promise(() => promise().catch(() => null));
+/** A path's checker (`dirChecker`): the first problem on the way to a repo-relative file. */
+type CheckPath = (file: string) => Promise<DirCheck>;
 
 /**
  * Checks a path's leading directories, each once per checker: no symlink, every one a directory,
@@ -30,75 +29,65 @@ const orNull = <A>(promise: () => Promise<A>): Effect.Effect<A | null> =>
  * the work tree under any name), known by device and inode so no case or Unicode variant of its
  * name gets past, or one that looks like a git directory, as a bare repo copied into the tree.
  */
-const dirChecker = Effect.fnUntraced(function* (repo: string) {
-  const out = yield* git(repo, [
-    "rev-parse",
-    "--path-format=absolute",
-    "--git-dir",
-    "--git-common-dir",
-  ]);
+const dirChecker = (repo: string): Effect.Effect<CheckPath, GitError, GitServices> =>
+  Effect.flatMap(
+    git(repo, ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"]),
+    (out) => Effect.promise(() => makeDirChecker(repo, out.split("\n"))),
+  );
+
+async function makeDirChecker(repo: string, gitDirPaths: string[]): Promise<CheckPath> {
   const gitDirs = new Set<string>();
-  for (const dir of out.split("\n")) {
-    const st = dir ? yield* orNull(() => stat(dir, { bigint: true })) : null;
+  for (const dir of gitDirPaths) {
+    const st = dir && (await stat(dir, { bigint: true }).catch(() => null));
     if (st) gitDirs.add(`${st.dev}:${st.ino}`);
   }
 
-  const checkDir = Effect.fnUntraced(function* (abs: string) {
-    const st = yield* orNull(() => lstat(abs, { bigint: true }));
-    if (st?.isSymbolicLink()) return "symlink" as const;
-    if (!st?.isDirectory()) return "missing" as const;
-    if (gitDirs.has(`${st.dev}:${st.ino}`) || (yield* looksLikeGitDir(abs))) {
-      return "gitDir" as const;
-    }
-    return "ok" as const;
-  });
+  const checkDir = async (abs: string): Promise<DirCheck> => {
+    const st = await lstat(abs, { bigint: true }).catch(() => null);
+    if (st?.isSymbolicLink()) return "symlink";
+    if (!st?.isDirectory()) return "missing";
+    if (gitDirs.has(`${st.dev}:${st.ino}`) || (await looksLikeGitDir(abs))) return "gitDir";
+    return "ok";
+  };
   // A work tree can be its own git directory (`core.worktree = .` in a bare repo, or
   // GIT_DIR = GIT_WORK_TREE): then everything in it is.
-  const rootSt = yield* Effect.promise(() => stat(repo, { bigint: true }));
+  const rootSt = await stat(repo, { bigint: true });
   const root: DirCheck = gitDirs.has(`${rootSt.dev}:${rootSt.ino}`) ? "gitDir" : "ok";
   // Each directory's check, shared by every path under it, even while it runs.
-  const cache = new Map<string, Effect.Effect<DirCheck>>();
+  const cache = new Map<string, Promise<DirCheck>>();
   /** `dir`, a repo-relative directory, checked after each one above it. */
-  const check = (dir: string): Effect.Effect<DirCheck> => {
+  const check = (dir: string): Promise<DirCheck> => {
     let result = cache.get(dir);
     if (!result) {
       const slash = dir.lastIndexOf("/");
-      const parent = slash === -1 ? Effect.succeed(root) : check(dir.slice(0, slash));
-      result = Effect.runSync(
-        Effect.cached(
-          Effect.flatMap(parent, (p) =>
-            p === "ok" ? checkDir(path.join(repo, dir)) : Effect.succeed(p),
-          ),
-        ),
-      );
+      const parent = slash === -1 ? Promise.resolve(root) : check(dir.slice(0, slash));
+      result = parent.then((p) => (p === "ok" ? checkDir(path.join(repo, dir)) : p));
       cache.set(dir, result);
     }
     return result;
   };
   /** The first problem with the directories that lead to `file`, or `ok`. */
-  return (file: string): Effect.Effect<DirCheck> => {
+  return (file) => {
     const slash = file.lastIndexOf("/");
-    return slash === -1 ? Effect.succeed(root) : check(file.slice(0, slash));
+    return slash === -1 ? Promise.resolve(root) : check(file.slice(0, slash));
   };
-});
+}
 
 /**
  * Git's `is_git_directory()`, a little stricter: a `HEAD` and `objects` and `refs`, or a `HEAD`
  * and a `commondir`, as a linked worktree's git directory has. Only asked of the directories on a
  * path's way, and most have no `HEAD`, so it usually costs one `lstat`.
  */
-const looksLikeGitDir = Effect.fnUntraced(function* (dir: string) {
+async function looksLikeGitDir(dir: string) {
   const has = (name: string) =>
-    Effect.promise(() =>
-      lstat(path.join(dir, name)).then(
-        () => true,
-        () => false,
-      ),
+    lstat(path.join(dir, name)).then(
+      () => true,
+      () => false,
     );
-  if (!(yield* has("HEAD"))) return false;
-  if (yield* has("commondir")) return true;
-  return (yield* has("objects")) && (yield* has("refs"));
-});
+  if (!(await has("HEAD"))) return false;
+  if (await has("commondir")) return true;
+  return (await has("objects")) && (await has("refs"));
+}
 
 /** The working copy's files, up to `limit` of them. */
 export const workingFiles = Effect.fnUntraced(function* (repo: string, limit = 50_000) {
@@ -135,15 +124,15 @@ export const workingFiles = Effect.fnUntraced(function* (repo: string, limit = 5
   // Read's rule, once per folder: a tracked path whose folder is now a symlink is still listed
   // (git's `--deleted` check follows it), and git lists what's in a git directory not named `.git`.
   const candidates = [...listed, ...skipped];
-  const keep = yield* Effect.forEach(
-    candidates,
-    Effect.fnUntraced(function* (p) {
-      if (deleted.has(p) || (yield* checkPath(p)) !== "ok") return false;
-      if (!skipped.has(p)) return true;
-      const st = yield* orNull(() => lstat(path.join(repo, p)));
-      return !!st && !st.isDirectory();
-    }),
-    { concurrency: "unbounded" },
+  const keep = yield* Effect.promise(() =>
+    Promise.all(
+      candidates.map(async (p) => {
+        if (deleted.has(p) || (await checkPath(p)) !== "ok") return false;
+        if (!skipped.has(p)) return true;
+        const st = await lstat(path.join(repo, p)).catch(() => null);
+        return !!st && !st.isDirectory();
+      }),
+    ),
   );
   const paths = candidates.filter((_, i) => keep[i]);
   const files: WorkingFiles = {
@@ -194,7 +183,8 @@ export const assertWorkingFile = Effect.fnUntraced(function* (
   ]).pipe(Effect.orElseSucceed(() => ""));
   if (!listed.split("\0").includes(file)) return yield* notListed(file, untracked);
 
-  switch (yield* (yield* dirChecker(repo))(file)) {
+  const checkPath = yield* dirChecker(repo);
+  switch (yield* Effect.promise(() => checkPath(file))) {
     case "ok":
       return;
     case "symlink":
@@ -236,9 +226,6 @@ const BINARY_SNIFF_BYTES = 8000;
  */
 const OPEN_FLAGS = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
 
-/** What opening a working-copy file gave: its handle, a symlink, or nothing readable. */
-type Opened = { handle: FileHandle } | { symlink: true } | null;
-
 /**
  * Reads `file`, a repo-relative path, from the working copy, once `assertWorkingFile` passes it.
  * A symlink is never followed: its target is returned instead. At most `maxBytes + 1` bytes are
@@ -249,64 +236,61 @@ type Opened = { handle: FileHandle } | { symlink: true } | null;
  * one turned into (or replaced by) a git directory. Either needs someone with write access to the
  * working copy racing the request.
  */
-export const workingFile = Effect.fnUntraced(function* (
+export const workingFile = (
   repo: string,
   file: string,
   maxBytes = MAX_FILE_BYTES,
-) {
-  yield* assertWorkingFile(repo, file);
-  const abs = path.join(repo, file);
-  const symlink = Effect.fnUntraced(function* () {
-    const target = yield* orNull(() => readlink(abs));
-    if (target === null) return yield* notListed(file, false);
-    const link: WorkingFile = { kind: "symlink", target };
-    return link;
-  });
+): Effect.Effect<WorkingFile, GitError, GitServices> =>
+  Effect.andThen(
+    assertWorkingFile(repo, file),
+    Effect.flatMap(
+      Effect.promise(() => read(path.join(repo, file), file, maxBytes)),
+      (result) => (result instanceof GitError ? Effect.fail(result) : Effect.succeed(result)),
+    ),
+  );
+
+/** Reads a working-copy file, as `workingFile` describes; a refusal is a GitError. */
+async function read(abs: string, file: string, maxBytes: number): Promise<WorkingFile | GitError> {
+  const notFile = gitError(`Not a file in the working copy: ${file}`);
+  const symlink = (): Promise<WorkingFile | GitError> =>
+    readlink(abs).then(
+      (target) => ({ kind: "symlink", target }),
+      () => notFile,
+    );
 
   // Without O_NOFOLLOW, refuse to follow a symlink here; one swapped in before the `open` is
   // followed, a race like the one above.
   if (WINDOWS) {
-    const st = yield* orNull(() => lstat(abs));
-    if (st === null) return yield* notListed(file, false);
-    if (st.isSymbolicLink()) return yield* symlink();
+    const st = await lstat(abs).catch(() => null);
+    if (st === null) return notFile;
+    if (st.isSymbolicLink()) return symlink();
   }
-  const opened: Opened = yield* Effect.promise(() =>
-    open(abs, OPEN_FLAGS).then(
-      (handle): Opened => ({ handle }),
-      (e: NodeJS.ErrnoException): Opened =>
-        e.code === "ELOOP" || e.code === "EMLINK" ? { symlink: true } : null,
-    ),
-  );
-  if (opened === null) return yield* notListed(file, false);
-  if ("symlink" in opened) return yield* symlink();
-  const { handle } = opened;
-  return yield* read(handle, file, maxBytes).pipe(
-    Effect.ensuring(Effect.promise(() => handle.close())),
-  );
-});
-
-/** Reads an open working-copy file, as `workingFile` describes. */
-const read = Effect.fnUntraced(function* (handle: FileHandle, file: string, maxBytes: number) {
-  const st = yield* Effect.promise(() => handle.stat());
-  // Not a FIFO or device, which could block or never end, nor a directory (a submodule).
-  if (!st.isFile()) return yield* gitError(`Not a regular file: ${file}`);
-  let result: WorkingFile;
-  if (st.size > maxBytes) {
-    result = { kind: "tooLarge", size: st.size };
-    return result;
+  let handle: FileHandle;
+  try {
+    handle = await open(abs, OPEN_FLAGS);
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code;
+    if (code === "ELOOP" || code === "EMLINK") return symlink();
+    return notFile;
   }
-  // The file may have grown since the stat: one byte past the cap says so.
-  const buf = Buffer.alloc(maxBytes + 1);
-  let size = 0;
-  while (size < buf.length) {
-    const at = size;
-    const { bytesRead } = yield* Effect.promise(() => handle.read(buf, at, buf.length - at, at));
-    if (!bytesRead) break;
-    size += bytesRead;
+  try {
+    const st = await handle.stat();
+    // Not a FIFO or device, which could block or never end, nor a directory (a submodule).
+    if (!st.isFile()) return gitError(`Not a regular file: ${file}`);
+    if (st.size > maxBytes) return { kind: "tooLarge", size: st.size };
+    // The file may have grown since the stat: one byte past the cap says so.
+    const buf = Buffer.alloc(maxBytes + 1);
+    let size = 0;
+    while (size < buf.length) {
+      const { bytesRead } = await handle.read(buf, size, buf.length - size, size);
+      if (!bytesRead) break;
+      size += bytesRead;
+    }
+    if (size > maxBytes) return { kind: "tooLarge", size: Math.max(st.size, size) };
+    const data = buf.subarray(0, size);
+    if (data.subarray(0, BINARY_SNIFF_BYTES).includes(0)) return { kind: "binary", size };
+    return { kind: "text", size, content: data.toString("utf8") };
+  } finally {
+    await handle.close();
   }
-  const data = buf.subarray(0, size);
-  if (size > maxBytes) result = { kind: "tooLarge", size: Math.max(st.size, size) };
-  else if (data.subarray(0, BINARY_SNIFF_BYTES).includes(0)) result = { kind: "binary", size };
-  else result = { kind: "text", size, content: data.toString("utf8") };
-  return result;
-});
+}
