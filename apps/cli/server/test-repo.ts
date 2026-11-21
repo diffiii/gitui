@@ -5,6 +5,7 @@
 // Each test file must call `afterAll(removeTempDirs)`. Bun evaluates this module once per run,
 // so a hook registered here would only fire for the first file that imports it.
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -13,10 +14,10 @@ import { Effect, Exit, type Layer, Scope } from "effect";
 import type { HttpRouter } from "effect/http";
 import { createApp, toFetch } from "./app.ts";
 
-// An empty file rather than os.devNull, which git for Windows can't open (`\\.\nul`). One fixed
-// path, emptied on every run, so nothing is left to clean up.
-process.env.GIT_CONFIG_GLOBAL = path.join(os.tmpdir(), "gitui-test-empty.gitconfig");
-fs.writeFileSync(process.env.GIT_CONFIG_GLOBAL, "");
+// A file that doesn't exist, which git reads as an empty config (a missing one is skipped), rather
+// than os.devNull, which git for Windows can't open (`\\.\nul`). Never created, and unguessable,
+// so nothing else can put a config there.
+process.env.GIT_CONFIG_GLOBAL = path.join(os.tmpdir(), `gitui-no-gitconfig-${randomUUID()}`);
 process.env.GIT_CONFIG_NOSYSTEM = "1";
 
 /** Every test client's scope, closed by `removeTempDirs`. */
