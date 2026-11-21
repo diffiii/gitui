@@ -25,6 +25,7 @@ gitui                     # open the repository picker
 gitui .                   # open the repository containing the current directory
 gitui ~/code/x -p 5000 --no-open
 gitui --nearby            # also let a phone on your network find and connect to this machine
+gitui --version           # print the installed version
 ```
 
 gitui serves the API on 127.0.0.1 and opens the hosted app at https://gitui.diffiii.dev through a pairing link it prints. The link carries the port and a pairing token (kept in `~/.config/gitui/token`; delete it to rotate the token), so a browser stays paired across restarts. Desktop Safari blocks the hosted page from reaching 127.0.0.1: run `gitui --nearby` and pick this computer from the nearby list instead, with iCloud Private Relay off (it makes Safari look like it is on another network). `--allow-origin <origin>` (repeatable) lets another web app origin pair too, e.g. a self-hosted copy or a local build.

@@ -11,7 +11,16 @@ import type {
 import { REPO_NOT_OPENED } from "@gitui/shared";
 import { ApiError, apiTransport, getConnection, rejectConnection } from "./connection.ts";
 
-export type { AppConfig, Branch, Commit, CommitDetail, FileStatus, Status, WorkingFile, WorkingFiles };
+export type {
+  AppConfig,
+  Branch,
+  Commit,
+  CommitDetail,
+  FileStatus,
+  Status,
+  WorkingFile,
+  WorkingFiles,
+};
 
 /** What a query passes its queryFn; its signal cancels the request. */
 export interface Cancel {

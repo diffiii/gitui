@@ -14,6 +14,7 @@ gitui                     # open the repository picker
 gitui .                   # open the repository containing the current directory
 gitui ~/code/x -p 5000 --no-open
 gitui --nearby            # also let a phone on your network find and connect to this machine
+gitui --version           # print the installed version
 ```
 
 | Option                    | Description                                                                                                            |
@@ -23,6 +24,7 @@ gitui --nearby            # also let a phone on your network find and connect to
 | `--name <name>`           | The name phones see with `--nearby` (default: the hostname)                                                            |
 | `--allow-origin <origin>` | Also let the web app at `<origin>` pair (repeatable)                                                                   |
 | `--no-open`               | Don't open the browser                                                                                                 |
+| `-v, --version`           | Print gitui's version                                                                                                  |
 | `-h, --help`              | Show the help                                                                                                          |
 
 Needs `git`, and Node.js 22.15 or later or Bun. The bin is a Node script, so `bunx` runs it with Node when Node is installed; `bunx --bun` runs it with Bun. The pairing token is kept in `~/.config/gitui/token` (delete it to rotate it). Desktop Safari blocks the hosted app from reaching 127.0.0.1: run `gitui --nearby` and pick this computer from the nearby list instead, with iCloud Private Relay off (it makes Safari look like it is on another network).
