@@ -9,6 +9,7 @@
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as SchemaAST from "effect/SchemaAST";
 import type * as SchemaIssue from "effect/SchemaIssue";
 import * as SchemaParser from "effect/SchemaParser";
 import * as SchemaTransformation from "effect/SchemaTransformation";
@@ -62,32 +63,67 @@ function orNull<A extends unknown[], T>(decode: (...args: A) => T): (...args: A)
 // ── Decoding ───────────────────────────────────────────────────────────────────────────────
 
 /**
- * What `issue` says is wrong, as "missing <path>" or "invalid <path>": the path to its first
- * failure, e.g. "data.offerId", or "message" for the value itself.
+ * What `issue`, from decoding `input`, says is wrong, as "missing <path>" or "invalid <path>":
+ * the path to its first failure, e.g. "data.offerId", or "message" for the value itself.
  */
-function describe(issue: SchemaIssue.Issue, path: readonly PropertyKey[] = []): string {
+function describe(
+  issue: SchemaIssue.Issue,
+  input: unknown,
+  path: readonly PropertyKey[] = [],
+): string {
   switch (issue._tag) {
-    case "Pointer":
-      return describe(issue.issue, [...path, ...issue.path]);
+    case "Pointer": {
+      const value = issue.path.reduce((at, key) => (isObject(at) ? at[key] : undefined), input);
+      return describe(issue.issue, value, [...path, ...issue.path]);
+    }
     case "Filter":
     case "Encoding":
-      return describe(issue.issue, path);
+      return describe(issue.issue, input, path);
     case "Composite":
+      if (issue.issues.length > 0) return describe(issue.issues[0]!, input, path);
+      break;
     case "AnyOf":
-      if (issue.issues.length > 0) return describe(issue.issues[0]!, path);
+      if (issue.issues.length > 0) return describe(issue.issues[0]!, input, path);
+      // No member has the input's tags: say which one.
+      if (isObject(input)) {
+        for (const [key, values] of tags(issue.ast)) {
+          if (!Object.hasOwn(input, key)) return `missing ${where([...path, key])}`;
+          if (!values.has(input[key])) return `invalid ${where([...path, key])}`;
+        }
+      }
       break;
   }
-  const where = path.length > 0 ? path.map(String).join(".") : "message";
-  return `${issue._tag === "MissingKey" ? "missing" : "invalid"} ${where}`;
+  return `${issue._tag === "MissingKey" ? "missing" : "invalid"} ${where(path)}`;
 }
 
+const where = (path: readonly PropertyKey[]) =>
+  path.length > 0 ? path.map(String).join(".") : "message";
+
+const isObject = (value: unknown): value is Record<PropertyKey, unknown> =>
+  typeof value === "object" && value !== null;
+
 /**
- * A decoder for `schema`, a union of objects tagged by their `tag` key, that throws a
- * NearbyCodecError saying what is wrong.
+ * The keys that tell `union`'s members apart, those of nested unions included, in order, each
+ * with the literals its members require there.
  */
+function tags(union: SchemaAST.Union): Map<PropertyKey, Set<unknown>> {
+  const found = new Map<PropertyKey, Set<unknown>>();
+  const visit = (ast: SchemaAST.AST): void => {
+    if (SchemaAST.isUnion(ast)) return ast.types.forEach(visit);
+    if (!SchemaAST.isObjects(ast)) return;
+    for (const { name, type } of ast.propertySignatures) {
+      if (!SchemaAST.isLiteral(type) || SchemaAST.isOptional(type)) continue;
+      const values = found.get(name) ?? new Set();
+      found.set(name, values.add(type.literal));
+    }
+  };
+  visit(union);
+  return found;
+}
+
+/** A decoder for `schema` that throws a NearbyCodecError saying what is wrong. */
 function decoder<S extends Schema.Decoder<unknown>>(
   schema: S,
-  tag: string,
 ): (input: Record<string, unknown>) => S["Type"] {
   // The first failure is all a decoder reports.
   const decode = SchemaParser.decodeUnknownResult(schema, { errors: "first" });
@@ -99,12 +135,7 @@ function decoder<S extends Schema.Decoder<unknown>>(
       // A getter that throws: only values that aren't parsed JSON have one.
       return fail("unreadable message");
     }
-    if (Result.isSuccess(result)) return result.success;
-    // No member of the union has the input's tag.
-    if (result.failure._tag === "AnyOf" && result.failure.issues.length === 0) {
-      return fail(`${Object.hasOwn(input, tag) ? "invalid" : "missing"} ${tag}`);
-    }
-    return fail(describe(result.failure));
+    return Result.isSuccess(result) ? result.success : fail(describe(result.failure, input));
   };
 }
 
@@ -263,9 +294,9 @@ const ServerMessageSchema = Schema.Union([
   Schema.Struct({ type: Schema.Literal("pong") }),
 ]);
 
-const decodeSignalData = decoder(SignalSchema, "kind");
-const decodeClient = decoder(ClientMessageSchema, "type");
-const decodeServer = decoder(ServerMessageSchema, "type");
+const decodeSignalData = decoder(SignalSchema);
+const decodeClient = decoder(ClientMessageSchema);
+const decodeServer = decoder(ServerMessageSchema);
 
 /** A WebRTC signal as its receiver reads it (SignalData). */
 export const decodeSignal = (value: unknown): SignalData =>
@@ -371,8 +402,8 @@ const HostMessageSchema = Schema.Union([
   tagged("abort", { id: RequestId, message: Schema.String }),
 ]);
 
-const decodeGuest = decoder(GuestMessageSchema, "t");
-const decodeHost = decoder(HostMessageSchema, "t");
+const decodeGuest = decoder(GuestMessageSchema);
+const decodeHost = decoder(HostMessageSchema);
 
 /**
  * Reads one data channel message sent by `from`: JSON text is a message of that side's, binary

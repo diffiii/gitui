@@ -167,6 +167,19 @@ test("decoders say what is wrong", () => {
   expect(() =>
     decodeClientMessage('{"type":"signal","to":"p1","data":{"kind":"answer","sdp":""}}'),
   ).toThrow(new NearbyCodecError("missing data.offerId"));
+  // A tag inside a nested union, or inside a field, is named too.
+  const said = (message: object) => () => decodeClientMessage(JSON.stringify(message));
+  expect(said({ type: "hello", role: "admin" })).toThrow(new NearbyCodecError("invalid role"));
+  expect(said({ type: "hello" })).toThrow(new NearbyCodecError("missing role"));
+  expect(said({ type: "signal", to: "p1", data: { offerId } })).toThrow(
+    new NearbyCodecError("missing data.kind"),
+  );
+  expect(said({ type: "signal", to: "p1", data: { kind: "x", offerId } })).toThrow(
+    new NearbyCodecError("invalid data.kind"),
+  );
+  expect(said({ type: "signal", to: "p1", data: "x" })).toThrow(
+    new NearbyCodecError("invalid data"),
+  );
 });
 
 test("a getter that throws is an invalid message, not a crash", () => {
