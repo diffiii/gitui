@@ -11,7 +11,7 @@ import { lstat, open, readlink, stat, type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import type { WorkingFile, WorkingFiles } from "@gitui/shared";
 import { Effect } from "effect";
-import { git, GitError, gitError, type GitServices, gitPatch, run } from "./git.ts";
+import { git, GitError, gitError, type GitServices, gitPatch, pathspec, run } from "./git.ts";
 
 export type { WorkingFile, WorkingFiles };
 
@@ -171,15 +171,14 @@ export const assertWorkingFile = Effect.fnUntraced(function* (
   if (parts.some((p) => p === "" || p === "." || p === ".." || p.toLowerCase() === ".git")) {
     return yield* notListed(file, untracked);
   }
-  // `:(literal)` turns off pathspec magic; an absolute path outside the repo makes git fail.
+  // An absolute path outside the repo makes git fail.
   const listed = yield* git(repo, [
     "ls-files",
     ...(untracked ? [] : ["--cached"]),
     "--others",
     "--exclude-standard",
     "-z",
-    "--",
-    `:(literal)${file}`,
+    ...pathspec([file]),
   ]).pipe(Effect.orElseSucceed(() => ""));
   if (!listed.split("\0").includes(file)) return yield* notListed(file, untracked);
 

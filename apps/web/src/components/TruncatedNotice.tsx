@@ -1,12 +1,17 @@
 import { cn } from "@/lib/utils";
 
-/** Banner for a patch the server cut off at its output cap (`MAX_OUTPUT` in server/git.ts). */
+/**
+ * Banner for output the server cut off at its output cap (`MAX_OUTPUT` in server/git.ts): a patch
+ * by default, or what `children` says.
+ */
 export function TruncatedNotice({
   empty = false,
   className,
+  children,
 }: {
   empty?: boolean;
   className?: string;
+  children?: React.ReactNode;
 }) {
   return (
     <div
@@ -15,9 +20,10 @@ export function TruncatedNotice({
         className,
       )}
     >
-      {empty
-        ? "Diff is larger than 8 MB and can't be shown"
-        : "Diff is larger than 8 MB — showing only the first part"}
+      {children ??
+        (empty
+          ? "Diff is larger than 8 MB and can't be shown"
+          : "Diff is larger than 8 MB — showing only the first part")}
     </div>
   );
 }

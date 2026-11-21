@@ -80,3 +80,20 @@ export async function discardEach(
     }
   }
 }
+
+/**
+ * Whether the server's discard accepts the entry (`discardCommand` in server/git.ts): not a
+ * submodule or nested repository, not conflicted, and something unstaged or untracked.
+ */
+export function canDiscard(f: FileStatus): boolean {
+  if (f.repository || f.conflicted) return false;
+  return f.untracked || f.y !== ".";
+}
+
+/** Splits `files` into those a discard can take and those it would refuse. */
+export function splitDiscardable(files: FileStatus[]) {
+  return {
+    discardable: files.filter(canDiscard),
+    skipped: files.filter((f) => !canDiscard(f)),
+  };
+}

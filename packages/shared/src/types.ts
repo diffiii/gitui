@@ -17,12 +17,16 @@ export interface FileStatus {
   y: string;
   untracked?: boolean;
   conflicted?: boolean;
+  /** A submodule or a nested repository: its changes are inside its own repository. */
+  repository?: boolean;
 }
 
 export interface Status {
   head: HeadInfo;
   files: FileStatus[];
   operation: "merge" | "rebase" | "cherry-pick" | "revert" | null;
+  /** `git status` printed more than the server's output cap; `files` is only the first part. */
+  truncated?: boolean;
 }
 
 export interface Commit {

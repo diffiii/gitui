@@ -1,11 +1,13 @@
 import { expect, test } from "bun:test";
 import type { FileStatus } from "./api.ts";
 import {
+  canDiscard,
   discardEach,
   filesUnder,
   firstChange,
   resolveChoice,
   splitChanges,
+  splitDiscardable,
   toGitStatus,
 } from "./changes.ts";
 
@@ -135,4 +137,24 @@ test("discardEach says how many were discarded when a later one fails", async ()
     "Discarded 2 of 5 files, then c failed: boom",
   );
   expect(calls).toEqual(["a", "b", "c"]);
+});
+
+test("canDiscard matches what the server's discard accepts", () => {
+  expect(canDiscard(file("a.ts", ".", "M"))).toBe(true);
+  expect(canDiscard(file("a.ts", "M", "M"))).toBe(true);
+  expect(canDiscard(file("n.ts", ".", "?", { untracked: true }))).toBe(true);
+  expect(canDiscard(file("a.ts", "M", "."))).toBe(false);
+  expect(canDiscard(file("c.ts", "U", "U", { conflicted: true }))).toBe(false);
+  expect(canDiscard(file("sub", ".", "M", { repository: true }))).toBe(false);
+  expect(canDiscard(file("nested/", ".", "?", { untracked: true, repository: true }))).toBe(false);
+});
+
+test("splitDiscardable separates the entries a discard would refuse", () => {
+  const ok = file("a.ts", ".", "M");
+  const sub = file("sub", ".", "M", { repository: true });
+  const conflict = file("c.ts", "U", "U", { conflicted: true });
+  expect(splitDiscardable([ok, sub, conflict])).toEqual({
+    discardable: [ok],
+    skipped: [sub, conflict],
+  });
 });
