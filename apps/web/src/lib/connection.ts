@@ -23,10 +23,12 @@ export type Connection =
 /**
  * `unreachable`: no CLI answered. `unauthorized`: there is no pairing, or the CLI rejected its
  * token. `not-opened`: this device may only use repositories opened on the computer running
- * gitui, and this isn't one (REPO_NOT_OPENED). `http`: any other error response.
+ * gitui, and this isn't one (REPO_NOT_OPENED). `outdated`: the CLI answered 404, so it lacks a
+ * route this page calls. `http`: any other error response.
  */
 export class ApiError extends Error {
-  readonly kind: "unreachable" | "unauthorized" | "not-opened" | "http";
+  // outdated: the CLI has no such route, so it is older than this page
+  readonly kind: "unreachable" | "unauthorized" | "not-opened" | "outdated" | "http";
   constructor(message: string, kind: ApiError["kind"]) {
     super(message);
     this.kind = kind;

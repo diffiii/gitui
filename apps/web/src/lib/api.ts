@@ -42,6 +42,14 @@ async function request<T>(
   if (res.status === 403 && data.code === REPO_NOT_OPENED) {
     throw new ApiError(data.error, "not-opened");
   }
+  // Every route this page calls exists in the current CLI, and the CLI answers 404 only for
+  // routes it doesn't have: it is older than this page.
+  if (res.status === 404) {
+    throw new ApiError(
+      "This needs a newer gitui. Update it (npx @diffiii/gitui@latest) and restart it.",
+      "outdated",
+    );
+  }
   if (!res.ok) throw new ApiError(data.error ?? res.statusText, "http");
   return data as T;
 }
