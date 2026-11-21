@@ -1,23 +1,42 @@
 import { useQuery } from "@tanstack/react-query";
-import { LoaderCircle } from "lucide-react";
-import { useState } from "react";
+import { LoaderCircle, RefreshCw } from "lucide-react";
+import { type ComponentType, lazy, Suspense, useState } from "react";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { getConfig } from "@/lib/api";
+import { PAGE_OUTDATED } from "@/lib/nearby/errors";
 import { notOpened } from "@/lib/notOpened";
 import { RepoProvider } from "@/lib/repo";
 import { useStatus } from "@/lib/status";
-import { openRepo, select, setView, useUrl } from "@/lib/url";
-import { cn } from "@/lib/utils";
+import { openRepo, setView, useUrl } from "@/lib/url";
 import type { View } from "@/lib/views";
 import { AppHeader } from "./components/AppHeader";
-import { BranchesView } from "./components/BranchesView";
-import { ChangesView } from "./components/ChangesView";
-import { FilesView } from "./components/FilesView";
-import { HistoryPane } from "./components/HistoryView";
+import { EmptyState } from "./components/EmptyState";
 import { RepoWelcome } from "./components/RepoPicker";
 import { Button } from "./components/ui/button";
 import { ViewTabBar } from "./components/ViewTabs";
+
+// The views load on demand (RepoViews.tsx says why). A failed load means this page was
+// deployed over since it loaded, so the chunk is gone: only a reload helps.
+const RepoViews = lazy(() =>
+  import("./components/RepoViews").then(
+    (m): { default: ComponentType<{ view: View }> } => ({ default: m.RepoViews }),
+    (e: unknown) => {
+      console.error(e);
+      return { default: PageOutdated };
+    },
+  ),
+);
+
+function PageOutdated() {
+  return (
+    <EmptyState icon={RefreshCw} title={PAGE_OUTDATED}>
+      <Button size="sm" variant="outline" onClick={() => location.reload()}>
+        Reload
+      </Button>
+    </EmptyState>
+  );
+}
 
 export default function App() {
   const { repo: urlRepo, view } = useUrl();
@@ -37,10 +56,9 @@ export default function App() {
             <AppHeader view={view} onView={onView} onOpenRepo={openRepo} />
             <main className="min-h-0 flex-1">
               <OpenedRepo repo={repo}>
-                {view === "changes" && <ChangesView />}
-                {view === "history" && <HistoryView />}
-                {view === "branches" && <BranchesView />}
-                {view === "files" && <FilesView />}
+                <Suspense fallback={<Loading />}>
+                  <RepoViews view={view} />
+                </Suspense>
               </OpenedRepo>
             </main>
             <ViewTabBar view={view} onView={onView} />
@@ -80,49 +98,19 @@ function OpenedRepo({ repo, children }: { repo: string; children: React.ReactNod
       />
     );
   }
-  if (data === undefined && !error) {
-    // It fades in late, so a quick first status doesn't flash it.
-    return (
-      <div
-        role="status"
-        aria-label="Loading"
-        className="flex h-full animate-in items-center justify-center fade-in fill-mode-backwards delay-300 duration-300"
-      >
-        <LoaderCircle className="size-5 animate-spin text-muted-foreground" />
-      </div>
-    );
-  }
+  if (data === undefined && !error) return <Loading />;
   return children;
 }
 
-function HistoryView() {
-  const { all } = useUrl();
+function Loading() {
+  // It fades in late, so a quick first status (or views chunk) doesn't flash it.
   return (
-    <HistoryPane
-      key={String(all)}
-      all={all}
-      toolbar={
-        <div className="flex items-center gap-1 rounded-lg bg-muted p-0.5 text-xs">
-          {[
-            { v: false, label: "Current branch" },
-            { v: true, label: "All branches" },
-          ].map((o) => (
-            <Button
-              key={o.label}
-              size="xs"
-              variant={all === o.v ? "secondary" : "ghost"}
-              className={cn(
-                "touch-target",
-                all === o.v ? "bg-background shadow-sm" : "text-muted-foreground",
-              )}
-              // The other list starts at its newest commit.
-              onClick={() => select({ all: o.v, commit: null })}
-            >
-              {o.label}
-            </Button>
-          ))}
-        </div>
-      }
-    />
+    <div
+      role="status"
+      aria-label="Loading"
+      className="flex h-full animate-in items-center justify-center fade-in fill-mode-backwards delay-300 duration-300"
+    >
+      <LoaderCircle className="size-5 animate-spin text-muted-foreground" />
+    </div>
   );
 }
