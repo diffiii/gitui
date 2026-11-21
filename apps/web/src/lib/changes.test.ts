@@ -1,6 +1,13 @@
 import { expect, test } from "bun:test";
 import type { FileStatus } from "./api.ts";
-import { filesUnder, firstChange, resolveChoice, splitChanges, toGitStatus } from "./changes.ts";
+import {
+  discardEach,
+  filesUnder,
+  firstChange,
+  resolveChoice,
+  splitChanges,
+  toGitStatus,
+} from "./changes.ts";
 
 const file = (path: string, x: string, y: string, extra: Partial<FileStatus> = {}): FileStatus => ({
   path,
@@ -96,4 +103,36 @@ test("filesUnder returns a folder's files, not its siblings' with a shared prefi
     "src/a.ts",
     "src/b/c.ts",
   ]);
+});
+
+/** A fake `discard` that records the paths it is called with, failing on those in `failing`. */
+const fakeDiscard = (failing: string[] = []) => {
+  const calls: string[] = [];
+  const discard = async (f: FileStatus) => {
+    calls.push(f.path);
+    if (failing.includes(f.path)) throw new Error("boom");
+  };
+  return { calls, discard };
+};
+
+const five = ["a", "b", "c", "d", "e"].map((p) => file(p, ".", "M"));
+
+test("discardEach discards every file once, in order", async () => {
+  const { calls, discard } = fakeDiscard();
+  await discardEach(five, discard);
+  expect(calls).toEqual(["a", "b", "c", "d", "e"]);
+});
+
+test("discardEach rethrows the original error when the first discard fails", async () => {
+  const { calls, discard } = fakeDiscard(["a"]);
+  await expect(discardEach(five, discard)).rejects.toThrow(new Error("boom"));
+  expect(calls).toEqual(["a"]);
+});
+
+test("discardEach says how many were discarded when a later one fails", async () => {
+  const { calls, discard } = fakeDiscard(["c"]);
+  await expect(discardEach(five, discard)).rejects.toThrow(
+    "Discarded 2 of 5 files, then c failed: boom",
+  );
+  expect(calls).toEqual(["a", "b", "c"]);
 });

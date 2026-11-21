@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { CheckCheck, FileDiff, Minus, Plus, Undo2 } from "lucide-react";
+import { CheckCheck, FileDiff, Loader2, Minus, Plus, Undo2 } from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import type { FileStatus } from "@/lib/api";
 import {
+  discardEach,
   filesUnder,
   firstChange,
   resolveChoice,
@@ -256,12 +257,13 @@ function DiscardDialog({
   onClose: () => void;
   onConfirm: (files: FileStatus[]) => void;
 }) {
-  const discard = useGitMutation(async (api, fs: FileStatus[]) => {
-    for (const f of fs) await api.discard(f);
-  }, "Changes discarded");
+  const discard = useGitMutation(
+    (api, fs: FileStatus[]) => discardEach(fs, api.discard),
+    "Changes discarded",
+  );
   const single = files?.length === 1 ? files[0] : null;
   return (
-    <Dialog open={!!files} onOpenChange={(o) => !o && onClose()}>
+    <Dialog open={!!files} onOpenChange={(o) => !o && !discard.isPending && onClose()}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Discard changes?</DialogTitle>
@@ -282,19 +284,22 @@ function DiscardDialog({
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
+          <Button variant="outline" disabled={discard.isPending} onClick={onClose}>
             Cancel
           </Button>
           <Button
             variant="destructive"
+            disabled={discard.isPending}
             onClick={() => {
               if (files) {
-                discard.mutate(files);
-                onConfirm(files);
+                discard.mutate(files, {
+                  onSuccess: () => onConfirm(files),
+                  onSettled: onClose,
+                });
               }
-              onClose();
             }}
           >
+            {discard.isPending && <Loader2 className="animate-spin" />}
             Discard
           </Button>
         </DialogFooter>

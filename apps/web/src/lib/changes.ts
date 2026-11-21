@@ -61,3 +61,22 @@ export function filesUnder(files: FileStatus[], item: Pick<ContextMenuItem, "kin
     ? files.filter((f) => f.path === item.path)
     : files.filter((f) => f.path.startsWith(item.path));
 }
+
+/**
+ * Discards `files` one at a time, stopping at the first failure. A failure after some
+ * succeeded says how many did.
+ */
+export async function discardEach(
+  files: FileStatus[],
+  discard: (f: FileStatus) => Promise<unknown>,
+): Promise<void> {
+  for (const [i, f] of files.entries()) {
+    try {
+      await discard(f);
+    } catch (e) {
+      if (i === 0) throw e;
+      const reason = e instanceof Error ? e.message : String(e);
+      throw new Error(`Discarded ${i} of ${files.length} files, then ${f.path} failed: ${reason}`);
+    }
+  }
+}
