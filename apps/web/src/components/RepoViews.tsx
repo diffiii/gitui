@@ -1,3 +1,4 @@
+import type { ComponentType } from "react";
 import { Button } from "@/components/ui/button";
 import { select, useUrl } from "@/lib/url";
 import { cn } from "@/lib/utils";
@@ -11,15 +12,17 @@ import { HistoryPane } from "./HistoryView";
 // demand, so the connect screen and the repository picker don't download it (vite.config.ts fails
 // the build if the main chunk has that code).
 
+/** Each view's component; `satisfies` makes a new view fail the type check until it has one. */
+const VIEWS = {
+  changes: ChangesView,
+  history: HistoryView,
+  branches: BranchesView,
+  files: FilesView,
+} satisfies Record<View, ComponentType>;
+
 export function RepoViews({ view }: { view: View }) {
-  return (
-    <>
-      {view === "changes" && <ChangesView />}
-      {view === "history" && <HistoryView />}
-      {view === "branches" && <BranchesView />}
-      {view === "files" && <FilesView />}
-    </>
-  );
+  const Shown = VIEWS[view];
+  return <Shown />;
 }
 
 function HistoryView() {
