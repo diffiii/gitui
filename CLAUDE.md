@@ -105,9 +105,13 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   `nearby/auth.ts`) stays plain, and so do pure parsers.
 - Validate request bodies and parameters with the schemas in `apps/cli/server/app.ts`; ref-like
   inputs (branch names, hashes, refs) go through `Ref`, which rejects anything git could parse
-  as an option. Their `withMessage` messages (`server/schema-messages.ts`) are the 400s'
-  errors. A body is read only with `body()`, which wants `content-type: application/json` (415) and at most
-  `MAX_BODY_BYTES` (413).
+  as an option, and paths through `FilePath` or `WorkingPath`. Their `withMessage` messages
+  (`server/schema-messages.ts`) are the 400s' errors; any other failure is a 500 with a fixed
+  message (the cause is logged, never sent). Each route declares its `query` and `body`
+  schemas, and `route`/`repoRoute` decode them (after the repo gate) before the answer runs,
+  which gets them decoded: routes don't read the request themselves. A body is read only for a
+  route with a `body` schema, wants `content-type: application/json` (415) and at most
+  `MAX_BODY_BYTES` (413); a repeated query parameter counts by its first value.
 - `/api/*` access policy lives in `apps/cli/server/access.ts`, keyed by the `Listener`: the
   `x-gitui` header always. `loopback`: localhost `Host`; cross-origin callers only from
   `allowedOrigins`, with CORS headers and the pairing token (`loadToken` in `server/config.ts`)
@@ -115,15 +119,19 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   through `nearby/bridge.ts`, which gives them the Host `NEARBY_HOST`. Don't add checks in
   routes or `main.ts`. The checks are router middleware on the API routes (not global, and not
   a test on the URL), so the router's own match decides what they cover; `ROUTER_CONFIG` keeps
-  its matching exact, and the middleware refuses paths it would still rewrite (`%`, `;`).
-  Serve and `toFetch` with `ROUTER_CONFIG`; `app-guard.test.ts` probes odd spellings.
+  its matching exact, and the middleware refuses paths it would still rewrite or that aren't
+  spelled one way (`%`, `;`, `#`, `\`, `//`, or not starting with `/`). Serve and `toFetch`
+  with `ROUTER_CONFIG`; `app-guard.test.ts` probes odd spellings, and `main.test.ts` sends some
+  over a raw socket. Unknown paths, under `/api/repo` too, fall to the `/api/*` catch-alls.
 - Each listener also has a `repoScope`: `loopback` is `any`; `nearby` (other devices) is
   `opened`, i.e. only the `initialRepo` and the recent list, compared as realpaths, read per
   request. Every repo path a request names goes through `repoGate` (`server/repo-scope.ts`): every
   route made with `repoRoute` in `app.ts` and `/open`, which only records repos in the recent
-  list for `any`. A `repoRoute` POST runs in a fiber of the server's scope, so a client going
-  away doesn't stop git halfway (shutdown and git's timeouts still do); `lock: true` (every
-  `mutation`, and pull) runs it under the repo's lock. A refusal is a
+  list for `any`. A `repoRoute` with `lock: true` (every `mutation`, and pull) runs, once its
+  inputs are decoded, under `withWriteLock` (`server/lock.ts`: the repo's lock, then one of
+  `MAX_WRITES` permits shared by all repos) in a fiber of the server's scope, so a client
+  going away doesn't stop git halfway (shutdown and git's timeouts still do). Any other route,
+  fetch and push included, stops with its client, git and all. A refusal is a
   403 `{ error, code: REPO_NOT_OPENED }`. New routes that take a repo path must use the gate.
   Server tests pass `configDir` to `createApp` so they never touch the real recent list.
 - Frontend data goes through TanStack Query with keys that start with the repo:
