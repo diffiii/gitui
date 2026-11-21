@@ -13,7 +13,10 @@ import { Effect, Exit, type Layer, Scope } from "effect";
 import type { HttpRouter } from "effect/http";
 import { createApp, toFetch } from "./app.ts";
 
-process.env.GIT_CONFIG_GLOBAL = os.devNull;
+// An empty file rather than os.devNull, which git for Windows can't open (`\\.\nul`). One fixed
+// path, emptied on every run, so nothing is left to clean up.
+process.env.GIT_CONFIG_GLOBAL = path.join(os.tmpdir(), "gitui-test-empty.gitconfig");
+fs.writeFileSync(process.env.GIT_CONFIG_GLOBAL, "");
 process.env.GIT_CONFIG_NOSYSTEM = "1";
 
 /** Every test client's scope, closed by `removeTempDirs`. */
