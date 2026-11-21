@@ -484,6 +484,59 @@ test("losing the rendezvous drops a connected session, which reconnects", async 
   expect(h.state()).toEqual({ kind: "connected", checking: false });
 });
 
+test("a host that's back on the rendezvous after the page is still reconnecting, not gone", async () => {
+  const h = await connected();
+  h.setRendezvous({ status: "retrying", hosts: [] });
+  await h.advance(1000);
+  // The page's socket is back first: its welcome, then a list without the host.
+  h.setRendezvous({ status: "open", hosts: [] });
+  h.setRendezvous({ status: "open", hosts: [] });
+  await h.advance(6000);
+  expect(h.state()).toEqual({ kind: "reconnecting" });
+  expect(h.connects).toHaveLength(1);
+  h.setRendezvous({ status: "open", hosts: [listed] });
+  await flush();
+  expect(h.connects).toEqual([{ resume: true }, { resume: true }]);
+  h.peer().answer({ ok: true });
+  await flush();
+  expect(h.state()).toEqual({ kind: "connected", checking: false });
+});
+
+test("a host that leaves the list in front of the page is gone after the short grace", async () => {
+  const h = await connected();
+  // It quit: the rendezvous drops it from the list (and sends its `gone`), and its channel closes.
+  h.setRendezvous({ status: "open", hosts: [] });
+  h.peer().drop();
+  expect(h.state()).toEqual({ kind: "reconnecting" });
+  await h.advance(MISSING_GRACE);
+  expect(h.state()).toEqual({ kind: "gone" });
+  expect(h.tokens.load(host.key)).toBe("tok");
+  // A restarted CLI has a new key, so its entry, by the same name, isn't tried.
+  h.setRendezvous({
+    status: "open",
+    hosts: [{ id: "peer-2", name: host.name, key: "n".repeat(16) }],
+  });
+  await h.advance(RETRY_WINDOW);
+  expect(h.state()).toEqual({ kind: "gone" });
+  expect(h.connects).toHaveLength(1);
+});
+
+test("a host that never comes back after an outage of the rendezvous is gone when the window is up", async () => {
+  const h = await connected();
+  h.setRendezvous({ status: "retrying", hosts: [] });
+  await h.advance(1000);
+  h.setRendezvous({ status: "open", hosts: [] });
+  await h.advance(RETRY_WINDOW - 1001);
+  expect(h.state()).toEqual({ kind: "reconnecting" });
+  await h.advance(1);
+  expect(h.state()).toEqual({ kind: "gone" });
+  expect(h.connects).toHaveLength(1);
+  // It comes back later after all: try it again.
+  h.setRendezvous({ status: "open", hosts: [listed] });
+  await flush();
+  expect(h.connects).toEqual([{ resume: true }, { resume: true }]);
+});
+
 test("stop ends the session, forgets its token and fails waiting requests", async () => {
   const h = harness({ token: "tok" });
   const waiting = failure(h.session.fetch("/api/config"));
