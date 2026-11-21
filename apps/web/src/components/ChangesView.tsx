@@ -1,4 +1,3 @@
-import type { ContextMenuItem, GitStatusEntry } from "@pierre/trees";
 import { useQuery } from "@tanstack/react-query";
 import { CheckCheck, FileDiff, Minus, Plus, Undo2 } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -15,7 +14,14 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import type { FileStatus } from "@/lib/api";
-import { firstChange, resolveChoice, type ShownFile, splitChanges } from "@/lib/changes";
+import {
+  filesUnder,
+  firstChange,
+  resolveChoice,
+  type ShownFile,
+  splitChanges,
+  toGitStatus,
+} from "@/lib/changes";
 import { useListChoice } from "@/lib/listChoice";
 import { NARROW } from "@/lib/media";
 import { useGitMutation, useRepo } from "@/lib/repo";
@@ -158,15 +164,6 @@ function FileActions({
   );
 }
 
-function toGitStatus(f: FileStatus, staged: boolean): GitStatusEntry["status"] {
-  if (f.untracked) return "untracked";
-  const c = f.conflicted ? "M" : staged ? f.x : f.y;
-  if (c === "A") return "added";
-  if (c === "D") return "deleted";
-  if (c === "R" || c === "C") return "renamed";
-  return "modified";
-}
-
 function FileSection({
   title,
   files,
@@ -191,10 +188,6 @@ function FileSection({
     () => files.map((f) => ({ path: f.path, status: toGitStatus(f, staged) })),
     [files, staged],
   );
-  const under = (item: ContextMenuItem) =>
-    item.kind === "file"
-      ? files.filter((f) => f.path === item.path)
-      : files.filter((f) => f.path.startsWith(item.path));
 
   return (
     <section className="flex min-h-0 flex-1 flex-col border-b last:border-b-0">
@@ -233,7 +226,7 @@ function FileSection({
               {
                 label: staged ? "Unstage" : "Stage",
                 icon: staged ? Minus : Plus,
-                onSelect: () => toggle(under(item).map((f) => f.path)),
+                onSelect: () => toggle(filesUnder(files, item).map((f) => f.path)),
               },
               ...(!staged
                 ? [
@@ -241,7 +234,7 @@ function FileSection({
                       label: "Discard changes",
                       icon: Undo2,
                       destructive: true,
-                      onSelect: () => onDiscard(under(item)),
+                      onSelect: () => onDiscard(filesUnder(files, item)),
                     },
                   ]
                 : []),

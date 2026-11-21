@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import type { FileStatus } from "./api.ts";
-import { firstChange, resolveChoice, splitChanges } from "./changes.ts";
+import { filesUnder, firstChange, resolveChoice, splitChanges, toGitStatus } from "./changes.ts";
 
 const file = (path: string, x: string, y: string, extra: Partial<FileStatus> = {}): FileStatus => ({
   path,
@@ -55,4 +55,45 @@ test("firstChange prefers unstaged files", () => {
   expect(shown(firstChange(staged, unstaged))).toEqual({ path: "u.ts", staged: false });
   expect(shown(firstChange(staged, []))).toEqual({ path: "s.ts", staged: true });
   expect(firstChange([], [])).toBeNull();
+});
+
+test("toGitStatus marks untracked files whatever their codes", () => {
+  expect(toGitStatus(file("a", "?", "?", { untracked: true }), false)).toBe("untracked");
+});
+
+test("toGitStatus calls a conflicted file modified", () => {
+  expect(toGitStatus(file("a", "U", "U", { conflicted: true }), false)).toBe("modified");
+  expect(toGitStatus(file("a", "A", "D", { conflicted: true }), true)).toBe("modified");
+});
+
+test("toGitStatus reads x for the staged list and y for the unstaged one", () => {
+  const f = file("a", "A", "M");
+  expect(toGitStatus(f, true)).toBe("added");
+  expect(toGitStatus(f, false)).toBe("modified");
+});
+
+test("toGitStatus maps D to deleted and R and C to renamed", () => {
+  expect(toGitStatus(file("a", ".", "D"), false)).toBe("deleted");
+  expect(toGitStatus(file("a", "R", "."), true)).toBe("renamed");
+  expect(toGitStatus(file("a", "C", "."), true)).toBe("renamed");
+});
+
+test("filesUnder returns only the file for a file item", () => {
+  const files = [file("src/a.ts", ".", "M"), file("src/b/c.ts", ".", "M")];
+  expect(filesUnder(files, { kind: "file", path: "src/a.ts" }).map((f) => f.path)).toEqual([
+    "src/a.ts",
+  ]);
+});
+
+test("filesUnder returns a folder's files, not its siblings' with a shared prefix", () => {
+  const files = [
+    file("src/a.ts", ".", "M"),
+    file("src/b/c.ts", ".", "M"),
+    file("srcx/a.ts", ".", "M"),
+    file("src.ts", ".", "M"),
+  ];
+  expect(filesUnder(files, { kind: "directory", path: "src/" }).map((f) => f.path)).toEqual([
+    "src/a.ts",
+    "src/b/c.ts",
+  ]);
 });
