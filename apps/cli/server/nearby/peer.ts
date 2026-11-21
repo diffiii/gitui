@@ -9,7 +9,6 @@
 // in the session's scope, which closing it closes. A fiber's defect closes the session too.
 import {
   AUTH_ATTEMPTS,
-  decodeChannelMessage,
   DATA_CHANNEL_LABEL,
   type Fingerprints,
   type HostMessage,
@@ -17,6 +16,7 @@ import {
   MAX_LOCAL_CANDIDATES,
   type SentSignal,
 } from "@gitui/shared";
+import { decodeChannelMessage } from "@gitui/shared/nearby-codec";
 import { hostFinish, hostRespond, resumeAnswer } from "@gitui/shared/nearby-pake";
 import { Cause, Data, Deferred, Effect, Exit, type Fiber, Scope } from "effect";
 import {

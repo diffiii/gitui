@@ -1,5 +1,4 @@
 import {
-  parseServerMessage,
   RENDEZVOUS_ORIGIN,
   RENDEZVOUS_PING,
   rendezvousUrl,
@@ -8,6 +7,7 @@ import {
   type ServerMessage,
   type SignalData,
 } from "@gitui/shared";
+import { parseServerMessage } from "@gitui/shared/nearby-codec";
 import { dedupeHosts } from "./state.ts";
 
 // The guest's side of the rendezvous WebSocket: it says hello as a guest, keeps the list of hosts

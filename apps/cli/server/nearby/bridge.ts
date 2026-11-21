@@ -12,11 +12,11 @@ import {
   CHANNEL_HIGH_WATER,
   CHANNEL_LOW_WATER,
   chunks,
-  decodeChannelMessage,
   frameChunk,
   type GuestMessage,
   type HostMessage,
 } from "@gitui/shared";
+import { decodeChannelMessage } from "@gitui/shared/nearby-codec";
 import { Cause, Effect, type Fiber } from "effect";
 import { NEARBY_HOST } from "../access.ts";
 

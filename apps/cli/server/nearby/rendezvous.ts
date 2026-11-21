@@ -7,10 +7,10 @@ import { Deferred, Effect, Exit, Option, type Scope } from "effect";
 import {
   type ClientMessage,
   type ErrorCode,
-  parseServerMessage,
   type SentSignal,
   type SignalData,
 } from "@gitui/shared";
+import { parseServerMessage } from "@gitui/shared/nearby-codec";
 import { WebSocket } from "ws";
 
 /**

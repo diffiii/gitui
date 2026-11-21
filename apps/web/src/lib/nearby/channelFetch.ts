@@ -1,12 +1,11 @@
 import {
   CHANNEL_HIGH_WATER,
   chunks,
-  decodeChannelMessage,
   frameChunk,
   type GuestMessage,
   type HostMessage,
-  type Incoming as ChannelIncoming,
 } from "@gitui/shared";
+import { decodeChannelMessage, type Incoming as ChannelIncoming } from "@gitui/shared/nearby-codec";
 
 // HTTP over the nearby data channel (see @gitui/shared nearby.ts): a request is a `req` head,
 // its body as binary frames and an `end`; the host answers with `res`, frames and `end`, or

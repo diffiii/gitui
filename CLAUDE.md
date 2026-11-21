@@ -58,7 +58,8 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   (`createSession` in `session.ts` is the state machine, with its dependencies injected; the
   connection opens one per nearby host in `update()`, and `apiTransport` sends requests over its
   data channel; `peer.ts` loads CPace lazily from `@gitui/shared/nearby-pake`; `state.ts` and
-  `tokens.ts` are its pure parts). The codec, and with it Effect, stays out of the main chunk:
+  `tokens.ts` are its pure parts). The codec (`@gitui/shared/nearby-codec`), and with it
+  Effect, stays out of the main chunk:
   only `lazy.ts`, `state.ts` and `errors.ts` load up front, and `lazy.ts` imports the rest
   (`client.ts`) on demand, for the connect screen's host list or a nearby connection, whose
   session it wraps until it loads. A `vite.config.ts` plugin fails the build if the main chunk
@@ -78,15 +79,17 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
 - `packages/shared/` (`@gitui/shared`): API types and the connection contract (default port,
   client header, hosted origin, loopback hosts, pairing links), used by both sides, and the
   hosted app's `_headers` file (`headers.ts`, which the web build emits), imported as `@gitui/shared`. The nearby
-  protocol: `nearby.ts` (the contract and its docs), `nearby-codec.ts` (every check on what
-  crosses its wires, used by the Worker, the CLI and the web app alike: each message is an
-  Effect Schema, decoding keeps only the contract's fields, so a new protocol field goes into
+  protocol: `nearby.ts` (the contract and its docs, and the plain helpers: `hostName`,
+  `toHostName`, `printable`, `rendezvousUrl`, `sdpFingerprint`), `nearby-codec.ts` (every check
+  on what crosses its wires, used by the Worker, the CLI and the web app alike: each message is
+  an Effect Schema, decoding keeps only the contract's fields, so a new protocol field goes into
   its schema there and its type in `nearby.ts`, which a type-level assertion keeps equal; its
-  errors only name the path and whether it was missing or invalid) and `nearby-pake.ts` (CPace on
-  ristretto255 for the code and HMAC proofs both ways for resume tokens, pure and synchronous,
-  with `@noble/curves` and `@noble/hashes`, which the CLI bundles). Its public functions are
-  only in the `@gitui/shared/nearby-pake` entry (`pake.ts`), not in `@gitui/shared`, so the
-  Worker and the web app's main chunk carry no curve code.
+  errors only name the path and whether it was missing or invalid; it holds only schemas and
+  decoders) and `nearby-pake.ts` (CPace on ristretto255 for the code and HMAC proofs both ways
+  for resume tokens, pure and synchronous, with `@noble/curves` and `@noble/hashes`, which the
+  CLI bundles). The codec is only in the `@gitui/shared/nearby-codec` entry, and the CPace
+  functions only in `@gitui/shared/nearby-pake` (`pake.ts`), not in `@gitui/shared`, so code
+  that imports the main entry carries no Effect and no curve code.
 - Root: `scripts/dev.ts` (runs both apps), `scripts/smoke.sh` (runs the built bundle with node
   in both modes and checks what it serves; CI and release run it), `vite.config.ts` (workspace
   fmt/lint/type check config, `defaultPackage` points `vp dev`/`vp build` at `apps/web`),

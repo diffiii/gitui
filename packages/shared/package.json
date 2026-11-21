@@ -6,6 +6,7 @@
   "sideEffects": false,
   "exports": {
     ".": "./src/index.ts",
+    "./nearby-codec": "./src/nearby-codec.ts",
     "./nearby-pake": "./src/pake.ts"
   },
   "dependencies": {
