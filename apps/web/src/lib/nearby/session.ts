@@ -11,7 +11,7 @@ import {
   type AuthResult,
   type GuestPeer,
 } from "./peer.ts";
-import { rendezvous, type Rendezvous } from "./rendezvous.ts";
+import { rendezvous, type Rendezvous, type RendezvousState } from "./rendezvous.ts";
 import { type NearbyHost, type NearbyState, OUTDATED } from "./state.ts";
 import { tokens, type TokenStore } from "./tokens.ts";
 
@@ -34,7 +34,12 @@ export const RETRY_WINDOW = 20_000;
 export const PROOF_TIMEOUT = 15_000;
 /** How long the channel may take to answer a check that it still works. */
 export const PROBE_TIMEOUT = 4000;
-/** How long an open rendezvous may go without listing the host before it counts as gone. */
+/**
+ * How long an open rendezvous may go without listing the host before it counts as gone, while
+ * connecting, or once the host left the list in front of us (its socket closed: it quit, or that
+ * socket dropped). Reconnecting after our own socket dropped, the host may take longer to come
+ * back (its backoff is its own), so it has until the RETRY_WINDOW is up.
+ */
 export const MISSING_GRACE = 3000;
 /** How long a request may wait for its response to start before the channel is checked. */
 export const HEAD_TIMEOUT = 8000;
@@ -101,6 +106,11 @@ export function createSession(host: NearbyHost, deps: SessionDeps): NearbySessio
    * replaces it: whatever turned it away may not be the real host), but isn't offered again.
    */
   let tokenRefused = false;
+  /**
+   * The rendezvous stopped listing the host while the page's socket stayed open, so its socket
+   * closed (the rendezvous sent its `gone` too), rather than ours dropping and taking the list.
+   */
+  let hostLeft = false;
 
   const set = (next: NearbyState) => {
     state = next;
@@ -150,7 +160,7 @@ export function createSession(host: NearbyHost, deps: SessionDeps): NearbySessio
     const left = () => until - deps.now();
     for (let failures = 0; ; failures++) {
       try {
-        const listed = await locate(until, signal);
+        const listed = await locate(until, signal, mode === "reconnecting");
         const timeout = Math.min(CONNECT_TIMEOUT, left());
         const token = tokenRefused ? null : deps.tokens.load(host.key);
         const p = await deps.connect(listed, { signal, timeout, resume: token !== null });
@@ -184,11 +194,14 @@ export function createSession(host: NearbyHost, deps: SessionDeps): NearbySessio
    * The host's entry once the rendezvous lists its key. Rejects with a HostGoneError once an open
    * rendezvous hasn't listed it for MISSING_GRACE (a restarted CLI has a new key, and another
    * computer by the same name is no proof of anything), or a NearbyError at `deadline`.
+   * `reconnecting`, a host that didn't leave in front of us (see `hostLeft`) gets no grace: it may be
+   * on its way back after an outage of the rendezvous, so it is gone only at `deadline`.
    */
-  function locate(deadline: number, signal: AbortSignal): Promise<HostInfo> {
+  function locate(deadline: number, signal: AbortSignal, reconnecting: boolean): Promise<HostInfo> {
     const client = deps.rendezvous;
     return new Promise((resolve, reject) => {
       let grace: unknown = null;
+      const gone = () => new HostGoneError(`${host.name} isn't on this network any more.`);
       const finish = (settle: () => void) => {
         deps.clearTimeout(timer);
         deps.clearTimeout(grace);
@@ -206,21 +219,22 @@ export function createSession(host: NearbyHost, deps: SessionDeps): NearbySessio
         }
         const found = hosts.find((h) => h.key === host.key);
         if (found) return finish(() => resolve(found));
-        grace ??= deps.setTimeout(
-          () =>
-            finish(() => reject(new HostGoneError(`${host.name} isn't on this network any more.`))),
-          MISSING_GRACE,
-        );
+        if (reconnecting && !hostLeft) return;
+        grace ??= deps.setTimeout(() => finish(() => reject(gone())), MISSING_GRACE);
       };
       const timer = deps.setTimeout(
         () =>
           finish(() =>
             reject(
-              new NearbyError(
-                client.getSnapshot().status === "open"
-                  ? `Can't find ${host.name} on this network. Is gitui still running there with --nearby?`
-                  : "Can't reach the rendezvous server. Check your connection and try again.",
-              ),
+              client.getSnapshot().status !== "open"
+                ? new NearbyError(
+                    "Can't reach the rendezvous server. Check your connection and try again.",
+                  )
+                : reconnecting
+                  ? gone()
+                  : new NearbyError(
+                      `Can't find ${host.name} on this network. Is gitui still running there with --nearby?`,
+                    ),
             ),
           ),
         Math.max(0, deadline - deps.now()),
@@ -367,14 +381,24 @@ export function createSession(host: NearbyHost, deps: SessionDeps): NearbySessio
   // The session holds the rendezvous socket for as long as it lasts: the host ends a session as
   // soon as its guest's socket is gone, so when ours drops, so does the channel. A host that
   // leaves the list may have left a dead channel behind, and one that comes back is worth trying.
+  // It subscribes before any locate(), so `hostLeft` is up to date when one checks the list.
+  const present = ({ status, hosts }: RendezvousState) =>
+    status === "open" && hosts.some((h) => h.key === host.key);
   let wasOpen = deps.rendezvous.getSnapshot().status === "open";
+  let wasPresent = present(deps.rendezvous.getSnapshot());
   let wasListed = true;
   const stopRendezvous = deps.rendezvous.subscribe(() => {
-    const { status, hosts } = deps.rendezvous.getSnapshot();
-    const open = status === "open";
+    const snapshot = deps.rendezvous.getSnapshot();
+    const open = snapshot.status === "open";
     if (wasOpen && !open && peer) lost(peer);
     wasOpen = open;
-    const listed = !open || hosts.some((h) => h.key === host.key);
+    // A socket that drops takes the list with it, and the next one starts empty: only a host
+    // listed on an open socket that then drops off it has left.
+    const isPresent = present(snapshot);
+    if (isPresent) hostLeft = false;
+    else if (open && wasPresent) hostLeft = true;
+    wasPresent = isPresent;
+    const listed = !open || isPresent;
     if (wasListed && !listed && peer) probe(peer);
     if (open && listed && state.kind === "gone") void establish("connecting");
     wasListed = listed;
