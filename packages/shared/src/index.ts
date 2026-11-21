@@ -1,5 +1,6 @@
 export * from "./connection.ts";
 export * from "./types.ts";
+export * from "./api.ts";
 export * from "./headers.ts";
 export * from "./nearby.ts";
 // The nearby codec and authentication functions are in entries of their own,

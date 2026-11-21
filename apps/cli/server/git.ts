@@ -4,7 +4,15 @@
 import { realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { HeadInfo, FileStatus, Status, Commit, CommitDetail, Branch } from "@gitui/shared";
+import type {
+  Branch,
+  Commit,
+  CommitDetail,
+  FileStatus,
+  HeadInfo,
+  RemoteAction,
+  Status,
+} from "@gitui/shared";
 import { Effect, Fiber, FileSystem, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
@@ -586,10 +594,7 @@ export const deleteBranch = (repo: string, name: string, force: boolean) =>
 
 // ---------------------------------------------------------------- remotes
 
-export const remoteAction = Effect.fnUntraced(function* (
-  repo: string,
-  action: "fetch" | "pull" | "push",
-) {
+export const remoteAction = Effect.fnUntraced(function* (repo: string, action: RemoteAction) {
   if (action === "fetch") return yield* git(repo, ["fetch", "--all", "--prune"]);
   if (action === "pull") return yield* git(repo, ["pull", "--ff-only"]);
   const st = yield* status(repo);

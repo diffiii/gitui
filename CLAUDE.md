@@ -25,7 +25,7 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
 
 - `apps/cli/` (`@diffiii/gitui`, published to npm): the `gitui` bin (`bin/gitui.ts`, an Effect
   program run with `NodeRuntime.runMain`) and the API in `server/`, on Effect. `app.ts` holds
-  the routes (Effect's `HttpRouter`, a table in `API_ROUTES`; `createApp` returns them as a
+  the routes (Effect's `HttpRouter`, `ROUTES` keyed by the contract, served from `API_ROUTES`; `createApp` returns them as a
   layer, and `toFetch` makes a layer a scoped web handler for the nearby bridge and tests),
   `git.ts` runs the git CLI (Effect's `ChildProcessSpawner`,
   each git in a process group of its own) and parses its output, `main.ts` serves the app with
@@ -83,8 +83,12 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   `scripts/e2e.ts` checks it
   all against `wrangler dev`. Worker code is type-checked with `@cloudflare/workers-types`, tests
   and scripts with bun's.
-- `packages/shared/` (`@gitui/shared`): API types and the connection contract (default port,
-  client header, hosted origin, loopback hosts, pairing links), used by both sides, and the
+- `packages/shared/` (`@gitui/shared`): the HTTP API's contract (`api.ts`: each endpoint's
+  method and path in `API`, its query, body and response in `ApiTypes`, and `apiUrl`, which
+  spells a request's URL; plain TypeScript, which the server's routes and the web client are
+  both checked against), the entity types it carries (`types.ts`), and the connection contract
+  (default port, client header, hosted origin, loopback hosts, pairing links), used by both
+  sides, and the
   hosted app's `_headers` file (`headers.ts`, which the web build emits), imported as `@gitui/shared`. The nearby
   protocol: `nearby.ts` (the contract and its docs, and the plain helpers: `hostName`,
   `toHostName`, `printable`, `rendezvousUrl`, `sdpFingerprint`), `nearby-codec.ts` (every check
@@ -132,6 +136,16 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   which gets them decoded: routes don't read the request themselves. A body is read only for a
   route with a `body` schema, wants `content-type: application/json` (415) and at most
   `MAX_BODY_BYTES` (413); a repeated query parameter counts by its first value.
+- Adding a route: (1) an entry under the same key in `API` and `ApiTypes` in
+  `packages/shared/src/api.ts` (method and path; query, body and response; `:name` path
+  parameters come from the path); (2) its schemas in `apps/cli/server/app.ts`, which `route` and
+  `repoRoute` check against the contract for the key (a body's wire side, `Encoded`, equals the
+  contract's body; a query's decoded side reads the contract's query), along with the answer's
+  type; (3) its entry in `ROUTES`, which must have exactly the contract's keys; (4) a client
+  function in `apps/web/src/lib/api.ts` built on `call`; (5) a golden line for it in
+  `apps/web/src/lib/api.test.ts`, pinning the method, URL and body it sends. Steps 1 to 3 and a
+  `call` that doesn't match fail the type check; the golden line is what keeps the wire from
+  changing under older and newer CLIs.
 - `/api/*` access policy lives in `apps/cli/server/access.ts`, keyed by the `Listener`: the
   `x-gitui` header always. `loopback`: localhost `Host`; cross-origin callers only from
   `allowedOrigins`, with CORS headers and the pairing token (`loadToken` in `server/config.ts`)
@@ -147,7 +161,7 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   `opened`, i.e. only the `initialRepo` and the recent list, compared as realpaths, read per
   request. Every repo path a request names goes through `repoGate` (`server/repo-scope.ts`): every
   route made with `repoRoute` in `app.ts` and `/open`, which only records repos in the recent
-  list for `any`. A `repoRoute` with `lock: true` (every `mutation`, and pull) runs, once its
+  list for `any`. A `repoRoute` with `lock: true` (every write, and pull) runs, once its
   inputs are decoded, under `lockedWrite` (`server/lock.ts`: the repo's lock, then one of
   `MAX_WRITES` permits shared by all repos) in a fiber of the server's scope. A write whose
   client goes away before it holds both is dropped; one that holds them runs to the end, so a

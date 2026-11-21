@@ -4,10 +4,23 @@
 // else a 500 that says only that.
 // createApp gives the routes as a layer, which main.ts serves on a Node server and `toFetch`
 // turns into the web handler that the nearby bridge (and tests) call.
+// The routes are @gitui/shared's API contract, served: ROUTES has one per key, and `route` and
+// `repoRoute` hold each one's schemas and answer to the contract for its key.
 import os from "node:os";
 import path from "node:path";
 import { NodeServices } from "@effect/platform-node";
-import { type AppConfig, REPO_NOT_OPENED } from "@gitui/shared";
+import {
+  API,
+  type ApiKey,
+  type ApiTypes,
+  type Ok,
+  type OkOutput,
+  type ParamsOf,
+  type RemoteAction,
+  REPO_NOT_OPENED,
+  type RepoApiKey,
+  type ResponseOf,
+} from "@gitui/shared";
 import {
   ByteSize,
   Cause,
@@ -259,6 +272,9 @@ interface AppContext {
 
 type Answer = Effect.Effect<unknown, AppError, RouteServices>;
 
+/** What the route for `K` answers: the contract's response for it, or one of the app's errors. */
+type RouteAnswer<K extends ApiKey> = Effect.Effect<ResponseOf<K>, AppError, RouteServices>;
+
 /** An API route: its method, its path, and its answer in an app. */
 export interface ApiRoute {
   method: HttpMethod.HttpMethod;
@@ -278,24 +294,71 @@ interface Inputs<Q extends Schema.Decoder<unknown>, B extends Schema.Decoder<unk
 
 const NoQuery = Schema.Struct({});
 
-/** A route's inputs, decoded. */
-interface Decoded<Q extends Schema.Decoder<unknown>, B extends Schema.Decoder<unknown>> {
+/** The contract's query for `K` (`{}` for none) and its body (`undefined` for none). */
+type ContractQuery<K extends ApiKey> = ApiTypes[K] extends { query: infer Q } ? Q : {};
+type ContractBody<K extends ApiKey> = ApiTypes[K] extends { body: infer B } ? B : undefined;
+
+type Mutable<T> = T extends object ? { -readonly [P in keyof T]: Mutable<T[P]> } : T;
+type Equals<A, B> =
+  (<X>() => X extends Mutable<A> ? 1 : 2) extends <X>() => X extends Mutable<B> ? 1 : 2
+    ? true
+    : false;
+
+/**
+ * Whether a query schema that decodes to `T` reads the contract's query for `K`. A query travels
+ * as strings, so its decoded side is compared with what the client passes before encoding: the
+ * same keys, and every value the client may pass reads as the type the route gets.
+ */
+type QueryMatches<K extends ApiKey, T> =
+  Equals<keyof ContractQuery<K>, keyof T> extends true
+    ? [Required<ContractQuery<K>>] extends [T]
+      ? true
+      : false
+    : false;
+
+/**
+ * Nothing more when a route's schemas match the contract for `K`, and otherwise an input no
+ * schema is, so the route's own line fails the type check. A body's schema reads the JSON the
+ * web sends, so its wire side (`Encoded`, where a key with a default is optional) equals the
+ * contract's body.
+ */
+type Matching<
+  K extends ApiKey,
+  Q extends Schema.Decoder<unknown>,
+  B extends Schema.Decoder<unknown>,
+> = (QueryMatches<K, Q["Type"]> extends true ? unknown : { query: "does not match the contract" }) &
+  (Equals<B["Encoded"], ContractBody<K>> extends true
+    ? unknown
+    : { body: "does not match the contract" });
+
+/** A route's inputs, decoded, and its path parameters (the ones its contract path names). */
+interface Decoded<
+  K extends ApiKey,
+  Q extends Schema.Decoder<unknown>,
+  B extends Schema.Decoder<unknown>,
+> {
   query: Q["Type"];
   body: B["Type"];
+  params: { readonly [N in keyof ParamsOf<K>]?: string };
 }
 
 /**
  * The request's inputs, decoded: the whole body is read here, in the request's fiber, so a
  * slow client holds up nothing but its own request.
  */
-const decodeInputs = <Q extends Schema.Decoder<unknown>, B extends Schema.Decoder<unknown>>({
+const decodeInputs = <
+  K extends ApiKey,
+  Q extends Schema.Decoder<unknown>,
+  B extends Schema.Decoder<unknown>,
+>({
   query,
   body,
 }: Inputs<Q, B>) =>
   Effect.gen(function* () {
-    const decoded: Decoded<Q, B> = {
+    const decoded: Decoded<K, Q, B> = {
       query: query ? yield* decode(query, yield* queryParams) : {},
       body: body ? yield* readBody(body) : undefined,
+      params: yield* HttpRouter.params,
     };
     return decoded;
   });
@@ -310,60 +373,64 @@ const apiRoute = (
   handle: (app) => respond(Effect.map(answer(app), (v) => json(v))),
 });
 
-/** A route outside /api/repo, given its decoded inputs. */
-const route = <
+/**
+ * The contract's endpoint `key` outside /api/repo, given its decoded inputs. Its schemas must
+ * match the contract's query and body for `key`, and its answer the contract's response.
+ * (Exported for api-contract.test.ts.)
+ */
+export const route = <
+  K extends Exclude<ApiKey, RepoApiKey>,
   Q extends Schema.Decoder<unknown> = typeof NoQuery,
   B extends Schema.Decoder<unknown> = Schema.Undefined,
 >(
-  method: ApiRoute["method"],
-  path: HttpRouter.PathInput,
-  inputs: Inputs<Q, B>,
-  answer: (input: Decoded<Q, B>, app: AppContext) => Answer,
+  key: K,
+  { query, body }: Inputs<Q, B> & NoInfer<Matching<K, Q, B>>,
+  answer: (input: Decoded<K, Q, B>, app: AppContext) => RouteAnswer<K>,
 ): ApiRoute =>
-  apiRoute(method, path, (app) => Effect.flatMap(decodeInputs(inputs), (i) => answer(i, app)));
+  apiRoute(API[key].method, API[key].path, (app) =>
+    Effect.flatMap(decodeInputs<K, Q, B>({ query, body }), (i) => answer(i, app)),
+  );
 
 /**
- * A route under /api/repo, on the repository in `?repo=`, through the gate, then given its
- * decoded inputs. A repository path that comes any other way (a body field) must go through
- * `repos.resolve` as well.
+ * The contract's endpoint `key` under /api/repo, on the repository in `?repo=`, through the
+ * gate, then given its decoded inputs, which must match the contract as `route`'s do. A
+ * repository path that comes any other way (a body field) must go through `repos.resolve` as
+ * well.
  *
- * With `lock`, it runs under `lockedWrite`. Its inputs are read before that, so the lock covers
- * only git. Any other route stops when its client goes away, git included.
+ * With `lock` (every write), it runs under `lockedWrite`. Its inputs are read before that, so
+ * the lock covers only git. Any other route stops when its client goes away, git included.
+ * (Exported for api-contract.test.ts.)
  */
-const repoRoute = <
+export const repoRoute = <
+  K extends RepoApiKey,
   Q extends Schema.Decoder<unknown> = typeof NoQuery,
   B extends Schema.Decoder<unknown> = Schema.Undefined,
 >(
-  method: ApiRoute["method"],
-  path: `/${string}`,
-  { lock = false, ...inputs }: Inputs<Q, B> & { lock?: boolean },
-  answer: (repo: string, input: Decoded<Q, B>) => Answer,
+  key: K,
+  { lock = false, query, body }: Inputs<Q, B> & { lock?: boolean } & NoInfer<Matching<K, Q, B>>,
+  answer: (repo: string, input: Decoded<K, Q, B>) => RouteAnswer<K>,
 ): ApiRoute =>
-  apiRoute(method, `/api/repo${path}`, ({ repos, scope }) =>
+  apiRoute(API[key].method, API[key].path, ({ repos, scope }) =>
     Effect.gen(function* () {
       const input = (yield* queryParams).repo;
       if (!input) return yield* new HttpError({ status: 400, error: "Missing repo" });
       const repo = yield* repos.resolve(input);
-      const work = answer(repo, yield* decodeInputs(inputs));
+      const work = answer(repo, yield* decodeInputs<K, Q, B>({ query, body }));
       if (!lock) return yield* work;
       return yield* lockedWrite(repo, work, scope);
     }),
   );
 
-/** A POST under /api/repo that writes, under the repo's lock, given its decoded body. */
-const mutation = <B extends Schema.Decoder<unknown>>(
-  path: `/${string}`,
-  body: B,
-  answer: (repo: string, body: B["Type"]) => Answer,
-) => repoRoute("POST", path, { body, lock: true }, (repo, input) => answer(repo, input.body));
+const ok: Ok = { ok: true };
+const okOutput = (output: string): OkOutput => ({ ok: true, output });
 
 /**
  * A remote operation. Fetch and push leave the index alone, and may take long: no lock, so
  * they stop when their client goes away.
  */
-const remote = (action: "fetch" | "pull" | "push") =>
-  repoRoute("POST", `/remote/${action}`, { lock: action === "pull" }, (repo) =>
-    Effect.map(g.remoteAction(repo, action), (output) => ({ ok: true, output })),
+const remote = (action: RemoteAction) =>
+  repoRoute(action, { lock: action === "pull" }, (repo) =>
+    Effect.map(g.remoteAction(repo, action), okOutput),
   );
 
 /**
@@ -376,26 +443,31 @@ const ANY_BUT_HEAD = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"] as con
 // that don't exist.
 const notFound = () => Effect.fail(new HttpError({ status: 404, error: "Not found" }));
 
-const ok = { ok: true };
+/**
+ * The JSON 404 for `method` on any path under /api that no route of the contract has. It is no
+ * endpoint of the contract, so it isn't one of ROUTES.
+ */
+const catchAll = (method: (typeof ANY_BUT_HEAD)[number]): ApiRoute =>
+  apiRoute(method, "/api/*", notFound);
 
-/** Every API route. Tests list them from here; `createApp` serves them. */
-export const API_ROUTES: readonly ApiRoute[] = [
-  route("GET", "/api/config", {}, (_, { opts, configDir }) =>
+/** Every endpoint of the contract (@gitui/shared's API), served, and nothing else. */
+const ROUTES = {
+  config: route("config", {}, (_, { opts, configDir }) =>
     Effect.gen(function* () {
       return {
         initialRepo: opts.initialRepo ?? null,
         recent: yield* readRecent(configDir),
         home: os.homedir(),
         version: VERSION,
-      } satisfies AppConfig;
+      };
     }),
   ),
-  route("POST", "/api/open", { body: OpenBody }, ({ body }, { repos }) =>
+  open: route("open", { body: OpenBody }, ({ body }, { repos }) =>
     Effect.map(repos.open(body.path), (root) => ({ root, name: path.basename(root) })),
   ),
 
-  repoRoute("GET", "/status", {}, g.status),
-  repoRoute("GET", "/diff", { query: DiffQuery }, (repo, { query }) =>
+  status: repoRoute("status", {}, g.status),
+  diff: repoRoute("diff", { query: DiffQuery }, (repo, { query }) =>
     query.untracked
       ? Effect.flatMap(decode(WorkingPath, query.path), (file) => untrackedDiff(repo, file))
       : Effect.flatMap(decode(FilePath(), query.path), (file) =>
@@ -406,51 +478,59 @@ export const API_ROUTES: readonly ApiRoute[] = [
           }),
         ),
   ),
-  mutation("/stage", PathsBody, (repo, { paths }) => Effect.as(g.stage(repo, paths), ok)),
-  mutation("/unstage", PathsBody, (repo, { paths }) => Effect.as(g.unstage(repo, paths), ok)),
-  mutation("/discard", DiscardBody, (repo, { file }) => Effect.as(g.discard(repo, file.path), ok)),
-  mutation("/commit", CommitBody, (repo, { message, amend }) =>
-    !message.trim() && !amend
-      ? Effect.fail(g.gitError("Commit message is empty"))
-      : Effect.map(g.commit(repo, message, amend), (output) => ({ ok: true, output })),
+  stage: repoRoute("stage", { body: PathsBody, lock: true }, (repo, { body }) =>
+    Effect.as(g.stage(repo, body.paths), ok),
   ),
-  repoRoute("GET", "/last-message", {}, (repo) =>
+  unstage: repoRoute("unstage", { body: PathsBody, lock: true }, (repo, { body }) =>
+    Effect.as(g.unstage(repo, body.paths), ok),
+  ),
+  discard: repoRoute("discard", { body: DiscardBody, lock: true }, (repo, { body }) =>
+    Effect.as(g.discard(repo, body.file.path), ok),
+  ),
+  commit: repoRoute("commit", { body: CommitBody, lock: true }, (repo, { body }) =>
+    !body.message.trim() && !body.amend
+      ? Effect.fail(g.gitError("Commit message is empty"))
+      : Effect.map(g.commit(repo, body.message, body.amend), okOutput),
+  ),
+  lastMessage: repoRoute("lastMessage", {}, (repo) =>
     Effect.map(g.lastCommitMessage(repo), (message) => ({ message })),
   ),
-  repoRoute("GET", "/log", { query: LogQuery }, (repo, { query }) =>
+  log: repoRoute("log", { query: LogQuery }, (repo, { query }) =>
     Effect.map(
       g.log(repo, { limit: query.limit, all: query.all, ref: query.ref || undefined }),
       (commits) => ({ commits }),
     ),
   ),
-  repoRoute("GET", "/commit/:hash", {}, (repo) =>
-    Effect.gen(function* () {
-      const { hash } = yield* HttpRouter.params;
-      return yield* g.showCommit(repo, yield* decode(Ref("hash"), hash));
-    }),
+  showCommit: repoRoute("showCommit", {}, (repo, { params }) =>
+    Effect.flatMap(decode(Ref("hash"), params.hash), (hash) => g.showCommit(repo, hash)),
   ),
-  repoRoute("GET", "/files", {}, (repo) => workingFiles(repo)),
-  repoRoute("GET", "/file", { query: FileQuery }, (repo, { query }) =>
-    workingFile(repo, query.path),
-  ),
-  repoRoute("GET", "/branches", {}, (repo) =>
+  files: repoRoute("files", {}, (repo) => workingFiles(repo)),
+  file: repoRoute("file", { query: FileQuery }, (repo, { query }) => workingFile(repo, query.path)),
+  branches: repoRoute("branches", {}, (repo) =>
     Effect.map(g.branches(repo), (branches) => ({ branches })),
   ),
-  mutation("/checkout", CheckoutBody, (repo, { name, remote }) =>
-    Effect.as(g.checkout(repo, name, remote), ok),
+  checkout: repoRoute("checkout", { body: CheckoutBody, lock: true }, (repo, { body }) =>
+    Effect.as(g.checkout(repo, body.name, body.remote), ok),
   ),
-  mutation("/branch", BranchBody, (repo, b) =>
-    Effect.as(g.createBranch(repo, b.name, b.from || undefined, b.checkout), ok),
+  createBranch: repoRoute("createBranch", { body: BranchBody, lock: true }, (repo, { body }) =>
+    Effect.as(g.createBranch(repo, body.name, body.from || undefined, body.checkout), ok),
   ),
-  mutation("/branch/delete", DeleteBranchBody, (repo, { name, force }) =>
-    Effect.as(g.deleteBranch(repo, name, force), ok),
+  deleteBranch: repoRoute(
+    "deleteBranch",
+    { body: DeleteBranchBody, lock: true },
+    (repo, { body }) => Effect.as(g.deleteBranch(repo, body.name, body.force), ok),
   ),
-  remote("fetch"),
-  remote("pull"),
-  remote("push"),
+  fetch: remote("fetch"),
+  pull: remote("pull"),
+  push: remote("push"),
+} satisfies { [K in ApiKey]: ApiRoute };
+
+/** Every API route. Tests list them from here; `createApp` serves them. */
+export const API_ROUTES: readonly ApiRoute[] = [
+  ...Object.values(ROUTES),
   // Unknown API routes (and /api itself) get a JSON 404: the router falls back to these for
   // paths under /api/repo too, an OPTIONS preflight on a POST route included (app-guard.test.ts).
-  ...ANY_BUT_HEAD.map((method) => route(method, "/api/*", {}, notFound)),
+  ...ANY_BUT_HEAD.map(catchAll),
 ];
 
 /**

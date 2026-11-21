@@ -1,14 +1,22 @@
+// The web client of the API, built from its contract (@gitui/shared's api.ts): `call` sends an
+// endpoint's method to its path with the inputs the contract gives it, and answers with what the
+// contract says it responds. That isn't checked at runtime: the server produces it, and the type
+// check ties both sides to the contract.
 import type {
+  ApiKey,
+  ApiRequest,
   AppConfig,
   Branch,
   Commit,
   CommitDetail,
   FileStatus,
+  RemoteAction,
+  ResponseOf,
   Status,
   WorkingFile,
   WorkingFiles,
 } from "@gitui/shared";
-import { REPO_NOT_OPENED } from "@gitui/shared";
+import { API, apiUrl, REPO_NOT_OPENED } from "@gitui/shared";
 import { ApiError, apiTransport, getConnection, rejectConnection } from "./connection.ts";
 
 export type {
@@ -67,55 +75,56 @@ async function request<T>(
   return data as T;
 }
 
-const get = <T>(path: string, { signal }: Cancel = {}) => request<T>("GET", path, { signal });
-const post = <T = unknown>(path: string, body?: unknown) => request<T>("POST", path, { body });
+/** Everything `call` sends to an endpoint: what the contract has it take, and its signal. */
+export type CallOptions<K extends ApiKey> = ApiRequest<K> & Cancel;
 
-export const getConfig = (c?: Cancel) => get<AppConfig>("/api/config", c);
-export const openRepo = (path: string) =>
-  post<{ root: string; name: string }>("/api/open", { path });
+/**
+ * A request to `key` (spelled by the contract's `apiUrl`), answered with the endpoint's response.
+ * Its body is sent as JSON when there is one (an endpoint without a body in the contract gets
+ * none).
+ */
+export function call<K extends ApiKey>(key: K, options: CallOptions<K>): Promise<ResponseOf<K>> {
+  return request<ResponseOf<K>>(API[key].method, apiUrl(key, options), options);
+}
+
+export const getConfig = (c?: Cancel) => call("config", { signal: c?.signal });
+export const openRepo = (path: string) => call("open", { body: { path } });
 
 export function repoApi(repo: string) {
-  const u = (p: string, params: Record<string, string | undefined> = {}) => {
-    const sp = new URLSearchParams({ repo });
-    for (const [k, v] of Object.entries(params)) if (v !== undefined) sp.set(k, v);
-    return `/api/repo${p}?${sp}`;
-  };
   // Reads take the query's Cancel last, so `queryFn: api.status` passes it straight through.
   return {
-    status: (c?: Cancel) => get<Status>(u("/status"), c),
+    status: (c?: Cancel) => call("status", { repo, signal: c?.signal }),
     diff: (
       f: { path: string; origPath?: string; staged: boolean; untracked?: boolean },
       c?: Cancel,
     ) =>
-      get<{ diff: string; truncated: boolean }>(
-        u("/diff", {
-          path: f.path,
-          origPath: f.origPath,
-          staged: f.staged ? "1" : "0",
-          untracked: f.untracked ? "1" : "0",
-        }),
-        c,
-      ),
-    stage: (paths?: string[]) => post(u("/stage"), { paths }),
-    unstage: (paths?: string[]) => post(u("/unstage"), { paths }),
-    discard: (file: FileStatus) => post(u("/discard"), { file }),
-    commit: (message: string, amend: boolean) =>
-      post<{ output: string }>(u("/commit"), { message, amend }),
-    lastMessage: (c?: Cancel) => get<{ message: string }>(u("/last-message"), c),
+      call("diff", {
+        repo,
+        query: { path: f.path, origPath: f.origPath, staged: f.staged, untracked: !!f.untracked },
+        signal: c?.signal,
+      }),
+    stage: (paths?: string[]) => call("stage", { repo, body: { paths } }),
+    unstage: (paths?: string[]) => call("unstage", { repo, body: { paths } }),
+    discard: (file: FileStatus) => call("discard", { repo, body: { file } }),
+    commit: (message: string, amend: boolean) => call("commit", { repo, body: { message, amend } }),
+    lastMessage: (c?: Cancel) => call("lastMessage", { repo, signal: c?.signal }),
     log: (opts: { limit: number; all: boolean; ref?: string }, c?: Cancel) =>
-      get<{ commits: Commit[] }>(
-        u("/log", { limit: String(opts.limit), all: opts.all ? "1" : "0", ref: opts.ref }),
-        c,
-      ),
+      call("log", {
+        repo,
+        query: { limit: opts.limit, all: opts.all, ref: opts.ref },
+        signal: c?.signal,
+      }),
     showCommit: (hash: string, c?: Cancel) =>
-      get<CommitDetail>(u(`/commit/${encodeURIComponent(hash)}`), c),
-    files: (c?: Cancel) => get<WorkingFiles>(u("/files"), c),
-    file: (path: string, c?: Cancel) => get<WorkingFile>(u("/file", { path }), c),
-    branches: (c?: Cancel) => get<{ branches: Branch[] }>(u("/branches"), c),
-    checkout: (name: string, remote: boolean) => post(u("/checkout"), { name, remote }),
-    createBranch: (name: string, from?: string) => post(u("/branch"), { name, from }),
-    deleteBranch: (name: string, force: boolean) => post(u("/branch/delete"), { name, force }),
-    remote: (action: "fetch" | "pull" | "push") => post<{ output: string }>(u(`/remote/${action}`)),
+      call("showCommit", { repo, params: { hash }, signal: c?.signal }),
+    files: (c?: Cancel) => call("files", { repo, signal: c?.signal }),
+    file: (path: string, c?: Cancel) => call("file", { repo, query: { path }, signal: c?.signal }),
+    branches: (c?: Cancel) => call("branches", { repo, signal: c?.signal }),
+    checkout: (name: string, remote: boolean) => call("checkout", { repo, body: { name, remote } }),
+    createBranch: (name: string, from?: string) =>
+      call("createBranch", { repo, body: { name, from } }),
+    deleteBranch: (name: string, force: boolean) =>
+      call("deleteBranch", { repo, body: { name, force } }),
+    remote: (action: RemoteAction) => call(action, { repo }),
   };
 }
 
