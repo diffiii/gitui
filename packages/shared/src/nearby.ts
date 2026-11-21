@@ -74,7 +74,7 @@ export const MAX_NAME_LENGTH = 63;
  * Control characters, line and paragraph separators, and the bidi controls that could make a
  * name display as another, or a remote string drive or garble a terminal.
  */
-export const UNSAFE_CHAR = /[\p{Cc}\p{Zl}\p{Zp}؜‎‏‪-‮⁦-⁩]/u;
+export const UNSAFE_CHAR = /[\p{Cc}\p{Zl}\p{Zp}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/u;
 export const UNSAFE_CHARS = new RegExp(UNSAFE_CHAR.source, "gu");
 
 /**

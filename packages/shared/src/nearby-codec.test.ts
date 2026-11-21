@@ -248,7 +248,7 @@ test("hostName trims and bounds names by code point and rejects control and bidi
     expect(hostName(`a${bad}b`)).toBeNull();
   }
   // Emoji sequences keep their joiners.
-  expect(hostName("👩‍💻 box")).toBe("👩‍💻 box");
+  expect(hostName("👩\u200d💻 box")).toBe("👩\u200d💻 box");
 });
 
 test("printable drops control and bidi characters and caps the length", () => {
