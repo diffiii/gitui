@@ -2,9 +2,11 @@ import { expect, test } from "bun:test";
 import type { FileStatus } from "./api.ts";
 import {
   canDiscard,
+  canEditPartially,
   discardEach,
   filesUnder,
   firstChange,
+  lineActions,
   resolveChoice,
   splitChanges,
   splitDiscardable,
@@ -147,6 +149,31 @@ test("canDiscard matches what the server's discard accepts", () => {
   expect(canDiscard(file("c.ts", "U", "U", { conflicted: true }))).toBe(false);
   expect(canDiscard(file("sub", ".", "M", { repository: true }))).toBe(false);
   expect(canDiscard(file("nested/", ".", "?", { untracked: true, repository: true }))).toBe(false);
+});
+
+test("lineActions matches what the server's partialRefusal allows", () => {
+  const cases: [FileStatus, boolean, ReturnType<typeof lineActions>][] = [
+    [file("a.ts", ".", "M"), false, ["stage", "discard"]],
+    [file("a.ts", "M", "M"), false, ["stage", "discard"]],
+    [file("a.ts", "M", "M"), true, ["unstage"]],
+    [file("a.ts", "A", "."), true, ["unstage"]],
+    [file("n.ts", "R", ".", { origPath: "o.ts" }), true, ["unstage"]],
+    [file("n.ts", "R", "M", { origPath: "o.ts" }), false, ["stage", "discard"]],
+    [file("d.ts", ".", "D"), false, ["stage"]],
+    [file("d.ts", "D", "."), true, []],
+    [file("a.ts", "M", "."), false, []],
+    [file("a.ts", ".", "M"), true, []],
+    [file("n.ts", ".", "R", { origPath: "o.ts" }), false, []],
+    [file("u.ts", ".", "?", { untracked: true }), false, []],
+    [file("c.ts", "U", "U", { conflicted: true }), false, []],
+    [file("c.ts", "U", "U", { conflicted: true }), true, []],
+    [file("sub", "M", "M", { repository: true }), false, []],
+    [file("sub", "M", "M", { repository: true }), true, []],
+  ];
+  for (const [f, staged, actions] of cases) {
+    expect({ f, staged, actions: lineActions(f, staged) }).toEqual({ f, staged, actions });
+    expect(canEditPartially(f, staged)).toBe(actions.length > 0);
+  }
 });
 
 test("splitDiscardable separates the entries a discard would refuse", () => {

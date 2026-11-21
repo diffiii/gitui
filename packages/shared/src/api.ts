@@ -18,6 +18,7 @@ import type {
   WorkingFile,
   WorkingFiles,
 } from "./types.ts";
+import type { LinesAction, LineSelection } from "./lines.ts";
 
 export interface Ok {
   ok: true;
@@ -33,14 +34,39 @@ export type DiscardFile = Pick<FileStatus, "path" | "origPath" | "untracked" | "
   y?: string;
 };
 
+/**
+ * An `applyLines` request: which lines of which file's diff, and what to do with them. The side
+ * follows from the action (`unstage` takes the staged diff), and a rename's other path from git's
+ * status.
+ */
+export interface LinesRequest {
+  path: string;
+  action: LinesAction;
+  /** The `base` of the diff the lines were picked from. */
+  base: string;
+  lines: LineSelection;
+}
+
 export interface ApiTypes {
   config: { response: AppConfig };
   open: { body: { path: string }; response: { root: string; name: string } };
   status: { response: Status };
   diff: {
     query: { path: string; origPath?: string; staged: boolean; untracked: boolean };
-    response: { diff: string; truncated: boolean };
+    /**
+     * `base` identifies the diff for `applyLines`: sent for a tracked file's whole diff, never
+     * for an untracked or truncated one. A CLI older than line staging sends none.
+     */
+    response: { diff: string; truncated: boolean; base?: string };
   };
+  /**
+   * Stages (`stage`, from the unstaged diff), unstages (`unstage`, from the staged one) or
+   * discards (`discard`, from the unstaged one) some of a file's changed lines: `deletions` are
+   * old-side numbers of `-` lines and `additions` new-side numbers of `+` lines, in the diff
+   * whose `base` the client was shown. The server builds the patch itself; a selection of every
+   * changed line stages, unstages or discards the whole file instead.
+   */
+  applyLines: { body: LinesRequest; response: Ok };
   stage: { body: { paths?: string[] }; response: Ok };
   unstage: { body: { paths?: string[] }; response: Ok };
   discard: { body: { file: DiscardFile }; response: Ok };
@@ -68,6 +94,7 @@ export const API = {
   open: { method: "POST", path: "/api/open" },
   status: { method: "GET", path: "/api/repo/status" },
   diff: { method: "GET", path: "/api/repo/diff" },
+  applyLines: { method: "POST", path: "/api/repo/apply-lines" },
   stage: { method: "POST", path: "/api/repo/stage" },
   unstage: { method: "POST", path: "/api/repo/unstage" },
   discard: { method: "POST", path: "/api/repo/discard" },

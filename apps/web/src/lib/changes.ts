@@ -1,4 +1,5 @@
 import type { ContextMenuItem, GitStatusEntry } from "@pierre/trees";
+import { type LinesAction, partialRefusal } from "@gitui/shared";
 import type { FileStatus } from "./api.ts";
 
 /** A file in the Changes view: its status entry, and whether that's from the staged list. */
@@ -89,6 +90,19 @@ export function canDiscard(f: FileStatus): boolean {
   if (f.repository || f.conflicted) return false;
   return f.untracked || f.y !== ".";
 }
+
+/**
+ * What can be done to some lines of `f`'s diff in the staged or the unstaged list: what that
+ * list's actions are, less those the server's `partialRefusal` refuses.
+ */
+export function lineActions(f: FileStatus, staged: boolean): LinesAction[] {
+  const actions: LinesAction[] = staged ? ["unstage"] : ["stage", "discard"];
+  return actions.filter((a) => !partialRefusal(f, a));
+}
+
+/** Whether some lines of `f`'s diff in that list can be staged, unstaged or discarded. */
+export const canEditPartially = (f: FileStatus, staged: boolean) =>
+  lineActions(f, staged).length > 0;
 
 /** Splits `files` into those a discard can take and those it would refuse. */
 export function splitDiscardable(files: FileStatus[]) {

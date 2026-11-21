@@ -47,6 +47,23 @@ function useCodeOptions() {
   );
 }
 
+/** The options every diff here is shown with: the code options, the diff style, word diffs. */
+export function useDiffOptions() {
+  const code = useCodeOptions();
+  const [style] = useDiffStyle();
+  // Split columns don't fit a phone screen.
+  const diffStyle = useMediaQuery(NARROW) ? "unified" : style;
+  return useMemo(
+    () => ({
+      ...code,
+      diffStyle,
+      lineDiffType: "word-alt" as const,
+      hunkSeparators: "line-info" as const,
+    }),
+    [code, diffStyle],
+  );
+}
+
 /**
  * The files of `patch`. A `truncated` patch that fails to parse shows nothing here: its cut-off
  * end is the likely cause, and the truncation notice the caller shows already says so.
@@ -60,19 +77,7 @@ export function DiffFiles({
   truncated?: boolean;
   className?: string;
 }) {
-  const code = useCodeOptions();
-  const [style] = useDiffStyle();
-  // Split columns don't fit a phone screen.
-  const diffStyle = useMediaQuery(NARROW) ? "unified" : style;
-  const options = useMemo(
-    () => ({
-      ...code,
-      diffStyle,
-      lineDiffType: "word-alt" as const,
-      hunkSeparators: "line-info" as const,
-    }),
-    [code, diffStyle],
-  );
+  const options = useDiffOptions();
 
   if (failed && truncated) return null;
   if (failed) {

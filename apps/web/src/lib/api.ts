@@ -10,6 +10,7 @@ import type {
   Commit,
   CommitDetail,
   FileStatus,
+  LinesRequest,
   RemoteAction,
   ResponseOf,
   Status,
@@ -106,6 +107,7 @@ export function repoApi(repo: string) {
     stage: (paths?: string[]) => call("stage", { repo, body: { paths } }),
     unstage: (paths?: string[]) => call("unstage", { repo, body: { paths } }),
     discard: (file: FileStatus) => call("discard", { repo, body: { file } }),
+    applyLines: (body: LinesRequest) => call("applyLines", { repo, body }),
     commit: (message: string, amend: boolean) => call("commit", { repo, body: { message, amend } }),
     lastMessage: (c?: Cancel) => call("lastMessage", { repo, signal: c?.signal }),
     log: (opts: { limit: number; all: boolean; ref?: string }, c?: Cancel) =>
