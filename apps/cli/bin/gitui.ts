@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
 import os from "node:os";
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import { HOSTED_ORIGIN, pairingUrl, RENDEZVOUS_ORIGIN, rendezvousUrl } from "@gitui/shared";
@@ -11,6 +10,7 @@ import { resolveRepo } from "../server/git.ts";
 import { start } from "../server/main.ts";
 import { startNearby } from "../server/nearby/host.ts";
 import { ArgsError, HELP, hostnameAsName, type Nearby, parseArgs } from "./args.ts";
+import { openBrowser } from "./open.ts";
 
 /** What gitui prints before it exits with 1. */
 class CliError extends Data.TaggedError("CliError")<{ message: string }> {}
@@ -39,18 +39,6 @@ const listenNearby = ({ name, url }: Nearby & { url: string }, repo: string | un
     }),
   );
 
-function openBrowser(url: string) {
-  // No shell: the pairing link's `&` would split a cmd.exe command line. Detached and left to
-  // run on its own, unlike the git processes, which end with the request that started them.
-  const [cmd, ...cmdArgs] =
-    process.platform === "darwin"
-      ? ["open"]
-      : process.platform === "win32"
-        ? ["rundll32", "url.dll,FileProtocolHandler"]
-        : ["xdg-open"];
-  spawn(cmd, [...cmdArgs, url], { stdio: "ignore", detached: true }).unref();
-}
-
 const main = Effect.gen(function* () {
   const parsed = yield* Effect.suspend(() => {
     try {
@@ -78,7 +66,11 @@ const main = Effect.gen(function* () {
   const pairing = pairingUrl(HOSTED_ORIGIN, { port: bound, token: listener.token });
   yield* Console.log(`pairing link: ${pairing}`);
   if (nearby) yield* listenNearby(nearby, repo);
-  if (open) openBrowser(pairing);
+  if (open) {
+    openBrowser(pairing, () =>
+      console.log("Couldn't open a browser: open the pairing link above yourself."),
+    );
+  }
   return yield* Effect.never;
 }).pipe(
   Effect.scoped,
