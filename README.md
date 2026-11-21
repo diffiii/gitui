@@ -44,12 +44,12 @@ vp check                  # format, lint, type check
 bun test                  # run the tests
 bun run build             # type check, build the UI (apps/web/dist/) and bundle the CLI (apps/cli/dist/)
 bun apps/cli/bin/gitui.ts # run the CLI from source
-scripts/smoke.sh          # start the built bundle with node and check what it serves
+scripts/smoke.sh          # start the built bundle with node and check what it serves (RUNTIME=bun for Bun)
 ```
 
 ## Releasing
 
-`.github/workflows/release.yml` publishes `apps/cli` as `@diffiii/gitui` with npm trusted publishing (OIDC, no token), which also adds provenance. To release, bump `version` in `apps/cli/package.json`, commit, then push a matching tag: `git tag v0.1.0 && git push origin v0.1.0`. The workflow fails if the tag isn't `v` + that version.
+`.github/workflows/release.yml` publishes `apps/cli` as `@diffiii/gitui` with npm trusted publishing (OIDC, no token), which also adds provenance. To release, bump `version` in `apps/cli/package.json`, commit, then push a matching tag: `git tag v0.1.0 && git push origin v0.1.0`. The workflow fails if the tag isn't `v` + that version. It runs the CI workflow, whose Linux test job packs the tarball once both smoke tests pass, and publishes that tarball from a last job, the only one that can get the npm token.
 
 One-time setup: create a GitHub environment named `npm` (Settings → Environments; optionally restrict it to `v*` tags), then on npmjs.com: package → Settings → Trusted publishing → GitHub Actions, with user `diffiii`, repository `gitui`, workflow `release.yml` and environment `npm`. That page only exists once the package does, so the first version may have to be published by hand (`bun run build`, `cd apps/cli && bun pm pack`, then `npm publish <tarball>` from outside the repo, since npm refuses to run inside it because of the root `devEngines`).
 

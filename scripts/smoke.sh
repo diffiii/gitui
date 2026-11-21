@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-# Starts the bundled CLI with node and checks what it serves. Usage: scripts/smoke.sh
-# [path/to/gitui.js] (default apps/cli/dist/gitui.js).
+# Starts the bundled CLI with $RUNTIME (node by default, or bun) and checks what it serves.
+# Usage: [RUNTIME=bun] scripts/smoke.sh [path/to/gitui.js] (default apps/cli/dist/gitui.js).
 set -euo pipefail
 
 bin=${1:-apps/cli/dist/gitui.js}
+runtime=${RUNTIME:-node}
 tmp=$(mktemp -d)
 export XDG_CONFIG_HOME=$tmp
 pid=
 trap '[ -n "$pid" ] && kill "$pid" 2>/dev/null; rm -rf "$tmp"' EXIT
 
 fail() {
-  echo "smoke: $1" >&2
+  echo "smoke ($runtime): $1" >&2
   cat "$tmp/out.log" >&2
   exit 1
 }
@@ -18,7 +19,7 @@ fail() {
 # Starts gitui with the given flags and sets $base once it listens. The port comes from the
 # pairing link (`#port=<n>&…`), since gitui moves to the next free port if 4870 is taken.
 start() {
-  node "$bin" --no-open -p 4870 "$@" >"$tmp/out.log" 2>&1 &
+  "$runtime" "$bin" --no-open -p 4870 "$@" >"$tmp/out.log" 2>&1 &
   pid=$!
   for _ in $(seq 100); do
     port=$(sed -n 's/^pairing link: .*#port=\([0-9]*\)&.*/\1/p' "$tmp/out.log")
@@ -47,4 +48,4 @@ curl -fsS "$base/" | grep -q 'https://gitui.diffiii.dev' || fail "/ does not poi
 [ "$(status "$base/index.html")" = 404 ] || fail "served a UI file"
 stop
 
-echo "smoke: ok"
+echo "smoke ($runtime): ok"

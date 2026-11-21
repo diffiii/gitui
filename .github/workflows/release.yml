@@ -4,16 +4,16 @@ on:
   push:
     tags: ["v*"]
 
+permissions:
+  contents: read
+
 jobs:
-  publish:
+  tag-check:
     runs-on: ubuntu-latest
-    # Bind the npm trusted publisher to this environment, so only this job can publish.
-    environment: npm
-    permissions:
-      contents: read
-      id-token: write # npm trusted publishing (OIDC) and provenance
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
       - name: Check the tag matches the package version
         run: |
           version=$(jq -r .version apps/cli/package.json)
@@ -21,29 +21,24 @@ jobs:
             echo "::error::Tag $GITHUB_REF_NAME doesn't match apps/cli/package.json version $version"
             exit 1
           fi
-      - uses: oven-sh/setup-bun@v2
+
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  publish:
+    # Runs no repo code: only the tarball the CI run packed, so the OIDC token never meets the dev dependencies.
+    needs: [tag-check, ci]
+    runs-on: ubuntu-latest
+    # Bind the npm trusted publisher to this environment, so only this job can publish.
+    environment: npm
+    permissions:
+      id-token: write # npm trusted publishing (OIDC), which adds provenance on its own
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
         with:
-          bun-version: 1.4.5
-      - run: bun install --frozen-lockfile
-      - run: bunx vp check
-      - run: bun run typecheck
-      - run: bun test
-      - run: bun run --cwd apps/cli build
-      # After the build: the tooling (vite-plus) needs a newer Node than the package's floor.
-      - uses: actions/setup-node@v5
+          name: package
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
-          node-version: 22.15.0 # the engines floor of the published package (22.15 fixed strict Content-Length checks, which Effect's Node server turns on)
-      - run: scripts/smoke.sh
-      # npm refuses to run inside the repo (the root devEngines names bun), so pack with bun and
-      # publish the tarball from outside it. Trusted publishing adds provenance on its own.
-      - run: bun pm pack --destination "$RUNNER_TEMP"
-        working-directory: apps/cli
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 24
+          node-version: 24.22.3 # bundles npm 11.19.1, newer than the 11.5.1 trusted publishing needs
           registry-url: https://registry.npmjs.org
-      - name: Install npm 11.5.1 or later (trusted publishing needs it)
-        run: npm install -g npm@^11.5.1 && npm --version
-        working-directory: ${{ runner.temp }}
       - run: npm publish ./diffiii-gitui-*.tgz
-        working-directory: ${{ runner.temp }}

@@ -4,17 +4,30 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_call: # the release workflow runs it before publishing
 
+permissions:
+  contents: read
+
+# A called workflow sees the caller's github.ref, so a release's run has its own group (the tag).
+# Tag runs never cancel: a repeated push of a tag must not kill a release half way.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   check:
+    name: check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.5
       - run: bun install --frozen-lockfile
@@ -22,17 +35,60 @@ jobs:
         run: bunx vp check
       - name: Type check (project references), with Effect's diagnostics
         run: bun run typecheck
-      - name: Test
-        run: bun test
       - name: Rendezvous end-to-end (wrangler dev)
         run: bun run --cwd apps/rendezvous e2e
       - name: Build the web app
         run: bun run --cwd apps/web build
+
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    # Windows is not yet a gate: it records how the tests, the build and the smoke test fare there
+    # (symlinks, file modes and process groups differ). Its failures show without failing the run.
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    steps:
+      # Before checkout, so formatting- and patch-based tests see the same bytes on every OS.
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.5
+      - run: bun install --frozen-lockfile
+      - name: Test
+        run: bun test
+      # The steps below run after a failed test too, to show whether the build and smoke test work.
       - name: Build the CLI
+        if: ${{ !cancelled() }}
         run: bun run --cwd apps/cli build
+      - name: Smoke test the bundle under Bun
+        if: ${{ !cancelled() }}
+        env:
+          RUNTIME: bun
+        run: scripts/smoke.sh
       # After the build: the tooling (vite-plus) needs a newer Node than the package's floor.
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        if: ${{ !cancelled() }}
         with:
           node-version: 22.15.0 # the engines floor of the published package (22.15 fixed strict Content-Length checks, which Effect's Node server turns on)
       - name: Smoke test the bundle under Node
+        if: ${{ !cancelled() }}
         run: scripts/smoke.sh
+      # Packed here, after both smoke tests, so the published bytes are the tested ones. npm refuses
+      # to run inside the repo (the root devEngines names bun), so pack with bun.
+      - name: Pack the package (tags only)
+        if: ${{ matrix.os == 'ubuntu-latest' && startsWith(github.ref, 'refs/tags/v') }}
+        run: bun pm pack
+        working-directory: apps/cli
+      - uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
+        if: ${{ matrix.os == 'ubuntu-latest' && startsWith(github.ref, 'refs/tags/v') }}
+        with:
+          name: package
+          path: apps/cli/diffiii-gitui-*.tgz
+          if-no-files-found: error
+          retention-days: 1
