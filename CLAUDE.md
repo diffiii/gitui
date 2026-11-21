@@ -11,7 +11,7 @@ bun install                 # install (--frozen-lockfile to match bun.lock exact
 bun run dev [repo-path]     # API on :4777 (bun --watch) + Vite+ dev server with /api proxy
 bun test                    # bun:test; server tests run against real temp repos
 ./node_modules/.bin/tsc -b  # type check every tsconfig project
-bun run typecheck           # the same with Effect's diagnostics (effect-tsgo); CI runs this
+bun run typecheck           # the same with Effect's diagnostics (effect-tsgo), as CI and release do
 vp check                    # format, lint (type-aware), type check
 bun run build               # tsc -b, build apps/web, bundle the CLI into apps/cli/dist
 cd apps/web && bun run deploy  # build and deploy the hosted UI to Cloudflare (needs wrangler login)
@@ -146,6 +146,8 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   their TypeScript server is `effect-tsgo tsc --lsp --stdio`.
 - Put each dependency in the package that uses it (in `apps/cli` as devDependencies, since
   they're bundled); shared tooling (typescript, vite-plus, @types/bun) stays at the root.
+  `@effect/tsgo` (`bun run typecheck`) ships its own TypeScript compiler: move it in lockstep
+  with `typescript`, to a release built on the same TypeScript version.
 - Add shadcn components under `apps/web/src/components/ui` (run `shadcn` from `apps/web`).
 - Tests: don't import `apps/web/src/lib/prefs.ts`, because it touches `window` at import time.
   Server tests build repos with the helpers in `apps/cli/server/test-repo.ts`, which isolate
