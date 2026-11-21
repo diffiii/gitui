@@ -40,13 +40,13 @@ const devServerFlag = (): Plugin => ({
 /**
  * Modules the main chunk (or a chunk it imports statically) must not have, since they load on
  * demand: the nearby code and Effect, which its codec brings (src/lib/nearby/lazy.ts), and the
- * repo views' diff and file-tree libraries (src/components/RepoViews.tsx, which App.tsx loads).
- * A page on the connect screen or the repository picker uses none of them, and a static import
- * would quietly undo that.
+ * repo views' diff, file-tree and resizable-panel libraries (src/components/RepoViews.tsx, which
+ * App.tsx loads). A page on the connect screen or the repository picker uses none of them, and a
+ * static import would quietly undo that.
  */
 const LAZY_ONLY = [
   /[\\/]node_modules[\\/]effect[\\/]|[\\/]nearby-codec\.ts$/,
-  /[\\/]node_modules[\\/]@pierre[\\/](?:diffs|trees)[\\/]/,
+  /[\\/]node_modules[\\/](?:@pierre[\\/](?:diffs|trees)|react-resizable-panels)[\\/]/,
 ];
 
 /** Fails the build if the main chunk, or a chunk it imports statically, has a LAZY_ONLY module. */
@@ -60,7 +60,13 @@ const mainChunkWithoutLazyCode = (): Plugin => ({
       const chunk = bundle[fileName];
       if (chunk?.type !== "chunk") continue;
       const found = chunk.moduleIds.find((id) => LAZY_ONLY.some((re) => re.test(id)));
-      if (found) this.error(`The main chunk must not include ${found}: import it lazily.`);
+      if (found) {
+        this.error(
+          `The main chunk must not include ${found}: import it lazily. A shell module (App, ` +
+            `AppHeader, HeaderActions, BranchSwitcher, RepoPicker, ConnectionGate) likely imports ` +
+            `a view, DiffView or PathTree: put what they share in src/lib/ (as lib/branches.ts).`,
+        );
+      }
       for (const imported of chunk.imports) seen.add(imported);
     }
   },
