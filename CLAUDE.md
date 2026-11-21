@@ -16,7 +16,7 @@ vp check                    # format, lint (type-aware), type check
 bun run build               # tsc -b, build apps/web, bundle the CLI into apps/cli/dist
 cd apps/web && bun run deploy  # build and deploy the hosted UI to Cloudflare (needs wrangler login)
 cd apps/rendezvous && bun run dev  # nearby rendezvous Worker on :8787 (wrangler dev)
-scripts/smoke.sh            # run the built CLI with node and probe it
+scripts/smoke.sh            # run the built CLI with node and probe it (RUNTIME=bun for Bun)
 ```
 
 ## Layout
@@ -94,8 +94,11 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
 - Root: `scripts/dev.ts` (runs both apps), `scripts/smoke.sh` (runs the built bundle with node
   in both modes and checks what it serves; CI and release run it), `vite.config.ts` (workspace
   fmt/lint/type check config, `defaultPackage` points `vp dev`/`vp build` at `apps/web`),
-  `tsconfig.json` (project references to every package), `.github/workflows/release.yml`
-  (publishes the CLI to npm on `v*` tags matching its version, via trusted publishing).
+  `tsconfig.json` (project references to every package), `.github/workflows/ci.yml`
+  (a `check` job and a `test` job on Linux, macOS and Windows, the last not yet a gate; it also
+  runs as `workflow_call`) and `.github/workflows/release.yml` (on `v*` tags: checks the tag
+  against the version, runs ci.yml, whose Linux `test` leg packs the tested tarball, then a
+  `publish` job with only that tarball publishes it to npm via trusted publishing).
 
 ## Conventions
 
