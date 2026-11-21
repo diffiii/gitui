@@ -192,6 +192,12 @@ describe("status", () => {
   });
 });
 
+test("gitSubcommand names the subcommand after any -c pairs", () => {
+  expect(g.gitSubcommand(["diff", "--cached"])).toBe("diff");
+  expect(g.gitSubcommand(["-c", "diff.suppressBlankEmpty=false", "diff", "-U3"])).toBe("diff");
+  expect(g.gitSubcommand(["-c", "a=b", "-c", "c=d", "apply", "-"])).toBe("apply");
+});
+
 describe("discardCommand", () => {
   const entry = (e: Partial<g.FileStatus>): g.FileStatus => ({ x: ".", y: "M", path: "f", ...e });
   const lit = (...p: string[]) => ["--", ...p.map((x) => `:(literal)${x}`)];

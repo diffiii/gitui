@@ -96,6 +96,20 @@ const golden: [string, () => Promise<unknown>, Sent][] = [
     ),
   ],
   [
+    "applyLines",
+    () =>
+      api.applyLines({
+        path: "a b.txt",
+        action: "unstage",
+        base: "ab".repeat(32),
+        lines: { deletions: [3], additions: [4, 5] },
+      }),
+    post(
+      "/api/repo/apply-lines?repo=%2Fr",
+      `{"path":"a b.txt","action":"unstage","base":"${"ab".repeat(32)}","lines":{"deletions":[3],"additions":[4,5]}}`,
+    ),
+  ],
+  [
     "commit",
     () => api.commit("Fix it", false),
     post("/api/repo/commit?repo=%2Fr", '{"message":"Fix it","amend":false}'),

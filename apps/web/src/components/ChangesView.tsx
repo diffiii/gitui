@@ -10,6 +10,7 @@ import { Textarea } from "@/components/ui/textarea";
 import type { FileStatus } from "@/lib/api";
 import {
   canDiscard,
+  canEditPartially,
   discardEach,
   filesUnder,
   firstChange,
@@ -31,6 +32,7 @@ import { EmptyState } from "./EmptyState";
 import { FileTitle } from "./FileTitle";
 import { ListDetail } from "./ListDetail";
 import { PathTree } from "./PathTree";
+import { StageableDiff } from "./StageableDiff";
 import { TruncatedNotice } from "./TruncatedNotice";
 
 export function ChangesView() {
@@ -316,7 +318,7 @@ function DiscardDialog({
 function FileDiffPane({ file, staged }: { file: FileStatus; staged: boolean }) {
   const { repo, api } = useRepo();
   const untracked = !!file.untracked && !staged;
-  const { data, error } = useQuery({
+  const { data, error, isPlaceholderData } = useQuery({
     queryKey: [repo, "diff", file.path, file.origPath, staged, untracked],
     queryFn: (c) => api.diff({ path: file.path, origPath: file.origPath, staged, untracked }, c),
     refetchInterval: (q) => pollInterval(q.state.data?.diff.length),
@@ -346,10 +348,17 @@ function FileDiffPane({ file, staged }: { file: FileStatus; staged: boolean }) {
       <EmptyState icon={FileDiff} title="No textual changes" description={file.path} />
     );
   }
+  // Not the other side's diff, kept up until this one arrives; no base, no line staging.
+  const { base } = data;
+  const stageable = base && !isPlaceholderData && canEditPartially(file, staged);
   return (
     <ScrollArea className="h-full">
       {data.truncated && <TruncatedNotice className="mx-3 mt-3" />}
-      <DiffView raw={data.diff} truncated={data.truncated} className="p-3" />
+      {stageable ? (
+        <StageableDiff file={file} staged={staged} diff={data.diff} base={base} />
+      ) : (
+        <DiffView raw={data.diff} truncated={data.truncated} className="p-3" />
+      )}
     </ScrollArea>
   );
 }

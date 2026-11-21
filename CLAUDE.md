@@ -28,7 +28,11 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   the routes (Effect's `HttpRouter`, `ROUTES` keyed by the contract, served from `API_ROUTES`; `createApp` returns them as a
   layer, and `toFetch` makes a layer a scoped web handler for the nearby bridge and tests),
   `git.ts` runs the git CLI (Effect's `ChildProcessSpawner`,
-  each git in a process group of its own) and parses its output, `main.ts` serves the app with
+  each git in a process group of its own) and parses its output. `lines.ts` stages, unstages or
+  discards some lines (`applyLines`): it builds the patch in `patch.ts` (pure) from a diff it
+  computes again and checks against the `base` (its hash) the page was shown, takes the file's
+  entry from git's status, and never takes patch text from a request; which files it refuses
+  is `partialRefusal` in `@gitui/shared`, which the web app's buttons follow. `main.ts` serves the app with
   `NodeHttpServer` on 127.0.0.1, with only a plain-text pointer to the hosted app at `/` (a
   route of its own, outside the API's access checks): the CLI serves no UI. `bin/args.ts` parses the command line (pure), `bin/open.ts` opens the browser, `dev.ts` is the dev API
   entry. `server/nearby/` is `--nearby`, the host

@@ -67,6 +67,13 @@ const FORCE_KILL_AFTER = "2 seconds";
 
 const text = (chunks: Uint8Array[]) => Buffer.concat(chunks).toString("utf8");
 
+/** The subcommand `args` run, after any `-c name=value` pairs before it: what a message names. */
+export const gitSubcommand = (args: string[]) => {
+  let i = 0;
+  while (args[i] === "-c") i += 2;
+  return args[i] ?? "";
+};
+
 /** Run git; stdout past `maxBytes` (default 8 MB) is silently dropped. */
 export const git = (
   cwd: string,
@@ -179,7 +186,7 @@ export const run = (
     const code: number = yield* handle.exitCode;
     if (okCodes.includes(code)) return { stdout, truncated };
     return yield* new GitError({
-      message: errText || `git ${args[0]} exited with ${code}`,
+      message: errText || `git ${gitSubcommand(args)} exited with ${code}`,
       code,
       stderr: errText,
     });
@@ -194,7 +201,9 @@ export const run = (
       duration: timeoutMs,
       orElse: () =>
         Effect.fail(
-          gitError(`git ${args[0]} timed out after ${timeoutMs / 1000} s (GITUI_GIT_TIMEOUT)`),
+          gitError(
+            `git ${gitSubcommand(args)} timed out after ${timeoutMs / 1000} s (GITUI_GIT_TIMEOUT)`,
+          ),
         ),
     }),
   );
@@ -303,7 +312,8 @@ export function parseStatus(raw: string) {
   return { head, files };
 }
 
-const statusArgs = ["status", "--porcelain=v2", "-z", "--untracked-files=all"];
+/** `git status` as `parseStatus` reads it, every untracked file listed. */
+export const statusArgs = ["status", "--porcelain=v2", "-z", "--untracked-files=all"];
 
 export const status = Effect.fnUntraced(function* (repo: string) {
   const { stdout, truncated } = yield* run(repo, [...statusArgs, "--branch"]);
@@ -361,8 +371,14 @@ export const fileDiff = (
   gitPatch(
     repo,
     [
+      // The format `applyLines` reads and builds its patches from, whatever the repo's config
+      // says: every hunk line starts with its marker (an empty context line too), and three
+      // lines of context, which `git apply` needs.
+      "-c",
+      "diff.suppressBlankEmpty=false",
       "diff",
       "--no-color",
+      "-U3",
       "-M",
       // A repo's config can name textconv and external diff commands; gitui shows git's own diff.
       "--no-ext-diff",

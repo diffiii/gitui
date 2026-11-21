@@ -43,6 +43,7 @@ import { type AccessOptions, access } from "./access.ts";
 import { CONFIG_DIR, readRecent } from "./config.ts";
 import { untrackedDiff, workingFile, workingFiles } from "./files.ts";
 import * as g from "./git.ts";
+import { applyLines, diffBase } from "./lines.ts";
 import { lockedWrite } from "./lock.ts";
 import { type RepoGate, type RepoNotOpenedError, repoGate } from "./repo-scope.ts";
 import { VERSION } from "./version.ts";
@@ -135,6 +136,39 @@ const BranchBody = Body({
   checkout: Flag("checkout", true),
 });
 const DeleteBranchBody = Body({ name: Ref("branch"), force: Flag("force") });
+
+/** The most line numbers a side of a line selection may name. */
+const MAX_SELECTED_LINES = 100_000;
+
+/** A list of line numbers, each a positive integer. */
+const LineNumbers = (field: string) =>
+  withMessage(
+    Schema.mutable(
+      Schema.Array(
+        withMessage(
+          Schema.Number,
+          `Invalid ${field}`,
+          Schema.isInt({ message: `Invalid ${field}` }),
+          Schema.isGreaterThanOrEqualTo(1, { message: `Invalid ${field}` }),
+        ),
+      ),
+    ),
+    `Invalid ${field}`,
+    Schema.isMaxLength(MAX_SELECTED_LINES, { message: `Too many ${field}` }),
+  );
+
+const LinesBody = Body({
+  path: FilePath(),
+  action: withMessage(Schema.Literals(["stage", "unstage", "discard"]), "Invalid action"),
+  base: checkedString("base", (v) => /^[0-9a-f]{64}$/.test(v)),
+  lines: withMessage(
+    Schema.Struct({
+      deletions: LineNumbers("lines.deletions"),
+      additions: LineNumbers("lines.additions"),
+    }),
+    "Invalid lines",
+  ),
+});
 
 /** `input` decoded with `schema`, or a GitError with the schema's message for what's wrong. */
 const decode = <S extends Schema.Decoder<unknown>>(schema: S, input: unknown) =>
@@ -471,12 +505,20 @@ const ROUTES = {
     query.untracked
       ? Effect.flatMap(decode(WorkingPath, query.path), (file) => untrackedDiff(repo, file))
       : Effect.flatMap(decode(FilePath(), query.path), (file) =>
-          g.fileDiff(repo, {
-            path: file,
-            origPath: query.origPath || undefined,
-            staged: query.staged,
-          }),
+          Effect.map(
+            g.fileDiff(repo, {
+              path: file,
+              origPath: query.origPath || undefined,
+              staged: query.staged,
+            }),
+            // `applyLines` takes lines of the whole diff only, as it computes it again.
+            ({ diff, truncated }) =>
+              truncated ? { diff, truncated } : { diff, truncated, base: diffBase(diff) },
+          ),
         ),
+  ),
+  applyLines: repoRoute("applyLines", { body: LinesBody, lock: true }, (repo, { body }) =>
+    Effect.as(applyLines(repo, body), ok),
   ),
   stage: repoRoute("stage", { body: PathsBody, lock: true }, (repo, { body }) =>
     Effect.as(g.stage(repo, body.paths), ok),
