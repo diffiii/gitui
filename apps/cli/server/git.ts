@@ -225,12 +225,13 @@ export const resolveRepo = Effect.fnUntraced(function* (input: string) {
   if (info._tag === "None" || info.value.type !== "Directory") {
     return yield* gitError(`Not a directory: ${dir}`);
   }
+  const notRepo = gitError(`Not a git repository: ${dir}`);
   const top = (yield* git(dir, ["rev-parse", "--show-toplevel"]).pipe(
-    Effect.mapError(() => gitError(`Not a git repository: ${dir}`)),
+    Effect.mapError(() => notRepo),
   )).trim();
   // Git resolves the top level itself, but git for Windows prints it with forward slashes.
   if (process.platform !== "win32") return top;
-  return (yield* realPath(top)) ?? path.normalize(top);
+  return (yield* realPath(top)) ?? (yield* notRepo);
 });
 
 // ---------------------------------------------------------------- status
