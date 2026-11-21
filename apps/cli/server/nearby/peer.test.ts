@@ -430,6 +430,19 @@ test("candidates are capped each way, and a guest's for another offer are droppe
   expect(peer!.added).toEqual([...Array(MAX_REMOTE_CANDIDATES).keys()].map(candidate));
 });
 
+test("an offer the peer connection can't answer is refused, and says why", async () => {
+  const fake = fakePeers();
+  const guest = await fakeSession({
+    peer: (stunUrls, events) => ({
+      ...fake.peer(stunUrls, events),
+      answer: () => Promise.reject(new Error("bad SDP")),
+    }),
+  });
+  expect(guest.signals).toEqual([{ kind: "refused", offerId: OFFER_ID, reason: "bad-offer" }]);
+  expect(guest.log).toEqual(["Nearby: couldn't answer a device: bad SDP"]);
+  expect(guest.ended).toBe(1);
+});
+
 test("a session whose teardown throws still ends, says why, and doesn't throw", async () => {
   const fake = fakePeers({ closeThrows: () => true });
   const guest = await fakeSession({ peer: fake.peer });
