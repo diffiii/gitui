@@ -30,7 +30,7 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   `git.ts` runs the git CLI (Effect's `ChildProcessSpawner`,
   each git in a process group of its own) and parses its output, `main.ts` serves the app with
   `NodeHttpServer` on 127.0.0.1, with only a plain-text pointer to the hosted app at `/` (a
-  route of its own, outside the API's access checks): the CLI serves no UI. `bin/args.ts` parses the command line (pure), `dev.ts` is the dev API
+  route of its own, outside the API's access checks): the CLI serves no UI. `bin/args.ts` parses the command line (pure), `bin/open.ts` opens the browser, `dev.ts` is the dev API
   entry. `server/nearby/` is `--nearby`, the host
   side of `@gitui/shared`'s nearby protocol: `rendezvous.ts` (one `ws` socket, pinned to IPv4
   or IPv6, kept up by a fiber that pings and reconnects), `peer.ts` (one guest: answer,
@@ -138,6 +138,8 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   fetch and push included, stops with its client, git and all. A refusal is a
   403 `{ error, code: REPO_NOT_OPENED }`. New routes that take a repo path must use the gate.
   Server tests pass `configDir` to `createApp` so they never touch the real recent list.
+- The hosted page reads a JSON 404 from the API as "this CLI is older than the page" (`api.ts`):
+  answer 404 only for routes that don't exist (`notFound` in `app.ts`), never for missing data.
 - Frontend data goes through TanStack Query with keys that start with the repo:
   `[repo, "status"]`, `[repo, "log", ...]`. Repo mutations use `useGitMutation` from
   `apps/web/src/lib/repo.tsx`, which invalidates `[repo]` when it settles and toasts errors.

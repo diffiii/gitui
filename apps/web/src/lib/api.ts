@@ -1,4 +1,5 @@
 import type {
+  AppConfig,
   Branch,
   Commit,
   CommitDetail,
@@ -10,7 +11,16 @@ import type {
 import { REPO_NOT_OPENED } from "@gitui/shared";
 import { ApiError, apiTransport, getConnection, rejectConnection } from "./connection.ts";
 
-export type { Branch, Commit, CommitDetail, FileStatus, Status, WorkingFile, WorkingFiles };
+export type {
+  AppConfig,
+  Branch,
+  Commit,
+  CommitDetail,
+  FileStatus,
+  Status,
+  WorkingFile,
+  WorkingFiles,
+};
 
 /** What a query passes its queryFn; its signal cancels the request. */
 export interface Cancel {
@@ -33,7 +43,11 @@ async function request<T>(
     if (signal?.aborted) throw signal.reason;
     throw new ApiError("Can't reach gitui", "unreachable");
   });
-  const data = await res.json().catch(() => ({ error: res.statusText }));
+  let isJson = true;
+  const data = await res.json().catch(() => {
+    isJson = false;
+    return { error: res.statusText };
+  });
   if (res.status === 401) {
     rejectConnection(connection);
     throw new ApiError(data.error ?? res.statusText, "unauthorized");
@@ -41,18 +55,20 @@ async function request<T>(
   if (res.status === 403 && data.code === REPO_NOT_OPENED) {
     throw new ApiError(data.error, "not-opened");
   }
+  // The API's catch-all answers unknown routes with a JSON 404 and nothing else does with JSON
+  // (the access checks' 404 for oddly spelled paths is plain text): the CLI is older than this page.
+  if (res.status === 404 && isJson) {
+    throw new ApiError(
+      "This needs a newer gitui: run the latest (npx @diffiii/gitui@latest) or update your install, then restart it.",
+      "http",
+    );
+  }
   if (!res.ok) throw new ApiError(data.error ?? res.statusText, "http");
   return data as T;
 }
 
 const get = <T>(path: string, { signal }: Cancel = {}) => request<T>("GET", path, { signal });
 const post = <T = unknown>(path: string, body?: unknown) => request<T>("POST", path, { body });
-
-export interface AppConfig {
-  initialRepo: string | null;
-  recent: string[];
-  home: string;
-}
 
 export const getConfig = (c?: Cancel) => get<AppConfig>("/api/config", c);
 export const openRepo = (path: string) =>

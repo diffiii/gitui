@@ -7,7 +7,7 @@
 import os from "node:os";
 import path from "node:path";
 import { NodeServices } from "@effect/platform-node";
-import { REPO_NOT_OPENED } from "@gitui/shared";
+import { type AppConfig, REPO_NOT_OPENED } from "@gitui/shared";
 import {
   ByteSize,
   Cause,
@@ -33,6 +33,7 @@ import { untrackedDiff, workingFile, workingFiles } from "./files.ts";
 import * as g from "./git.ts";
 import { withWriteLock } from "./lock.ts";
 import { type RepoGate, type RepoNotOpenedError, repoGate } from "./repo-scope.ts";
+import { VERSION } from "./version.ts";
 import { issueMessage, withMessage } from "./schema-messages.ts";
 
 export interface AppOptions extends AccessOptions {
@@ -375,6 +376,8 @@ const remote = (action: "fetch" | "pull" | "push") =>
  */
 const ANY_BUT_HEAD = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"] as const;
 
+// The hosted page reads this JSON 404 as an outdated CLI (api.ts): answer 404 only for routes
+// that don't exist.
 const notFound = () => Effect.fail(new HttpError({ status: 404, error: "Not found" }));
 
 const ok = { ok: true };
@@ -387,7 +390,8 @@ export const API_ROUTES: readonly ApiRoute[] = [
         initialRepo: opts.initialRepo ?? null,
         recent: yield* readRecent(configDir),
         home: os.homedir(),
-      };
+        version: VERSION,
+      } satisfies AppConfig;
     }),
   ),
   route("POST", "/api/open", { body: OpenBody }, ({ body }, { repos }) =>
