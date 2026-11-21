@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { CheckCheck, FileDiff, Minus, Plus, Undo2 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -357,9 +358,19 @@ function CommitBox({ stagedCount }: { stagedCount: number }) {
     );
   };
 
-  const toggleAmend = async (on: boolean) => {
+  // Each toggle starts a new turn; a reply fills the box only if no toggle came after it and the
+  // box is still empty.
+  const amendTurn = useRef(0);
+  const toggleAmend = (on: boolean) => {
     setAmend(on);
-    if (on && !message.trim()) setMessage((await api.lastMessage()).message.trim());
+    const turn = ++amendTurn.current;
+    if (!on || message.trim()) return;
+    api.lastMessage().then(
+      ({ message: last }) => {
+        if (amendTurn.current === turn) setMessage((m) => (m.trim() ? m : last.trim()));
+      },
+      (e: Error) => toast.error(e.message),
+    );
   };
 
   return (
