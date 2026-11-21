@@ -63,8 +63,9 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   Effect, stays out of the main chunk:
   only `lazy.ts`, `state.ts` and `errors.ts` load up front, and `lazy.ts` imports the rest
   (`client.ts`) on demand, for the connect screen's host list or a nearby connection, whose
-  session it wraps until it loads. A `vite.config.ts` plugin fails the build if the main chunk
-  has Effect or the codec in it. `wrangler.jsonc` builds the repo (its `build` command,
+  session it wraps until it loads. The repo views (`RepoViews.tsx`, with `@pierre/diffs` and
+  `@pierre/trees`) load on demand too, from `App.tsx`. A `vite.config.ts` plugin fails the build
+  if the main chunk has Effect, the codec, or those two in it. `wrangler.jsonc` builds the repo (its `build` command,
   with the production rendezvous) and deploys `dist/` as Cloudflare Workers static assets, with the `_headers` file that a `vite.config.ts` plugin writes into the
   build from `hostedHeadersFile` (its CSP follows `VITE_GITUI_RENDEZVOUS_URL`), on the custom
   domain `gitui.diffiii.dev` (`HOSTED_ORIGIN`).
