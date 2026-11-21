@@ -207,7 +207,7 @@ export const untrackedDiff = Effect.fnUntraced(function* (
   yield* assertWorkingFile(repo, file, { untracked: true });
   const { patch, truncated } = yield* gitPatch(
     repo,
-    ["diff", "--no-index", "--no-color", "--", "/dev/null", file],
+    ["diff", "--no-index", "--no-color", "--no-ext-diff", "--no-textconv", "--", "/dev/null", file],
     { okCodes: [0, 1], maxBytes },
   );
   return { diff: patch, truncated };

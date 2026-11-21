@@ -91,7 +91,18 @@ export const run = (
   const { okCodes = [0], maxBytes = MAX_OUTPUT, timeoutMs } = opts;
   const command = ChildProcess.make(
     "git",
-    ["-c", "core.quotepath=false", "-c", "color.ui=false", "--no-pager", ...args],
+    [
+      "-c",
+      "core.quotepath=false",
+      "-c",
+      "color.ui=false",
+      // A repo's own config can name an fsmonitor command, which git would run on every status
+      // and diff; gitui never needs it.
+      "-c",
+      "core.fsmonitor=false",
+      "--no-pager",
+      ...args,
+    ],
     {
       cwd,
       env: { GIT_TERMINAL_PROMPT: "0", GIT_OPTIONAL_LOCKS: "0", LC_ALL: "C" },
@@ -307,7 +318,9 @@ export const fileDiff = (
       "diff",
       "--no-color",
       "-M",
+      // A repo's config can name textconv and external diff commands; gitui shows git's own diff.
       "--no-ext-diff",
+      "--no-textconv",
       ...(opts.staged ? ["--cached"] : []),
       ...pathspec(opts.origPath ? [opts.origPath, opts.path] : [opts.path]),
     ],
@@ -448,6 +461,7 @@ export const showCommit = Effect.fnUntraced(function* (
       "-M",
       "--diff-merges=first-parent",
       "--no-ext-diff",
+      "--no-textconv",
       hash,
       "--",
     ],
