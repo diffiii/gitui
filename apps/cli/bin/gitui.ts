@@ -9,6 +9,7 @@ import { pushRecent } from "../server/config.ts";
 import { resolveRepo } from "../server/git.ts";
 import { start } from "../server/main.ts";
 import { startNearby } from "../server/nearby/host.ts";
+import { VERSION } from "../server/version.ts";
 import { ArgsError, HELP, hostnameAsName, type Nearby, parseArgs } from "./args.ts";
 import { openBrowser } from "./open.ts";
 
@@ -49,6 +50,7 @@ const main = Effect.gen(function* () {
     }
   });
   if (parsed === "help") return yield* Console.log(HELP);
+  if (parsed === "version") return yield* Console.log(VERSION);
   const { port, open, origins, target } = parsed;
   const nearby = parsed.nearby ? { ...parsed.nearby, url: yield* nearbyUrl } : null;
 

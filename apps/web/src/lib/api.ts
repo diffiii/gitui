@@ -1,4 +1,5 @@
 import type {
+  AppConfig,
   Branch,
   Commit,
   CommitDetail,
@@ -10,7 +11,7 @@ import type {
 import { REPO_NOT_OPENED } from "@gitui/shared";
 import { ApiError, apiTransport, getConnection, rejectConnection } from "./connection.ts";
 
-export type { Branch, Commit, CommitDetail, FileStatus, Status, WorkingFile, WorkingFiles };
+export type { AppConfig, Branch, Commit, CommitDetail, FileStatus, Status, WorkingFile, WorkingFiles };
 
 /** What a query passes its queryFn; its signal cancels the request. */
 export interface Cancel {
@@ -47,12 +48,6 @@ async function request<T>(
 
 const get = <T>(path: string, { signal }: Cancel = {}) => request<T>("GET", path, { signal });
 const post = <T = unknown>(path: string, body?: unknown) => request<T>("POST", path, { body });
-
-export interface AppConfig {
-  initialRepo: string | null;
-  recent: string[];
-  home: string;
-}
 
 export const getConfig = (c?: Cancel) => get<AppConfig>("/api/config", c);
 export const openRepo = (path: string) =>

@@ -46,6 +46,12 @@ test("--help stops parsing where it appears", () => {
   expect(parseArgs(["-p", "5000", "-h", "--bogus"])).toBe("help");
 });
 
+test("--version and -v ask for the version", () => {
+  expect(parseArgs(["--version"])).toBe("version");
+  expect(parseArgs(["-v"])).toBe("version");
+  expect(parseArgs(["-p", "5000", "-v"])).toBe("version");
+});
+
 test("an unknown option is refused with the help", () => {
   expect(refusal(["--bogus"])).toStartWith("Unknown option --bogus\n\ngitui");
 });

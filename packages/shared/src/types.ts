@@ -75,6 +75,17 @@ export type WorkingFile =
   | { kind: "binary"; size: number }
   | { kind: "tooLarge"; size: number };
 
+/** What GET /api/config answers. */
+export interface AppConfig {
+  /** The repository `gitui <path>` was started with, if any. */
+  initialRepo: string | null;
+  /** Recently opened repositories, newest first. */
+  recent: string[];
+  home: string;
+  /** The CLI's version (its package.json's); CLIs before 0.7.0 don't send it. */
+  version?: string;
+}
+
 /**
  * `code` of the 403 a device other than the computer running gitui (over nearby) gets for a
  * repository that wasn't opened on that computer: `{ error, code: REPO_NOT_OPENED }`.

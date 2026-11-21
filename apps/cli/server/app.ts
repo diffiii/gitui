@@ -7,7 +7,7 @@
 import os from "node:os";
 import path from "node:path";
 import { NodeServices } from "@effect/platform-node";
-import { REPO_NOT_OPENED } from "@gitui/shared";
+import { type AppConfig, REPO_NOT_OPENED } from "@gitui/shared";
 import {
   ByteSize,
   Cause,
@@ -33,6 +33,7 @@ import { untrackedDiff, workingFile, workingFiles } from "./files.ts";
 import * as g from "./git.ts";
 import { withWriteLock } from "./lock.ts";
 import { type RepoGate, type RepoNotOpenedError, repoGate } from "./repo-scope.ts";
+import { VERSION } from "./version.ts";
 import { issueMessage, withMessage } from "./schema-messages.ts";
 
 export interface AppOptions extends AccessOptions {
@@ -387,7 +388,8 @@ export const API_ROUTES: readonly ApiRoute[] = [
         initialRepo: opts.initialRepo ?? null,
         recent: yield* readRecent(configDir),
         home: os.homedir(),
-      };
+        version: VERSION,
+      } satisfies AppConfig;
     }),
   ),
   route("POST", "/api/open", { body: OpenBody }, ({ body }, { repos }) =>

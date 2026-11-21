@@ -21,6 +21,7 @@ Options:
   --name <name>           the name phones see with --nearby (default: this machine's hostname)
   --allow-origin <origin> also let the web app at <origin> call the API (repeatable)
   --no-open               don't open the browser
+  -v, --version           print gitui's version
   -h, --help              show this help`;
 
 /** `--nearby`: the name phones see, or null for this machine's hostname. */
@@ -50,8 +51,11 @@ export interface Options {
 /** A command line gitui can't run with; `message` says why. */
 export class ArgsError extends Error {}
 
-/** The options in `argv` (without node and the script), or "help" for `-h`/`--help`. */
-export function parseArgs(argv: string[]): Options | "help" {
+/**
+ * The options in `argv` (without node and the script), or "help" for `-h`/`--help`, or
+ * "version" for `-v`/`--version`.
+ */
+export function parseArgs(argv: string[]): Options | "help" | "version" {
   const options: Options = {
     port: DEFAULT_PORT,
     open: true,
@@ -65,6 +69,7 @@ export function parseArgs(argv: string[]): Options | "help" {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "-h" || a === "--help") return "help";
+    else if (a === "-v" || a === "--version") return "version";
     else if (a === "-p" || a === "--port") {
       const port = Number(argv[++i]);
       if (!Number.isInteger(port) || port < 1 || port > 65535) {
