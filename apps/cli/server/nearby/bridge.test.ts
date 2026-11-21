@@ -9,6 +9,7 @@ import {
   parseChunk,
 } from "@gitui/shared";
 import { createApp } from "../app.ts";
+import { client } from "../test-repo.ts";
 import {
   Bridge,
   type BridgeChannel,
@@ -467,7 +468,7 @@ test("authentication messages are dropped once the bridge has the channel", asyn
 });
 
 test("through the app, the nearby rules want x-gitui and no Origin; nothing else gets in", async () => {
-  const app = createApp({ listener: { kind: "nearby" } });
+  const app = client(createApp({ listener: { kind: "nearby" } }));
   const channel = new FakeChannel();
   const bridge = new Bridge(channel, app.fetch);
   request(bridge, 1, "/api/config", { headers: [["x-gitui", "1"]] });

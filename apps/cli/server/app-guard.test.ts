@@ -1,12 +1,16 @@
 import { afterAll, beforeEach, expect, test } from "bun:test";
-import { createApp } from "./app.ts";
-import { initRepo, removeTempDirs } from "./test-repo.ts";
+import { Effect, Fiber } from "effect";
+import { createApp, MAX_BODY_BYTES } from "./app.ts";
+import { withRepoLock } from "./lock.ts";
+import { client, commitFile, git, initRepo, removeTempDirs } from "./test-repo.ts";
 
 afterAll(removeTempDirs);
 
 const ALLOWED = "https://hosted.example";
 const TOKEN = "secret-token";
-const app = createApp({ listener: { kind: "loopback", allowedOrigins: [ALLOWED], token: TOKEN } });
+const app = client(
+  createApp({ listener: { kind: "loopback", allowedOrigins: [ALLOWED], token: TOKEN } }),
+);
 let repo: string;
 
 beforeEach(() => {
@@ -143,4 +147,113 @@ test("same-origin request needs no token", async () => {
   });
   expect(res.status).toBe(200);
   expect(res.headers.get("access-control-allow-origin")).toBeNull();
+});
+
+// The router matches some paths that aren't spelled /api/...: it decodes percent escapes and
+// stops at `;`. None of these may get past the access checks, nor reach a route another way.
+const ODD_PATHS = [
+  "//api/config",
+  "/API/config",
+  "/%61pi/config",
+  "/api/%63onfig",
+  "/api/config/",
+  "/api/config;x",
+  "/api/",
+  "/api;x",
+  "/api/repo/branch;x",
+  "//api/repo/branch",
+  "/API/repo/branch",
+  "/%61pi/repo/branch",
+  "/api//repo/branch",
+];
+
+/** Ways to call: none of the right headers, all of them, and each one wrong. */
+const CALLERS: Record<string, string>[] = [
+  {},
+  { host: "localhost", "x-gitui": "1" },
+  { host: "evil.example", "x-gitui": "1" },
+  { host: "localhost" },
+  { host: "127.0.0.1:4870", origin: "https://evil.example", "x-gitui": "1" },
+  { host: "127.0.0.1:4870", origin: ALLOWED, "x-gitui": "1", authorization: `Bearer ${TOKEN}` },
+];
+
+test("odd spellings of API paths are refused or 404, and change nothing", async () => {
+  commitFile(repo, "a.txt", "a\n");
+  const branches = () => git(repo, "branch", "--format=%(refname:short)");
+  const before = branches();
+  const answered: unknown[] = [];
+  for (const odd of ODD_PATHS) {
+    const url = `${odd}?repo=${encodeURIComponent(repo)}`;
+    for (const headers of CALLERS) {
+      for (const [method, type] of [
+        ["GET", undefined],
+        ["POST", "application/json"],
+        ["POST", "text/plain"],
+      ] as const) {
+        const res = await req(
+          url,
+          type ? { ...headers, "content-type": type } : headers,
+          type ? { method, body: JSON.stringify({ name: "pwned" }) } : { method },
+        );
+        if (![401, 403, 404].includes(res.status)) {
+          answered.push({ odd, headers, method, type, status: res.status });
+        }
+      }
+    }
+  }
+  expect(answered).toEqual([]);
+  expect(branches()).toBe(before);
+});
+
+test("the API itself still answers at its own paths", async () => {
+  commitFile(repo, "a.txt", "a\n");
+  const res = await req(
+    `/api/repo/branch?repo=${encodeURIComponent(repo)}`,
+    { host: "localhost", "x-gitui": "1", "content-type": "application/json" },
+    { method: "POST", body: JSON.stringify({ name: "made", checkout: false }) },
+  );
+  expect(res.status).toBe(200);
+  expect(git(repo, "branch", "--list", "made")).toContain("made");
+});
+
+test("a POST whose body isn't declared JSON is a 415, and changes nothing", async () => {
+  commitFile(repo, "a.txt", "a\n");
+  for (const type of ["text/plain", "application/x-www-form-urlencoded", undefined]) {
+    const res = await req(
+      `/api/repo/branch?repo=${encodeURIComponent(repo)}`,
+      { host: "localhost", "x-gitui": "1", ...(type ? { "content-type": type } : {}) },
+      { method: "POST", body: JSON.stringify({ name: "nope" }) },
+    );
+    expect(res.status).toBe(415);
+  }
+  expect(git(repo, "branch", "--list", "nope")).toBe("");
+});
+
+test("a body over the cap is a 413", async () => {
+  const res = await req(
+    "/api/open",
+    { host: "localhost", "x-gitui": "1", "content-type": "application/json" },
+    { method: "POST", body: JSON.stringify({ path: "x".repeat(MAX_BODY_BYTES) }) },
+  );
+  expect(res.status).toBe(413);
+  expect(await res.json()).toEqual({ error: "Request body too large" });
+});
+
+test("HEAD answers like GET, behind the same checks, and takes no lock", async () => {
+  const url = `/api/repo/status?repo=${encodeURIComponent(repo)}`;
+  // The repo's lock, held until the end: a HEAD that waited for it would never answer.
+  const held = Effect.runFork(withRepoLock(repo, Effect.never));
+  try {
+    const res = await req(url, { host: "localhost", "x-gitui": "1" }, { method: "HEAD" });
+    expect(res.status).toBe(200);
+    expect((await req(url, { host: "localhost" }, { method: "HEAD" })).status).toBe(403);
+    const stage = await req(
+      `/api/repo/stage?repo=${encodeURIComponent(repo)}`,
+      { host: "localhost", "x-gitui": "1" },
+      { method: "HEAD" },
+    );
+    expect(stage.status).toBe(404);
+  } finally {
+    await Effect.runPromise(Fiber.interrupt(held));
+  }
 });

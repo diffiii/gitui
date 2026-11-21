@@ -9,52 +9,50 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { NodeServices } from "@effect/platform-node";
-import { Effect } from "effect";
-import { createApp } from "./app.ts";
+import { Effect, Exit, type Layer, Scope } from "effect";
+import type { HttpRouter } from "effect/http";
+import { createApp, toFetch } from "./app.ts";
 
 process.env.GIT_CONFIG_GLOBAL = os.devNull;
 process.env.GIT_CONFIG_NOSYSTEM = "1";
 
+/** Every test client's scope, closed by `removeTempDirs`. */
+const clientScopes: Scope.Closeable[] = [];
+
+/**
+ * `layer`'s routes as a web handler (`toFetch`), and `request` for a URL or a path (on
+ * http://localhost), as tests send requests. `removeTempDirs` disposes it.
+ */
+export function client<E>(layer: Layer.Layer<never, E, HttpRouter.HttpRouter>) {
+  const scope = Effect.runSync(Scope.make());
+  clientScopes.push(scope);
+  const fetch = Effect.runSync(Scope.provide(scope)(toFetch(layer)));
+  return {
+    fetch,
+    request: (input: string, init?: RequestInit) =>
+      fetch(new Request(new URL(input, "http://localhost").href, init)),
+  };
+}
+
 /** The app as served locally, with no cross-origin callers, and a recent list of its own. */
 export const testApp = () =>
-  createApp({
-    listener: { kind: "loopback", allowedOrigins: [], token: "unused" },
-    configDir: tmpDir(),
-  });
+  client(
+    createApp({
+      listener: { kind: "loopback", allowedOrigins: [], token: "unused" },
+      configDir: tmpDir(),
+    }),
+  );
 
 /** Runs a server Effect with the Node services the server runs with. */
 export const run = <A, E>(effect: Effect.Effect<A, E, NodeServices.NodeServices>): Promise<A> =>
   Effect.runPromise(Effect.provide(effect, NodeServices.layer));
 
-/** `module` with each function that returns an Effect returning a Promise of it instead (`run`). */
-export type Promised<M> = {
-  [K in keyof M]: M[K] extends (...args: infer A) => Effect.Effect<infer R, infer _E, infer _S>
-    ? (...args: A) => Promise<R>
-    : M[K];
-};
-
-/** `module`, its Effects run as Promises: for tests that call server modules directly. */
-export function promised<M extends object>(module: M): Promised<M> {
-  const out: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(module)) {
-    const isClass = typeof value === "function" && /^class[\s{]/.test(String(value));
-    out[key] =
-      typeof value !== "function" || isClass
-        ? value
-        : (...args: unknown[]) => {
-            const result: unknown = value(...args);
-            return Effect.isEffect(result)
-              ? run(result as Effect.Effect<unknown, unknown, never>)
-              : result;
-          };
-  }
-  return out as Promised<M>;
-}
-
 const dirs: string[] = [];
 
-/** Deletes every directory `tmpDir()` has created so far. */
-export function removeTempDirs() {
+/** Disposes every test client, then deletes every directory `tmpDir()` has created so far. */
+export async function removeTempDirs() {
+  for (const scope of clientScopes.splice(0))
+    await Effect.runPromise(Scope.close(scope, Exit.void));
   for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
 }
 

@@ -4,43 +4,28 @@ import fs from "node:fs";
 import path from "node:path";
 import { REPO_NOT_OPENED } from "@gitui/shared";
 import { type Listener, NEARBY_HOST } from "./access.ts";
-import { createApp } from "./app.ts";
-import * as config_ from "./config.ts";
-import { commitFile, initRepo, removeTempDirs, tmpDir, write, promised } from "./test-repo.ts";
+import { API_ROUTES, createApp } from "./app.ts";
+import { pushRecent, readRecent } from "./config.ts";
+import { client, commitFile, initRepo, removeTempDirs, run, tmpDir, write } from "./test-repo.ts";
 
 afterAll(removeTempDirs);
-
-const { pushRecent, readRecent } = promised(config_);
 
 /** Routes outside /api/repo, which take no `?repo=`: /open goes through the gate on its own. */
 const UNGATED = ["GET /api/config", "POST /api/open"];
 
 /** Values for route parameters, so each route's path matches it. */
-const PARAMS: Record<string, string> = { hash: "HEAD", action: "fetch" };
+const PARAMS: Record<string, string> = { hash: "HEAD" };
 
 /**
- * The app's 404 fallbacks, which answer no path of their own: on /api/* and, past the repo
- * gate, /api/repo/*. Any other route shows up as an endpoint.
+ * Every API endpoint the app has, from its route table: "METHOD /path", with each parameter
+ * filled in. The 404 catch-alls (`/*`) answer no path of their own and are left out.
  */
-const MIDDLEWARE = ["ALL /api/*", "ALL /api/repo/*"];
-
-/**
- * Every API endpoint the app has, from its router: "METHOD /path". An `all()` route is sent a
- * POST, and a wildcard in a path matches "x".
- */
-const endpoints = (app: ReturnType<typeof createApp>) =>
-  app.routes
-    .filter((r) => !MIDDLEWARE.includes(`${r.method} ${r.path}`))
-    .map((r) => {
-      const method = r.method === "ALL" ? "POST" : r.method;
-      return {
-        name: `${r.method} ${r.path}`,
-        method,
-        path: r.path
-          .replace(/:(\w+)/g, (_, name: string) => PARAMS[name] ?? "x")
-          .replace(/\*$/, "x"),
-      };
-    });
+const endpoints = () =>
+  API_ROUTES.filter((r) => !r.path.endsWith("/*")).map((r) => ({
+    name: `${r.method} ${r.path}`,
+    method: r.method,
+    path: r.path.replace(/:(\w+)/g, (_, name: string) => PARAMS[name] ?? "x"),
+  }));
 
 /** A listener of each kind, and the headers its clients send. */
 const clients: { listener: Listener; host: string; headers: Record<string, string> }[] = [
@@ -64,13 +49,13 @@ beforeEach(async () => {
   configDir = tmpDir();
   [initial, recent, other] = [initRepo(), initRepo(), initRepo()];
   for (const repo of [initial, recent, other]) commitFile(repo, "a.txt", "a\n");
-  await pushRecent(recent, configDir);
-  await pushRecent(initial, configDir);
+  await run(pushRecent(recent, configDir));
+  await run(pushRecent(initial, configDir));
 });
 
 for (const { listener, host, headers } of clients) {
   const scoped = listener.kind !== "loopback";
-  const app = () => createApp({ listener, initialRepo: initial, configDir });
+  const app = () => client(createApp({ listener, initialRepo: initial, configDir }));
   const send = (url: string, init: { method?: string; body?: unknown } = {}) =>
     app().request(`http://${host}${url}`, {
       method: init.method ?? "GET",
@@ -111,7 +96,7 @@ for (const { listener, host, headers } of clients) {
 
     if (scoped) {
       test("every route that takes a repository goes through the gate", async () => {
-        const all = endpoints(app());
+        const all = endpoints();
         expect(all.length).toBeGreaterThan(UNGATED.length);
         for (const { name, method, path: route } of all) {
           if (!route.startsWith("/api/repo/")) {
@@ -133,11 +118,11 @@ for (const { listener, host, headers } of clients) {
       });
 
       test("the route list has every route, and paths no route has are gated too", async () => {
-        const names = app().routes.map((r) => `${r.method} ${r.path}`);
+        const names = API_ROUTES.map((r) => `${r.method} ${r.path}`);
         expect(names).toContain("GET /api/repo/status");
-        // The catch-all under /api/repo is a route like the others, so the test above sends
-        // it a path of its own, and it answers 404 only past the gate.
-        expect(names).toContain("ALL /api/repo/*");
+        // The catch-all under /api/repo is a repo route like the others: it answers 404 only
+        // past the gate.
+        expect(names).toContain("GET /api/repo/*");
         await refused(await send(`/api/repo/nope?repo=${encodeURIComponent(other)}`));
         const res = await send(`/api/repo/nope?repo=${encodeURIComponent(initial)}`);
         expect(res.status).toBe(404);
@@ -170,25 +155,25 @@ for (const { listener, host, headers } of clients) {
       });
 
       test("/open takes opened repositories only, and leaves the recent list alone", async () => {
-        const before = await readRecent(configDir);
+        const before = await run(readRecent(configDir));
         const res = await open(recent);
         expect(res.status).toBe(200);
         expect(await res.json()).toEqual({ root: recent, name: path.basename(recent) });
         await refused(await open(other));
         await refused(await open(tmpDir()));
-        expect(await readRecent(configDir)).toEqual(before);
+        expect(await run(readRecent(configDir))).toEqual(before);
       });
 
       test("a repository opened on the computer meanwhile works at once", async () => {
         await refused(await status(other));
-        await pushRecent(other, configDir);
+        await run(pushRecent(other, configDir));
         expect((await status(other)).status).toBe(200);
       });
     } else {
       test("any repository works, and /open adds it to the recent list", async () => {
         expect((await status(other)).status).toBe(200);
         expect((await open(other)).status).toBe(200);
-        expect(await readRecent(configDir)).toEqual([other, initial, recent]);
+        expect(await run(readRecent(configDir))).toEqual([other, initial, recent]);
       });
 
       test("a path that isn't a repository is a plain error", async () => {

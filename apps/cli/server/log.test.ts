@@ -1,10 +1,8 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import * as git_ from "./git.ts";
-import { git, initRepo, removeTempDirs, revParse, testApp, promised } from "./test-repo.ts";
+import { GitError, log } from "./git.ts";
+import { git, initRepo, removeTempDirs, revParse, testApp, run } from "./test-repo.ts";
 
 afterAll(removeTempDirs);
-
-const { GitError, log } = promised(git_);
 
 function commit(dir: string, message: string) {
   git(dir, "commit", "-q", "--allow-empty", "-m", message);
@@ -15,7 +13,9 @@ describe("log", () => {
   test("rejects an unknown ref with a GitError", async () => {
     const dir = initRepo();
     commit(dir, "one");
-    const err = await log(dir, { limit: 10, all: false, ref: "refs/heads/nope" }).catch((e) => e);
+    const err = await run(log(dir, { limit: 10, all: false, ref: "refs/heads/nope" })).catch(
+      (e) => e,
+    );
     expect(err).toBeInstanceOf(GitError);
   });
 
@@ -26,19 +26,19 @@ describe("log", () => {
     const tip = commit(dir, "on x");
     git(dir, "branch", "x");
 
-    const branch = await log(dir, { limit: 10, all: false, ref: "refs/heads/x" });
+    const branch = await run(log(dir, { limit: 10, all: false, ref: "refs/heads/x" }));
     expect(branch.map((c) => c.subject)).toEqual(["on x", "base"]);
     expect(branch[0].hash).toBe(tip);
 
     // The short name is ambiguous and git resolves it to the tag.
-    const tag = await log(dir, { limit: 10, all: false, ref: "x" });
+    const tag = await run(log(dir, { limit: 10, all: false, ref: "x" }));
     expect(tag.map((c) => c.hash)).toEqual([base]);
   });
 
   test("an unborn repo has no commits", async () => {
     const dir = initRepo();
-    expect(await log(dir, { limit: 10, all: true })).toEqual([]);
-    expect(await log(dir, { limit: 10, all: false })).toEqual([]);
+    expect(await run(log(dir, { limit: 10, all: true }))).toEqual([]);
+    expect(await run(log(dir, { limit: 10, all: false }))).toEqual([]);
   });
 
   test("all: true in an unborn repo still walks fetched remote branches", async () => {
@@ -46,8 +46,10 @@ describe("log", () => {
     commit(upstream, "upstream");
     const dir = initRepo();
     git(dir, "fetch", "-q", upstream, "main:refs/remotes/origin/main");
-    expect((await log(dir, { limit: 10, all: true })).map((c) => c.subject)).toEqual(["upstream"]);
-    expect(await log(dir, { limit: 10, all: false })).toEqual([]);
+    expect((await run(log(dir, { limit: 10, all: true }))).map((c) => c.subject)).toEqual([
+      "upstream",
+    ]);
+    expect(await run(log(dir, { limit: 10, all: false }))).toEqual([]);
   });
 
   test("all: true walks branches and tags", async () => {
@@ -56,7 +58,7 @@ describe("log", () => {
     git(dir, "checkout", "-q", "-b", "side");
     commit(dir, "two");
     git(dir, "checkout", "-q", "main");
-    const commits = await log(dir, { limit: 10, all: true });
+    const commits = await run(log(dir, { limit: 10, all: true }));
     expect(commits.map((c) => c.subject).sort()).toEqual(["one", "two"]);
   });
 });
