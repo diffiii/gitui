@@ -6,12 +6,18 @@ import { PALETTES } from "@/lib/palettes";
 import { useDiffStyle, usePalette, useTheme } from "@/lib/prefs";
 import { cn } from "@/lib/utils";
 
-export function useParsedPatch(raw: string) {
+/** The files of a raw patch; `failed` when it couldn't be parsed, which is not an empty diff. */
+export interface ParsedPatch {
+  files: FileDiffMetadata[];
+  failed: boolean;
+}
+
+export function useParsedPatch(raw: string): ParsedPatch {
   return useMemo(() => {
     try {
-      return parsePatchFiles(raw).flatMap((p) => p.files);
+      return { files: parsePatchFiles(raw).flatMap((p) => p.files), failed: false };
     } catch {
-      return [];
+      return { files: [], failed: true };
     }
   }, [raw]);
 }
@@ -19,9 +25,16 @@ export function useParsedPatch(raw: string) {
 export const fileKey = (f: FileDiffMetadata) => f.name;
 
 /** Renders every file of a unified git patch with Pierre Diffs. */
-export function DiffView({ raw, className }: { raw: string; className?: string }) {
-  const files = useParsedPatch(raw);
-  return <DiffFiles files={files} className={className} />;
+export function DiffView({
+  raw,
+  truncated,
+  className,
+}: {
+  raw: string;
+  truncated?: boolean;
+  className?: string;
+}) {
+  return <DiffFiles patch={useParsedPatch(raw)} truncated={truncated} className={className} />;
 }
 
 /** The options Pierre Diffs' diffs and files share: the palette and light or dark, from the prefs. */
@@ -34,7 +47,19 @@ function useCodeOptions() {
   );
 }
 
-export function DiffFiles({ files, className }: { files: FileDiffMetadata[]; className?: string }) {
+/**
+ * The files of `patch`. A `truncated` patch that fails to parse shows nothing here: its cut-off
+ * end is the likely cause, and the truncation notice the caller shows already says so.
+ */
+export function DiffFiles({
+  patch: { files, failed },
+  truncated = false,
+  className,
+}: {
+  patch: ParsedPatch;
+  truncated?: boolean;
+  className?: string;
+}) {
   const code = useCodeOptions();
   const [style] = useDiffStyle();
   // Split columns don't fit a phone screen.
@@ -49,6 +74,14 @@ export function DiffFiles({ files, className }: { files: FileDiffMetadata[]; cla
     [code, diffStyle],
   );
 
+  if (failed && truncated) return null;
+  if (failed) {
+    return (
+      <div className={cn("p-6 text-sm text-destructive", className)}>
+        This diff couldn&apos;t be parsed, so it can&apos;t be shown.
+      </div>
+    );
+  }
   if (!files.length) {
     return (
       <div className={cn("p-6 text-sm text-muted-foreground", className)}>No textual changes.</div>

@@ -55,12 +55,16 @@ export function HistoryPane({
   const { repo, api } = useRepo();
   const [limit, setLimit] = useState(PAGE);
   const { commit } = useUrl();
-  const { data, error, isLoading, isFetching } = useQuery({
+  const { data, error, isLoading, isFetching, isPlaceholderData } = useQuery({
     queryKey: [repo, "log", gitRef ?? null, all, limit],
     queryFn: (c) => api.log({ limit, all, ref: gitRef }, c),
     placeholderData: (prev) => prev,
     refetchInterval: 10000,
   });
+  // Only `limit` changes the key within one HistoryPane (it is remounted for another ref or `all`),
+  // so a placeholder means the next page is loading: the previous one is shown, shorter than
+  // `limit`, and the footer with its spinner has to stay up until the new one arrives.
+  const loadingMore = isPlaceholderData;
   const commits = useMemo(() => data?.commits ?? [], [data]);
   const choice = useListChoice({
     param: "commit",
@@ -135,7 +139,7 @@ export function HistoryPane({
                 openDetails();
               }}
               footer={
-                commits.length >= limit && (
+                (commits.length >= limit || loadingMore) && (
                   <div className="p-3">
                     <Button
                       variant="outline"
@@ -161,7 +165,11 @@ export function HistoryPane({
               // Side by side, a collapsed panel shows nothing.
               content:
                 closed && !stacked ? null : (
-                  <CommitDetail hash={shown} onSelect={(hash) => select({ commit: hash })} />
+                  <CommitDetail
+                    key={shown}
+                    hash={shown}
+                    onSelect={(hash) => select({ commit: hash })}
+                  />
                 ),
               title: <span className="font-mono text-sm">{shown.slice(0, 7)}</span>,
               label: `Commit ${shown.slice(0, 7)}`,
@@ -270,7 +278,8 @@ function CommitDetail({ hash, onSelect }: { hash: string; onSelect: (hash: strin
     queryFn: (c) => api.showCommit(hash, c),
     staleTime: Infinity,
   });
-  const files = useParsedPatch(data?.patch ?? "");
+  const patch = useParsedPatch(data?.patch ?? "");
+  const { files } = patch;
   const paths = useMemo(() => files.map(fileKey), [files]);
   const gitStatus = useMemo(
     () => files.map((f) => ({ path: fileKey(f), status: CHANGE_STATUS[f.type] })),
@@ -374,7 +383,7 @@ function CommitDetail({ hash, onSelect }: { hash: string; onSelect: (hash: strin
           </section>
         )}
 
-        <DiffFiles files={files} />
+        <DiffFiles patch={patch} truncated={data.truncated} />
       </div>
     </ScrollArea>
   );

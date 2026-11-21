@@ -63,3 +63,29 @@ export function updatePaths(
     model.resetPaths(next);
   }
 }
+
+/** What `fileRowPath` reads of a DOM element. */
+interface AttributeReader {
+  getAttribute(name: string): string | null;
+}
+
+const readsAttributes = (t: unknown): t is AttributeReader =>
+  typeof (t as Partial<AttributeReader> | null)?.getAttribute === "function";
+
+/**
+ * The file row an event went through, from its `composedPath()` (the file tree's rows are in an
+ * open shadow root): its `data-item-path`, or null for a folder row, a row's action button,
+ * or anywhere outside a row.
+ */
+export function fileRowPath(targets: readonly unknown[]): string | null {
+  for (const el of targets) {
+    if (!readsAttributes(el)) continue;
+    if (el.getAttribute("data-item-section") === "action") return null;
+    if (el.getAttribute("data-type") === "item") {
+      return el.getAttribute("data-item-type") === "file"
+        ? el.getAttribute("data-item-path")
+        : null;
+    }
+  }
+  return null;
+}

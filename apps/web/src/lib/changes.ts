@@ -1,3 +1,4 @@
+import type { ContextMenuItem, GitStatusEntry } from "@pierre/trees";
 import type { FileStatus } from "./api.ts";
 
 /** A file in the Changes view: its status entry, and whether that's from the staged list. */
@@ -39,4 +40,43 @@ export function firstChange(staged: FileStatus[], unstaged: FileStatus[]): Shown
   if (unstaged[0]) return { file: unstaged[0], staged: false };
   if (staged[0]) return { file: staged[0], staged: true };
   return null;
+}
+
+/** How the file tree marks a file of the staged (`x`) or unstaged (`y`) list. */
+export function toGitStatus(f: FileStatus, staged: boolean): GitStatusEntry["status"] {
+  if (f.untracked) return "untracked";
+  const c = f.conflicted ? "M" : staged ? f.x : f.y;
+  if (c === "A") return "added";
+  if (c === "D") return "deleted";
+  if (c === "R" || c === "C") return "renamed";
+  return "modified";
+}
+
+/**
+ * The files a tree row's action covers: the file itself, or every file in the folder (whose
+ * path ends with `/`).
+ */
+export function filesUnder(files: FileStatus[], item: Pick<ContextMenuItem, "kind" | "path">) {
+  return item.kind === "file"
+    ? files.filter((f) => f.path === item.path)
+    : files.filter((f) => f.path.startsWith(item.path));
+}
+
+/**
+ * Discards `files` one at a time, stopping at the first failure. A failure after some
+ * succeeded says how many did.
+ */
+export async function discardEach(
+  files: FileStatus[],
+  discard: (f: FileStatus) => Promise<unknown>,
+): Promise<void> {
+  for (const [i, f] of files.entries()) {
+    try {
+      await discard(f);
+    } catch (e) {
+      if (i === 0) throw e;
+      const reason = e instanceof Error ? e.message : String(e);
+      throw new Error(`Discarded ${i} of ${files.length} files, then ${f.path} failed: ${reason}`);
+    }
+  }
 }
