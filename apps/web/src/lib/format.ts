@@ -47,6 +47,9 @@ export function formatBytes(bytes: number) {
   return i === 0 ? `${n} B` : `${n.toFixed(1)} ${units[i]}`;
 }
 
+/** A repository's folder name: the last part of its path, which on Windows has backslashes. */
+export const repoName = (repo: string) => repo.split(/[/\\]/).filter(Boolean).pop() ?? repo;
+
 export function splitPath(p: string) {
   const i = p.lastIndexOf("/");
   return i === -1 ? { dir: "", name: p } : { dir: p.slice(0, i + 1), name: p.slice(i + 1) };
