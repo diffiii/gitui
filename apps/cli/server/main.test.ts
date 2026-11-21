@@ -17,6 +17,7 @@ import {
   revParse,
   sleeper,
   tmpDir,
+  until,
   write,
 } from "./test-repo.ts";
 
@@ -68,12 +69,6 @@ test("stopping the server stops a slow commit within a few seconds", async () =>
   await res;
   expect(revParse(repo)).toBe(head);
 });
-
-/** Waits until `done` holds, checking every 50 ms, for at most `ms`; returns whether it did. */
-async function until(done: () => boolean, ms = 5000) {
-  for (const end = Date.now() + ms; Date.now() < end; await Bun.sleep(50)) if (done()) return true;
-  return done();
-}
 
 describe("on a real socket", () => {
   let port: number;
@@ -170,8 +165,7 @@ describe("on a real socket", () => {
     const uploadPack = sleeper();
     git(repo, "config", "remote.origin.uploadpack", uploadPack.command);
     const client = connect(postHead(repo, "/remote/fetch", 0));
-    expect(await until(() => uploadPack.pid() !== null)).toBe(true);
-    const pid = uploadPack.pid()!;
+    const pid = await uploadPack.started();
     expect(alive(pid)).toBe(true);
     client.destroy();
     expect(await until(() => !alive(pid))).toBe(true);

@@ -10,6 +10,7 @@ import {
   revParse,
   run,
   sleeper,
+  until,
   write,
 } from "./test-repo.ts";
 
@@ -88,13 +89,13 @@ test("GITUI_GIT_TIMEOUT is in seconds, 0 for none, and 10 minutes otherwise", ()
 
 test("git: timeoutMs kills the child and rejects", async () => {
   const started = Date.now();
-  // Long enough for the alias's shell to have started the sleeper.
+  // 2 s, not less: git, its shell and then the runtime must start and write the pid before the
+  // kill, and git's shell (MSYS) is slow to start on Windows. A kill that comes too early fails
+  // the test at `started()`, rather than leaving it to hang.
   const err = await run(git(repo, ["hang"], { timeoutMs: 2000 })).catch((e) => e);
   expect(err).toBeInstanceOf(GitError);
   expect(err.message).toBe("git hang timed out after 2 s (GITUI_GIT_TIMEOUT)");
   expect(Date.now() - started).toBeLessThan(5000);
-  const pid = hung.pid();
-  expect(pid).not.toBeNull();
-  for (let i = 0; i < 30 && alive(pid!); i++) await Bun.sleep(100);
-  expect(alive(pid!)).toBe(false);
-}, 10_000);
+  const pid = await hung.started();
+  expect(await until(() => !alive(pid))).toBe(true);
+}, 15_000);

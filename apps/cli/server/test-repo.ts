@@ -71,10 +71,10 @@ export function tmpDir() {
 
 /**
  * A shell command for git to run (an alias, a remote's upload-pack) that starts a process which
- * writes its pid and then waits a minute without a word, and `pid()`, that pid once written.
- * The process is this runtime running a script, not `sleep`: on Windows the shell git runs
- * (MSYS) has pids of its own, and this one's is the system's. The paths are quoted, with
- * forward slashes, so that shell reads them as written.
+ * writes its pid and then waits a minute without a word, and `started()`, which waits for that
+ * pid and throws if it never comes. The process is this runtime running a script, not `sleep`:
+ * on Windows the shell git runs (MSYS) has pids of its own, and this one's is the system's. The
+ * paths are quoted, with forward slashes, so that shell reads them as written.
  */
 export function sleeper() {
   const dir = tmpDir();
@@ -89,11 +89,18 @@ export function sleeper() {
   const quote = (p: string) => `'${p.replaceAll("\\", "/")}'`;
   return {
     command: [process.execPath, script, pidFile].map(quote).join(" "),
-    pid: () => {
-      const text = fs.existsSync(pidFile) ? fs.readFileSync(pidFile, "utf8") : "";
-      return text ? Number(text) : null;
+    started: async () => {
+      const pid = () => (fs.existsSync(pidFile) ? fs.readFileSync(pidFile, "utf8") : "");
+      if (!(await until(() => pid() !== ""))) throw new Error("The sleeper never started");
+      return Number(pid());
     },
   };
+}
+
+/** Waits until `done` holds, checking every 50 ms, for at most `ms`; returns whether it did. */
+export async function until(done: () => boolean, ms = 5000) {
+  for (const end = Date.now() + ms; Date.now() < end; await Bun.sleep(50)) if (done()) return true;
+  return done();
 }
 
 /** Whether a process with this pid still runs. */
