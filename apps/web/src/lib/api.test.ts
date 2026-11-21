@@ -1,9 +1,10 @@
 // Golden requests: every client function sends exactly the method, URL and body it sent before
 // the client was built from the contract, since the hosted page must keep talking to every CLI.
+// A new client function gets a line here too.
 import { afterAll, beforeAll, beforeEach, expect, test } from "bun:test";
-import type { FileStatus } from "@gitui/shared";
+import { apiUrl, type FileStatus } from "@gitui/shared";
 import { QueryClient } from "@tanstack/react-query";
-import { apiUrl, getConfig, openRepo, repoApi } from "./api.ts";
+import { call, getConfig, openRepo, repoApi } from "./api.ts";
 import { initConnection } from "./connection.ts";
 
 interface Sent {
@@ -14,6 +15,7 @@ interface Sent {
 }
 
 const sent: Sent[] = [];
+const signals: (AbortSignal | null | undefined)[] = [];
 
 // The dev server's connection, which sends requests to its own /api with the page's fetch.
 beforeAll(() => {
@@ -28,12 +30,13 @@ beforeAll(() => {
       contentType: new Headers(init.headers).get("content-type"),
       body: init.body as string | undefined,
     });
+    signals.push(init.signal);
     return Promise.resolve(Response.json({ ok: true }));
   });
   initConnection(new QueryClient(), { dev: true });
 });
 afterAll(restoreGlobals);
-beforeEach(() => void (sent.length = 0));
+beforeEach(() => void (sent.length = signals.length = 0));
 
 /** What `send` put on the wire. */
 async function request(send: () => Promise<unknown>) {
@@ -61,6 +64,11 @@ const golden: [string, () => Promise<unknown>, Sent][] = [
     "diff",
     () => api.diff({ path: "a.txt", staged: true }),
     get("/api/repo/diff?repo=%2Fr&path=a.txt&staged=1&untracked=0"),
+  ],
+  [
+    "diff with an empty origPath",
+    () => api.diff({ path: "a.txt", origPath: "", staged: false }),
+    get("/api/repo/diff?repo=%2Fr&path=a.txt&origPath=&staged=0&untracked=0"),
   ],
   [
     "diff of a rename, untracked",
@@ -92,6 +100,11 @@ const golden: [string, () => Promise<unknown>, Sent][] = [
     () => api.commit("Fix it", false),
     post("/api/repo/commit?repo=%2Fr", '{"message":"Fix it","amend":false}'),
   ],
+  [
+    "amend",
+    () => api.commit("", true),
+    post("/api/repo/commit?repo=%2Fr", '{"message":"","amend":true}'),
+  ],
   ["lastMessage", () => api.lastMessage(), get("/api/repo/last-message?repo=%2Fr")],
   [
     "log",
@@ -103,6 +116,11 @@ const golden: [string, () => Promise<unknown>, Sent][] = [
     () => api.log({ limit: 50, all: true, ref: "origin/main" }),
     get("/api/repo/log?repo=%2Fr&limit=50&all=1&ref=origin%2Fmain"),
   ],
+  [
+    "log of an empty ref",
+    () => api.log({ limit: 300, all: false, ref: "" }),
+    get("/api/repo/log?repo=%2Fr&limit=300&all=0&ref="),
+  ],
   ["showCommit", () => api.showCommit("abc/1"), get("/api/repo/commit/abc%2F1?repo=%2Fr")],
   ["files", () => api.files(), get("/api/repo/files?repo=%2Fr")],
   ["file", () => api.file("src/a b.ts"), get("/api/repo/file?repo=%2Fr&path=src%2Fa+b.ts")],
@@ -113,6 +131,11 @@ const golden: [string, () => Promise<unknown>, Sent][] = [
     post("/api/repo/checkout?repo=%2Fr", '{"name":"origin/dev","remote":true}'),
   ],
   [
+    "checkout of a local branch",
+    () => api.checkout("dev", false),
+    post("/api/repo/checkout?repo=%2Fr", '{"name":"dev","remote":false}'),
+  ],
+  [
     "createBranch",
     () => api.createBranch("dev"),
     post("/api/repo/branch?repo=%2Fr", '{"name":"dev"}'),
@@ -121,6 +144,16 @@ const golden: [string, () => Promise<unknown>, Sent][] = [
     "createBranch from a commit",
     () => api.createBranch("dev", "abc"),
     post("/api/repo/branch?repo=%2Fr", '{"name":"dev","from":"abc"}'),
+  ],
+  [
+    "createBranch from an empty from",
+    () => api.createBranch("dev", ""),
+    post("/api/repo/branch?repo=%2Fr", '{"name":"dev","from":""}'),
+  ],
+  [
+    "deleteBranch, not forced",
+    () => api.deleteBranch("dev", false),
+    post("/api/repo/branch/delete?repo=%2Fr", '{"name":"dev","force":false}'),
   ],
   [
     "deleteBranch",
@@ -143,6 +176,13 @@ test("a repository's path is escaped in ?repo=", async () => {
   expect(url).toBe("/api/repo/status?repo=C%3A%5CUsers%5Cme%5Cmy+repo");
 });
 
+test("a read's signal reaches fetch", async () => {
+  const controller = new AbortController();
+  await api.log({ limit: 1, all: false }, { signal: controller.signal });
+  await getConfig({ signal: controller.signal });
+  expect(signals).toEqual([controller.signal, controller.signal]);
+});
+
 test("apiUrl fills path parameters and leaves out undefined query keys", () => {
   expect(apiUrl("showCommit", { repo: "/r", params: { hash: "a b" } })).toBe(
     "/api/repo/commit/a%20b?repo=%2Fr",
@@ -152,6 +192,35 @@ test("apiUrl fills path parameters and leaves out undefined query keys", () => {
   );
   expect(apiUrl("config", {})).toBe("/api/config");
 });
+
+/**
+ * What `call` refuses, for `tsc -b` (never called): each line after a `@ts-expect-error` is one
+ * the type check fails.
+ */
+export function refusedByTheTypeCheck() {
+  return [
+    // A call the contract has.
+    call("commit", { repo: "/r", body: { message: "m" } }),
+    // @ts-expect-error: status is under /api/repo, so it names its repository.
+    call("status", {}),
+    // @ts-expect-error: config isn't.
+    call("config", { repo: "/r" }),
+    // @ts-expect-error: commit's message is a string.
+    call("commit", { repo: "/r", body: { message: 1 } }),
+    // @ts-expect-error: commit takes a body.
+    call("commit", { repo: "/r" }),
+    // @ts-expect-error: fetch takes none.
+    call("fetch", { repo: "/r", body: {} }),
+    // @ts-expect-error: diff's query has `staged` and `untracked`.
+    call("diff", { repo: "/r", query: { path: "a" } }),
+    // @ts-expect-error: showCommit's path names a `hash`.
+    call("showCommit", { repo: "/r" }),
+    // @ts-expect-error: and only that.
+    call("showCommit", { repo: "/r", params: { sha: "x" } }),
+    // @ts-expect-error: status has no path parameters.
+    call("status", { repo: "/r", params: { hash: "x" } }),
+  ];
+}
 
 const saved: [string, PropertyDescriptor | undefined][] = [];
 
