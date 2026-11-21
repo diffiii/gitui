@@ -257,3 +257,61 @@ test("HEAD answers like GET, behind the same checks, and takes no lock", async (
     await Effect.runPromise(Fiber.interrupt(held));
   }
 });
+
+test("a preflight for a POST route under /api/repo gets the CORS headers", async () => {
+  const res = await req(
+    `/api/repo/stage?repo=${encodeURIComponent(repo)}`,
+    {
+      host: "127.0.0.1:4777",
+      origin: ALLOWED,
+      "access-control-request-method": "POST",
+      "access-control-request-headers": "x-gitui, content-type, authorization",
+    },
+    { method: "OPTIONS" },
+  );
+  expect(res.status).toBe(204);
+  expect(res.headers.get("access-control-allow-origin")).toBe(ALLOWED);
+  expect(res.headers.get("access-control-allow-methods")).toBe("GET, POST");
+});
+
+const local = { host: "localhost", "x-gitui": "1" };
+
+test("query parameters are checked like bodies", async () => {
+  commitFile(repo, "a.txt", "a\n");
+  const at = (route: string, query: string) =>
+    req(`/api/repo${route}?repo=${encodeURIComponent(repo)}&${query}`, local);
+  for (const [route, query, error] of [
+    ["/diff", "path=a.txt&origPath=%00", "Invalid origPath"],
+    ["/diff", "path=%00", "Invalid path"],
+    ["/diff", "", "Invalid path"],
+    ["/diff", "path=../a.txt&untracked=1", "Invalid path"],
+    ["/log", "limit=-1", "Invalid limit"],
+    ["/log", "limit=0", "Invalid limit"],
+    ["/log", "limit=1.5", "Invalid limit"],
+    ["/log", "limit=abc", "Invalid limit"],
+    ["/log", "ref=-x", "Invalid ref"],
+    ["/file", "", "Invalid path"],
+  ]) {
+    const res = await at(route!, query!);
+    expect([route, query, res.status, await res.json()]).toEqual([route, query, 400, { error }]);
+  }
+  for (const query of ["limit=99999", "limit=1&limit=-1", "ref=&origPath=", "all=1"]) {
+    const res = await at("/log", query);
+    expect([query, res.status]).toEqual([query, 200]);
+  }
+  const diff = await at("/diff", "path=a.txt&origPath=");
+  expect(diff.status).toBe(200);
+});
+
+test("an unexpected failure is a 500 that says nothing of it", async () => {
+  // Without git on the PATH, running it is a defect, not a GitError.
+  const saved = process.env.PATH;
+  process.env.PATH = "/nonexistent";
+  try {
+    const res = await req(`/api/repo/status?repo=${encodeURIComponent(repo)}`, local);
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: "Internal server error" });
+  } finally {
+    process.env.PATH = saved;
+  }
+});
