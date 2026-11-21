@@ -143,6 +143,90 @@ describe("status", () => {
     expect(st.head.ahead).toBe(2);
     expect(st.head.behind).toBe(1);
   });
+
+  test("a submodule and a nested repository are flagged as repositories", async () => {
+    const repo = initRepo();
+    const sub = path.join(repo, "sub");
+    fs.mkdirSync(sub);
+    initRepo(sub);
+    commitFile(sub, "f", "1\n");
+    git(repo, "add", "sub");
+    git(repo, "commit", "-q", "-m", "sub");
+    write(sub, "f", "2\n");
+    const nested = path.join(repo, "nested");
+    fs.mkdirSync(nested);
+    initRepo(nested);
+    write(nested, "n.txt", "n\n");
+
+    const st = await run(g.status(repo));
+    expect(byPath(st, "sub")?.repository).toBe(true);
+    expect(byPath(st, "nested/")?.repository).toBe(true);
+    expect(st.truncated).toBe(false);
+  });
+
+  describe("parseStatus", () => {
+    const raw =
+      "# branch.oid abc\0# branch.head main\0" +
+      "1 .M N... 100644 100644 100644 h1 h2 a.txt\0" +
+      "2 R. N... 100644 100644 100644 h1 h2 R100 new.txt\0old.txt\0" +
+      "? z.txt\0";
+
+    test("parses every kind", () => {
+      const { head, files } = g.parseStatus(raw);
+      expect(head.branch).toBe("main");
+      expect(files).toEqual([
+        { x: ".", y: "M", path: "a.txt" },
+        { x: "R", y: ".", path: "new.txt", origPath: "old.txt" },
+        { x: ".", y: "?", path: "z.txt", untracked: true },
+      ]);
+    });
+
+    test("every cut of the output yields only whole entries", () => {
+      for (let n = 0; n <= raw.length; n++) {
+        for (const f of g.parseStatus(raw.slice(0, n)).files) {
+          if (f.x === "R") expect(f.origPath).toBe("old.txt");
+          expect(["a.txt", "new.txt", "z.txt"]).toContain(f.path);
+        }
+      }
+    });
+  });
+});
+
+describe("discardCommand", () => {
+  const entry = (e: Partial<g.FileStatus>): g.FileStatus => ({ x: ".", y: "M", path: "f", ...e });
+  const lit = (...p: string[]) => ["--", ...p.map((x) => `:(literal)${x}`)];
+
+  test("restores the work tree file", () => {
+    expect(g.discardCommand(entry({}))).toEqual(["restore", "--worktree", ...lit("f")]);
+    expect(g.discardCommand(entry({ x: "R", origPath: "o" }))).toEqual([
+      "restore",
+      "--worktree",
+      ...lit("f"),
+    ]);
+  });
+  test("a work tree rename restores both sides", () => {
+    expect(g.discardCommand(entry({ y: "R", origPath: "o" }))).toEqual([
+      "restore",
+      "--worktree",
+      ...lit("o", "f"),
+    ]);
+  });
+  test("cleans an untracked file", () => {
+    expect(g.discardCommand(entry({ y: "?", untracked: true }))).toEqual([
+      "clean",
+      "-f",
+      "-q",
+      ...lit("f"),
+    ]);
+  });
+  test.each([
+    entry({ repository: true }),
+    entry({ y: "?", untracked: true, repository: true }),
+    entry({ x: "U", y: "U", conflicted: true }),
+    entry({ x: "M", y: "." }),
+  ])("refuses %o", (e) => {
+    expect(typeof g.discardCommand(e)).toBe("string");
+  });
 });
 
 describe("log", () => {

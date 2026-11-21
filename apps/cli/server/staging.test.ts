@@ -216,3 +216,176 @@ test("a commit finishes even if the client goes away while git runs", async () =
   for (let i = 0; i < 50 && revParse(dir) === head; i++) await Bun.sleep(100);
   expect(git(dir, "log", "-1", "--format=%s").trim()).toBe("slow");
 });
+
+// ---------------------------------------------------------------- literal paths, safe discard
+
+const discard = (dir: string, file: Record<string, unknown>) =>
+  post(dir, "/discard", { file: { x: ".", y: ".", ...file } });
+
+function globRepo() {
+  const dir = initRepo();
+  commitFile(dir, "src/[id].tsx", "1\n");
+  commitFile(dir, "src/i.tsx", "1\n");
+  commitFile(dir, "src/d.tsx", "1\n");
+  return dir;
+}
+
+test("discard treats the path literally", async () => {
+  const dir = globRepo();
+  for (const f of ["[id]", "i", "d"]) write(dir, `src/${f}.tsx`, "2\n");
+  expect((await discard(dir, { path: "src/[id].tsx", y: "M" })).status).toBe(200);
+  expect(await porcelain(dir)).toEqual([" M src/d.tsx", " M src/i.tsx"]);
+});
+
+test("clean treats the path literally", async () => {
+  const dir = initRepo();
+  commitFile(dir, "keep.txt", "k\n");
+  for (const f of ["[ab]", "a", "b"]) write(dir, `src/${f}.txt`, "x\n");
+  const res = await discard(dir, { path: "src/[ab].txt", y: "?", untracked: true });
+  expect(res.status).toBe(200);
+  expect(await porcelain(dir)).toEqual(["?? src/a.txt", "?? src/b.txt"]);
+});
+
+test("a name starting with a colon is literal", async () => {
+  const dir = initRepo();
+  commitFile(dir, "other", "1\n");
+  write(dir, ":!keep", "1\n");
+  git(dir, "add", "--", ":(literal):!keep");
+  git(dir, "commit", "-q", "-m", "colon");
+  write(dir, ":!keep", "2\n");
+  write(dir, "other", "2\n");
+  expect((await discard(dir, { path: ":!keep", y: "M" })).status).toBe(200);
+  expect(await porcelain(dir)).toEqual([" M other"]);
+});
+
+test("stage and unstage treat paths literally", async () => {
+  const dir = globRepo();
+  write(dir, "src/[id].tsx", "2\n");
+  write(dir, "src/i.tsx", "2\n");
+  expect((await post(dir, "/stage", { paths: ["src/[id].tsx"] })).status).toBe(200);
+  expect(await porcelain(dir)).toEqual([" M src/i.tsx", "M  src/[id].tsx"]);
+  expect((await post(dir, "/unstage", { paths: ["src/[id].tsx"] })).status).toBe(200);
+  expect(await porcelain(dir)).toEqual([" M src/[id].tsx", " M src/i.tsx"]);
+});
+
+test("a file diff treats the path literally", async () => {
+  const dir = globRepo();
+  write(dir, "src/[id].tsx", "2\n");
+  write(dir, "src/i.tsx", "2\n");
+  const { diff } = await run(g.fileDiff(dir, { path: "src/[id].tsx", staged: false }));
+  expect(diff).toContain("src/[id].tsx");
+  expect(diff).not.toContain("src/i.tsx");
+});
+
+test("unstage works on an unborn branch for a file edited after staging", async () => {
+  const setup = async () => {
+    const dir = initRepo();
+    write(dir, "a.txt", "1\n");
+    write(dir, "b.txt", "1\n");
+    await run(g.stage(dir));
+    write(dir, "a.txt", "2\n");
+    return dir;
+  };
+  const one = await setup();
+  await run(g.unstage(one, ["a.txt"]));
+  expect(await porcelain(one)).toEqual(["?? a.txt", "A  b.txt"]);
+  expect(fs.readFileSync(path.join(one, "a.txt"), "utf8")).toBe("2\n");
+
+  const all = await setup();
+  await run(g.unstage(all));
+  expect(await porcelain(all)).toEqual(["?? a.txt", "?? b.txt"]);
+});
+
+test.each([
+  { path: ".", untracked: true },
+  { path: "x", untracked: true },
+  { path: "x/", untracked: true },
+  { path: "missing.txt" },
+])("discard refuses what isn't a single listed file: %o", async (file) => {
+  const dir = initRepo();
+  commitFile(dir, "c.txt", "c\n");
+  write(dir, "x/1.txt", "1\n");
+  write(dir, "x/2.txt", "2\n");
+  write(dir, "y.txt", "y\n");
+  const before = await porcelain(dir);
+  expect((await discard(dir, file)).status).toBe(400);
+  expect(await porcelain(dir)).toEqual(before);
+});
+
+test("discard ignores the client's untracked flag", async () => {
+  const dir = initRepo();
+  commitFile(dir, "t.txt", "1\n");
+  write(dir, "t.txt", "2\n");
+  expect((await discard(dir, { path: "t.txt", y: "M", untracked: true })).status).toBe(200);
+  expect(fs.readFileSync(path.join(dir, "t.txt"), "utf8")).toBe("1\n");
+
+  write(dir, "u.txt", "u\n");
+  expect((await discard(dir, { path: "u.txt", untracked: false })).status).toBe(200);
+  expect(fs.existsSync(path.join(dir, "u.txt"))).toBe(false);
+});
+
+test("discard of a fully staged file is a 400", async () => {
+  const dir = initRepo();
+  commitFile(dir, "s.txt", "1\n");
+  write(dir, "s.txt", "2\n");
+  git(dir, "add", "s.txt");
+  expect((await discard(dir, { path: "s.txt", y: "M" })).status).toBe(400);
+  expect(await porcelain(dir)).toEqual(["M  s.txt"]);
+});
+
+test("discard of a conflicted file is a 400", async () => {
+  const dir = initRepo();
+  commitFile(dir, "f.txt", "base\n");
+  git(dir, "switch", "-q", "-c", "other");
+  commitFile(dir, "f.txt", "theirs\n");
+  git(dir, "switch", "-q", "main");
+  commitFile(dir, "f.txt", "ours\n");
+  expect(() => git(dir, "merge", "-q", "other")).toThrow();
+  expect((await discard(dir, { path: "f.txt", x: "U", y: "U", conflicted: true })).status).toBe(
+    400,
+  );
+  expect(await porcelain(dir)).toEqual(["UU f.txt"]);
+});
+
+test("discard of a staged rename with work tree edits keeps the rename", async () => {
+  const dir = initRepo();
+  commitFile(dir, "old.txt", "content that is long enough to be detected\nmore\n");
+  git(dir, "mv", "old.txt", "new.txt");
+  write(dir, "new.txt", "content that is long enough to be detected\nmore\nedit\n");
+  expect(await porcelain(dir)).toEqual(["RM old.txt -> new.txt"]);
+  expect((await discard(dir, { path: "new.txt", x: "R", y: "M" })).status).toBe(200);
+  expect(await porcelain(dir)).toEqual(["R  old.txt -> new.txt"]);
+});
+
+test("discard of an intent-to-add rename restores both sides", async () => {
+  const dir = initRepo();
+  commitFile(dir, "old.txt", "content that is long enough to be detected\nmore\n");
+  fs.renameSync(path.join(dir, "old.txt"), path.join(dir, "new.txt"));
+  git(dir, "add", "-N", "new.txt");
+  const st = await run(g.status(dir));
+  const entry = st.files.find((f) => f.path === "new.txt");
+  expect(entry?.y).toBe("R");
+  expect((await discard(dir, { path: "new.txt", y: "R" })).status).toBe(200);
+  // The deleted original is back; git leaves the intent-to-add file itself.
+  expect(await porcelain(dir)).toEqual([" A new.txt"]);
+  expect(fs.existsSync(path.join(dir, "old.txt"))).toBe(true);
+});
+
+test("discard refuses a submodule and a nested repository", async () => {
+  const dir = initRepo();
+  const sub = path.join(dir, "sub");
+  fs.mkdirSync(sub);
+  initRepo(sub);
+  commitFile(sub, "f", "1\n");
+  git(dir, "add", "sub");
+  git(dir, "commit", "-q", "-m", "sub");
+  write(sub, "f", "2\n");
+  expect((await discard(dir, { path: "sub", y: "M" })).status).toBe(400);
+
+  const nested = path.join(dir, "nested");
+  fs.mkdirSync(nested);
+  initRepo(nested);
+  write(nested, "n.txt", "n\n");
+  expect((await discard(dir, { path: "nested/", untracked: true })).status).toBe(400);
+  expect(fs.existsSync(path.join(nested, "n.txt"))).toBe(true);
+});

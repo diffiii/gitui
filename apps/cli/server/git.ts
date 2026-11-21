@@ -187,20 +187,24 @@ export const resolveRepo = Effect.fnUntraced(function* (input: string) {
 
 // ---------------------------------------------------------------- status
 
-export const status = Effect.fnUntraced(function* (repo: string) {
-  const raw = yield* git(repo, [
-    "status",
-    "--porcelain=v2",
-    "--branch",
-    "-z",
-    "--untracked-files=all",
-  ]);
+/** The fields every entry kind but `?` shares: the XY codes and whether it's a submodule. */
+const header = (parts: string[]) => ({
+  x: parts[1][0],
+  y: parts[1][1],
+  ...(parts[2].startsWith("S") && { repository: true }),
+});
+
+/**
+ * Parses `git status --porcelain=v2 -z` output (with or without `--branch`). The last token is
+ * always dropped: it's "" after the final NUL, or the entry the byte cap cut short.
+ */
+export function parseStatus(raw: string) {
   const head: HeadInfo = { branch: null, oid: null, upstream: null, ahead: 0, behind: 0 };
   const files: FileStatus[] = [];
   const tokens = raw.split("\0");
+  tokens.pop();
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
-    if (!t) continue;
     if (t.startsWith("# ")) {
       const [, key, ...rest] = t.split(" ");
       const val = rest.join(" ");
@@ -217,30 +221,40 @@ export const status = Effect.fnUntraced(function* (repo: string) {
       continue;
     }
     const kind = t[0];
+    const parts = t.split(" ");
     if (kind === "1") {
-      const parts = t.split(" ");
-      files.push({ x: parts[1][0], y: parts[1][1], path: parts.slice(8).join(" ") });
+      files.push({ ...header(parts), path: parts.slice(8).join(" ") });
     } else if (kind === "2") {
-      const parts = t.split(" ");
-      files.push({
-        x: parts[1][0],
-        y: parts[1][1],
-        path: parts.slice(9).join(" "),
-        origPath: tokens[++i],
-      });
+      // The original path is the next token; a cut status may have lost it, and the entry with it.
+      i += 1;
+      if (i >= tokens.length) break;
+      files.push({ ...header(parts), path: parts.slice(9).join(" "), origPath: tokens[i] });
     } else if (kind === "u") {
-      const parts = t.split(" ");
-      files.push({
-        x: parts[1][0],
-        y: parts[1][1],
-        path: parts.slice(10).join(" "),
-        conflicted: true,
-      });
+      files.push({ ...header(parts), path: parts.slice(10).join(" "), conflicted: true });
     } else if (kind === "?") {
-      files.push({ x: ".", y: "?", path: t.slice(2), untracked: true });
+      const p = t.slice(2);
+      // An untracked nested repository is listed as `dir/`.
+      files.push({
+        x: ".",
+        y: "?",
+        path: p,
+        untracked: true,
+        ...(p.endsWith("/") && { repository: true }),
+      });
     }
   }
-  const result: Status = { head, files, operation: yield* detectOperation(repo) };
+  return { head, files };
+}
+
+const statusArgs = ["status", "--porcelain=v2", "-z", "--untracked-files=all"];
+
+export const status = Effect.fnUntraced(function* (repo: string) {
+  const { stdout, truncated } = yield* run(repo, [...statusArgs, "--branch"]);
+  const result: Status = {
+    ...parseStatus(stdout),
+    operation: yield* detectOperation(repo),
+    truncated,
+  };
   return result;
 });
 
@@ -267,6 +281,13 @@ const hasHead = (repo: string) => succeeds(repo, ["rev-parse", "--verify", "-q",
 // ---------------------------------------------------------------- diff
 
 /**
+ * `paths` as the end of a git command line: after `--`, and literal. Git otherwise reads them as
+ * patterns, so `[id].tsx` would also match `i.tsx`, and `:!x` everything but x. Per argument, not
+ * GIT_LITERAL_PATHSPECS, which hooks would inherit. Not for `--no-index` diffs, which take files.
+ */
+export const pathspec = (paths: string[]) => ["--", ...paths.map((p) => `:(literal)${p}`)];
+
+/**
  * A file's diff against the index, or with `staged`, the index's against HEAD. An untracked file
  * has neither: `untrackedDiff` in `files.ts` diffs it.
  */
@@ -288,8 +309,7 @@ export const fileDiff = (
       "-M",
       "--no-ext-diff",
       ...(opts.staged ? ["--cached"] : []),
-      "--",
-      ...(opts.origPath ? [opts.origPath, opts.path] : [opts.path]),
+      ...pathspec(opts.origPath ? [opts.origPath, opts.path] : [opts.path]),
     ],
     { maxBytes: opts.maxBytes },
   ).pipe(Effect.map(({ patch, truncated }) => ({ diff: patch, truncated })));
@@ -299,33 +319,48 @@ export const fileDiff = (
 export const stage = Effect.fnUntraced(function* (repo: string, paths?: string[]) {
   // `git add -A --` with no pathspec stages the whole tree, so an empty list must not reach git.
   if (paths?.length === 0) return yield* gitError("No paths to stage");
-  if (!paths) yield* git(repo, ["add", "-A"]);
-  else yield* git(repo, ["add", "-A", "--", ...paths]);
+  yield* git(repo, ["add", "-A", ...(paths ? pathspec(paths) : [])]);
 });
 
 export const unstage = Effect.fnUntraced(function* (repo: string, paths?: string[]) {
   if (paths?.length === 0) return yield* gitError("No paths to unstage");
-  if (!(yield* hasHead(repo))) {
-    yield* git(repo, ["rm", "--cached", "-r", "-q", "--", ...(paths ?? ["."])]);
-  } else if (!paths) {
-    yield* git(repo, ["reset", "-q"]);
-  } else {
-    // Restoring only the new side of a staged rename would leave the deletion of the old path
-    // staged, so restore both sides together.
-    const wanted = new Set(paths);
-    const renameSources = (yield* status(repo)).files.flatMap((f) =>
-      f.x === "R" && f.origPath && wanted.has(f.path) ? [f.origPath] : [],
-    );
-    yield* git(repo, ["restore", "--staged", "--", ...new Set([...paths, ...renameSources])]);
-  }
+  // `reset` (rather than `restore --staged`) also works on an unborn branch, and only touches the
+  // index.
+  if (!paths) return yield* Effect.asVoid(git(repo, ["reset", "-q"]));
+  // Unstaging only the new side of a staged rename would leave the deletion of the old path
+  // staged, so unstage both sides together.
+  const wanted = new Set(paths);
+  const renameSources = (yield* status(repo)).files.flatMap((f) =>
+    f.x === "R" && f.origPath && wanted.has(f.path) ? [f.origPath] : [],
+  );
+  yield* git(repo, ["reset", "-q", ...pathspec([...new Set([...paths, ...renameSources])])]);
 });
 
-export const discard = (repo: string, file: FileStatus) =>
-  Effect.asVoid(
-    file.untracked
-      ? git(repo, ["clean", "-f", "-q", "--", file.path])
-      : git(repo, ["restore", "--worktree", "--", file.path]),
-  );
+/** What discarding `entry` runs: git's arguments, or why it can't be done. Pure. */
+export function discardCommand(entry: FileStatus): string | string[] {
+  if (entry.repository) return `Can't discard changes in a repository: ${entry.path}`;
+  if (entry.conflicted) return `Resolve the conflict in ${entry.path} first`;
+  if (entry.untracked) return ["clean", "-f", "-q", ...pathspec([entry.path])];
+  if (entry.y === ".") return `No unstaged changes in ${entry.path}`;
+  // A rename in the work tree (`git add -N`) has two sides, like a staged one.
+  const paths = entry.y === "R" && entry.origPath ? [entry.origPath, entry.path] : [entry.path];
+  return ["restore", "--worktree", ...pathspec(paths)];
+}
+
+/**
+ * Discards the unstaged changes of the file at `path`, or deletes it if it's untracked. What kind
+ * of entry it is comes from git's own status, never from the request, so a
+ * directory, `.`, or a stale "untracked" flag can never reach `git clean`.
+ */
+export const discard = Effect.fnUntraced(function* (repo: string, path: string) {
+  // Not limited to `path`: git pairs a rename's two sides only when it sees both.
+  const { stdout } = yield* run(repo, statusArgs);
+  const entry = parseStatus(stdout).files.find((f) => f.path === path);
+  if (!entry) return yield* gitError(`No changes to discard in ${path}`);
+  const command = discardCommand(entry);
+  if (typeof command === "string") return yield* gitError(command);
+  yield* git(repo, command);
+});
 
 export const commit = (repo: string, message: string, amend: boolean) => {
   const args = ["commit", "-F", "-"];

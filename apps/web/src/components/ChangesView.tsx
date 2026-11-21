@@ -9,12 +9,14 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import type { FileStatus } from "@/lib/api";
 import {
+  canDiscard,
   discardEach,
   filesUnder,
   firstChange,
   resolveChoice,
   type ShownFile,
   splitChanges,
+  splitDiscardable,
   toGitStatus,
 } from "@/lib/changes";
 import { useListChoice } from "@/lib/listChoice";
@@ -60,6 +62,11 @@ export function ChangesView() {
         list={
           <>
             <div className="flex min-h-0 flex-1 flex-col">
+              {data?.truncated && (
+                <TruncatedNotice className="mx-3 mt-3 shrink-0">
+                  git status printed more than 8 MB — showing only part of the changes
+                </TruncatedNotice>
+              )}
               <FileSection
                 title="Staged"
                 files={staged}
@@ -135,7 +142,7 @@ function FileActions({
   const toggle = useToggleStaged();
   return (
     <>
-      {!staged && (
+      {!staged && canDiscard(file) && (
         <Button
           variant="ghost"
           size="icon-lg"
@@ -222,7 +229,7 @@ function FileSection({
                 icon: staged ? Minus : Plus,
                 onSelect: () => toggle(filesUnder(files, item).map((f) => f.path)),
               },
-              ...(!staged
+              ...(!staged && filesUnder(files, item).some(canDiscard)
                 ? [
                     {
                       label: "Discard changes",
@@ -253,7 +260,8 @@ function DiscardDialog({
     (api, fs: FileStatus[]) => discardEach(fs, api.discard),
     "Changes discarded",
   );
-  const single = files?.length === 1 ? files[0] : null;
+  const { discardable, skipped } = splitDiscardable(files ?? []);
+  const single = discardable.length === 1 ? discardable[0] : null;
   return (
     <ConfirmDialog
       open={!!files}
@@ -270,7 +278,17 @@ function DiscardDialog({
               <code className="font-mono wrap-break-word text-foreground">{single.path}</code>.
             </>
           ) : (
-            <>This reverts unstaged changes in {files?.length} files and deletes untracked ones.</>
+            <>
+              This reverts unstaged changes in {discardable.length} files and deletes untracked
+              ones.
+            </>
+          )}
+          {skipped.length > 0 && (
+            <>
+              {" "}
+              {skipped.length} skipped: submodules, nested repositories and conflicted files can
+              &apos;t be discarded here.
+            </>
           )}{" "}
           This can&apos;t be undone.
         </>
@@ -280,10 +298,13 @@ function DiscardDialog({
           label: "Discard",
           variant: "destructive",
           onSelect: () => {
-            if (!files) return;
+            if (!files || discardable.length === 0) return;
             // Closes when settled, failure included: after a partial failure the list of files
             // is stale, and the error toast says how far it got.
-            discard.mutate(files, { onSuccess: () => onConfirm(files), onSettled: onClose });
+            discard.mutate(discardable, {
+              onSuccess: () => onConfirm(discardable),
+              onSettled: onClose,
+            });
           },
         },
       ]}

@@ -412,7 +412,7 @@ export const API_ROUTES: readonly ApiRoute[] = [
   ),
   mutation("/stage", PathsBody, (repo, { paths }) => Effect.as(g.stage(repo, paths), ok)),
   mutation("/unstage", PathsBody, (repo, { paths }) => Effect.as(g.unstage(repo, paths), ok)),
-  mutation("/discard", DiscardBody, (repo, { file }) => Effect.as(g.discard(repo, file), ok)),
+  mutation("/discard", DiscardBody, (repo, { file }) => Effect.as(g.discard(repo, file.path), ok)),
   mutation("/commit", CommitBody, (repo, { message, amend }) =>
     !message.trim() && !amend
       ? Effect.fail(g.gitError("Commit message is empty"))

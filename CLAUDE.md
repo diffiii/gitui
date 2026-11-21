@@ -92,7 +92,7 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   functions only in `@gitui/shared/nearby-pake` (`pake.ts`), not in `@gitui/shared`, so code
   that imports the main entry carries no Effect and no curve code.
 - Root: `scripts/dev.ts` (runs both apps), `scripts/smoke.sh` (runs the built bundle with node
-  in both modes and checks what it serves; CI and release run it), `vite.config.ts` (workspace
+  and checks what it serves; CI and release run it), `vite.config.ts` (workspace
   fmt/lint/type check config, `defaultPackage` points `vp dev`/`vp build` at `apps/web`),
   `tsconfig.json` (project references to every package), `.github/workflows/ci.yml`
   (a `check` job and a `test` job on Linux, macOS and Windows, the last not yet a gate; it also
@@ -103,7 +103,9 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
 ## Conventions
 
 - Run git only through `git()` (or `run()`/`gitPatch()`) in `apps/cli/server/git.ts`, with
-  argument arrays and never shell strings. User-supplied paths go after `--`.
+  argument arrays and never shell strings. User-supplied paths go after `--`, through `pathspec()`
+  (which makes them literal; git otherwise reads `[id].tsx` or `:!x` as patterns). Not
+  `GIT_LITERAL_PATHSPECS`, which hooks inherit.
 - CLI code is Effect code: server functions return Effects that fail with typed errors
   (`GitError`, `RepoNotOpenedError`; the app maps them to 400 and 403) and need the Node
   services (`NodeServices.layer`), which the app provides per request. Things that live for a
