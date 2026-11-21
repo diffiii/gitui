@@ -148,9 +148,11 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   request. Every repo path a request names goes through `repoGate` (`server/repo-scope.ts`): every
   route made with `repoRoute` in `app.ts` and `/open`, which only records repos in the recent
   list for `any`. A `repoRoute` with `lock: true` (every `mutation`, and pull) runs, once its
-  inputs are decoded, under `withWriteLock` (`server/lock.ts`: the repo's lock, then one of
-  `MAX_WRITES` permits shared by all repos) in a fiber of the server's scope, so a client
-  going away doesn't stop git halfway (shutdown and git's timeouts still do). Any other route,
+  inputs are decoded, under `lockedWrite` (`server/lock.ts`: the repo's lock, then one of
+  `MAX_WRITES` permits shared by all repos) in a fiber of the server's scope. A write whose
+  client goes away before it holds both is dropped; one that holds them runs to the end, so a
+  client going away doesn't stop git halfway (shutdown and git's timeout still do: 10 minutes
+  for every git call, `GIT_TIMEOUT_MS` from `GITUI_GIT_TIMEOUT`). Any other route,
   fetch and push included, stops with its client, git and all. A refusal is a
   403 `{ error, code: REPO_NOT_OPENED }`. New routes that take a repo path must use the gate.
   Server tests pass `configDir` to `createApp` so they never touch the real recent list.

@@ -27,11 +27,28 @@ interface RunOptions {
   okCodes?: number[];
   input?: string;
   maxBytes?: number;
-  /** Kill git and fail if it runs longer than this. Default: no timeout. */
+  /** Kill git and fail if it runs longer than this. Default: GIT_TIMEOUT_MS. */
   timeoutMs?: number;
 }
 
 const MAX_OUTPUT = 8 * 1024 * 1024;
+
+/**
+ * The git timeout in ms for a `GITUI_GIT_TIMEOUT` of `seconds`, or undefined for none (`0`);
+ * 10 minutes when it is unset or not a number of seconds.
+ */
+export const gitTimeoutMs = (seconds: string | undefined): number | undefined => {
+  const n = seconds?.trim() ? Number(seconds) : NaN;
+  if (!Number.isFinite(n) || n < 0) return 10 * 60 * 1000;
+  return n === 0 ? undefined : n * 1000;
+};
+
+/**
+ * How long any git command may run before it is killed: long enough for slow hooks and remotes,
+ * but a hung one (a hook or ssh stuck) must not hold the repo's write lock forever. Read once,
+ * from `GITUI_GIT_TIMEOUT`, for a hook that really takes longer.
+ */
+const GIT_TIMEOUT_MS = gitTimeoutMs(process.env.GITUI_GIT_TIMEOUT);
 
 /** How much of git's stderr is kept (the rest is read and dropped); it only becomes a message. */
 const MAX_STDERR = 64 * 1024;
@@ -88,7 +105,7 @@ export const run = (
   GitError,
   ChildProcessSpawner.ChildProcessSpawner
 > => {
-  const { okCodes = [0], maxBytes = MAX_OUTPUT, timeoutMs } = opts;
+  const { okCodes = [0], maxBytes = MAX_OUTPUT, timeoutMs = GIT_TIMEOUT_MS } = opts;
   const command = ChildProcess.make(
     "git",
     [
@@ -165,7 +182,10 @@ export const run = (
   return program.pipe(
     Effect.timeoutOrElse({
       duration: timeoutMs,
-      orElse: () => Effect.fail(gitError(`git ${args[0]} timed out after ${timeoutMs / 1000} s`)),
+      orElse: () =>
+        Effect.fail(
+          gitError(`git ${args[0]} timed out after ${timeoutMs / 1000} s (GITUI_GIT_TIMEOUT)`),
+        ),
     }),
   );
 };
@@ -548,22 +568,18 @@ export const deleteBranch = (repo: string, name: string, force: boolean) =>
 
 // ---------------------------------------------------------------- remotes
 
-/** Remote operations can legitimately be slow, but a hung one (e.g. ssh stuck) must not live forever. */
-const REMOTE_TIMEOUT_MS = 10 * 60 * 1000;
-
 export const remoteAction = Effect.fnUntraced(function* (
   repo: string,
   action: "fetch" | "pull" | "push",
 ) {
-  const opts = { timeoutMs: REMOTE_TIMEOUT_MS };
-  if (action === "fetch") return yield* git(repo, ["fetch", "--all", "--prune"], opts);
-  if (action === "pull") return yield* git(repo, ["pull", "--ff-only"], opts);
+  if (action === "fetch") return yield* git(repo, ["fetch", "--all", "--prune"]);
+  if (action === "pull") return yield* git(repo, ["pull", "--ff-only"]);
   const st = yield* status(repo);
   if (!st.head.upstream) {
     const remotes = (yield* git(repo, ["remote"])).split("\n").filter(Boolean);
     const remote = remotes.includes("origin") ? "origin" : remotes[0];
     if (!remote) return yield* gitError("No remote configured");
-    return yield* git(repo, ["push", "-u", remote, "HEAD"], opts);
+    return yield* git(repo, ["push", "-u", remote, "HEAD"]);
   }
-  return yield* git(repo, ["push"], opts);
+  return yield* git(repo, ["push"]);
 });

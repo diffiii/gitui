@@ -13,7 +13,6 @@ import {
   Cause,
   Data,
   Effect,
-  Fiber,
   Layer,
   Schema,
   SchemaTransformation,
@@ -31,7 +30,7 @@ import { type AccessOptions, access } from "./access.ts";
 import { CONFIG_DIR, readRecent } from "./config.ts";
 import { untrackedDiff, workingFile, workingFiles } from "./files.ts";
 import * as g from "./git.ts";
-import { withWriteLock } from "./lock.ts";
+import { lockedWrite } from "./lock.ts";
 import { type RepoGate, type RepoNotOpenedError, repoGate } from "./repo-scope.ts";
 import { VERSION } from "./version.ts";
 import { issueMessage, withMessage } from "./schema-messages.ts";
@@ -254,7 +253,7 @@ interface AppContext {
   opts: AppOptions;
   configDir: string;
   repos: RepoGate;
-  /** The server's scope: a locked write runs in it, so only shutting the server down stops one. */
+  /** The server's scope, which a locked write runs in (lockedWrite). */
   scope: Scope.Scope;
 }
 
@@ -328,11 +327,8 @@ const route = <
  * decoded inputs. A repository path that comes any other way (a body field) must go through
  * `repos.resolve` as well.
  *
- * With `lock`, the route writes: it runs one at a time per repo (withWriteLock), so concurrent
- * git commands don't collide on .git/index.lock, and to the end even if the client goes away,
- * as git may be halfway through a write: in a fiber of the server's scope, which shutting the
- * server down (or git's own timeout) still stops. Its inputs are read before that, so the lock
- * covers only git. Any other route stops when its client goes away, git included.
+ * With `lock`, it runs under `lockedWrite`. Its inputs are read before that, so the lock covers
+ * only git. Any other route stops when its client goes away, git included.
  */
 const repoRoute = <
   Q extends Schema.Decoder<unknown> = typeof NoQuery,
@@ -350,7 +346,7 @@ const repoRoute = <
       const repo = yield* repos.resolve(input);
       const work = answer(repo, yield* decodeInputs(inputs));
       if (!lock) return yield* work;
-      return yield* Fiber.join(yield* Effect.forkIn(withWriteLock(repo, work), scope));
+      return yield* lockedWrite(repo, work, scope);
     }),
   );
 
