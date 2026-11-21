@@ -38,20 +38,25 @@ const devServerFlag = (): Plugin => ({
 });
 
 /**
- * Fails the build if the main chunk has Effect in it, or the nearby codec that brings it: a page
- * paired with gitui on this computer never uses them, so the nearby code loads on demand
- * (src/lib/nearby/lazy.ts), and a static import of it would quietly undo that.
+ * Fails the build if the main chunk, or a chunk it imports statically, has Effect in it, or the
+ * nearby codec that brings it: a page paired with gitui on this computer never uses them, so the
+ * nearby code loads on demand (src/lib/nearby/lazy.ts), and a static import of it would quietly
+ * undo that.
  */
 const mainChunkWithoutEffect = (): Plugin => ({
   name: "gitui-main-chunk-without-effect",
   apply: "build",
   generateBundle(_, bundle) {
-    for (const chunk of Object.values(bundle)) {
-      if (chunk.type !== "chunk" || !chunk.isEntry) continue;
+    const entries = Object.values(bundle).filter((c) => c.type === "chunk" && c.isEntry);
+    const seen = new Set(entries.map((c) => c.fileName));
+    for (const fileName of seen) {
+      const chunk = bundle[fileName];
+      if (chunk?.type !== "chunk") continue;
       const found = chunk.moduleIds.find((id) =>
         /[\\/]node_modules[\\/]effect[\\/]|[\\/]nearby-codec\.ts$/.test(id),
       );
       if (found) this.error(`The main chunk must not include ${found}: import it lazily.`);
+      for (const imported of chunk.imports) seen.add(imported);
     }
   },
 });
