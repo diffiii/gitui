@@ -8,6 +8,8 @@ const result = await Bun.build({
   target: "node",
   outdir: "dist",
   naming: "gitui.js",
+  // Not identifiers: Bun's keepNames doesn't keep them, and stack traces need function names.
+  minify: { whitespace: true, syntax: true },
 });
 if (!result.success) {
   for (const log of result.logs) console.error(log);
