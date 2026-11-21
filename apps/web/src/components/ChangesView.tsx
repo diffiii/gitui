@@ -19,6 +19,7 @@ import {
 } from "@/lib/changes";
 import { useListChoice } from "@/lib/listChoice";
 import { NARROW } from "@/lib/media";
+import { pollInterval } from "@/lib/polling";
 import { useGitMutation, useRepo } from "@/lib/repo";
 import { useStatus } from "@/lib/status";
 import { useUrl } from "@/lib/url";
@@ -297,7 +298,7 @@ function FileDiffPane({ file, staged }: { file: FileStatus; staged: boolean }) {
   const { data, error } = useQuery({
     queryKey: [repo, "diff", file.path, file.origPath, staged, untracked],
     queryFn: (c) => api.diff({ path: file.path, origPath: file.origPath, staged, untracked }, c),
-    refetchInterval: 3000,
+    refetchInterval: (q) => pollInterval(q.state.data?.diff.length),
     // The pane is keyed by path, so another file mounts fresh and never shows this one's diff;
     // the same file moving between the staged and unstaged lists keeps it up until the other
     // side's arrives.

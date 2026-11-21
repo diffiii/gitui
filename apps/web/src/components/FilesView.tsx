@@ -6,6 +6,7 @@ import { fileListStamp } from "@/lib/files";
 import { formatBytes } from "@/lib/format";
 import { useListChoice } from "@/lib/listChoice";
 import { NARROW } from "@/lib/media";
+import { pollInterval } from "@/lib/polling";
 import { useRepo } from "@/lib/repo";
 import { useStatus } from "@/lib/status";
 import { useUrl } from "@/lib/url";
@@ -100,7 +101,8 @@ function FileContents({ path }: { path: string }) {
   const { data, error } = useQuery({
     queryKey: [repo, "file", path],
     queryFn: (c) => api.file(path, c),
-    refetchInterval: 3000,
+    refetchInterval: (q) =>
+      pollInterval(q.state.data?.kind === "text" ? q.state.data.content.length : 0),
   });
 
   if (error) return <div className="p-6 text-sm text-destructive">{error.message}</div>;
