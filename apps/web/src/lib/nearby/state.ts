@@ -1,7 +1,7 @@
-import { HOST_KEY, hostName, type HostInfo } from "@gitui/shared";
+import { HOST_KEY, isHostName, type HostInfo } from "@gitui/shared";
 
 // The pure parts of the nearby connection: the saved host, the session's states, and the list
-// of hosts.
+// of hosts. The app loads this up front, so it must not import the codec (lazy.ts).
 
 /** The host the app is connected to, as saved: its per-run key and display name. */
 export interface NearbyHost {
@@ -43,8 +43,9 @@ export function parseNearbyHost(value: unknown): NearbyHost | null {
   if (typeof value !== "object" || value === null) return null;
   const { key, name } = value as Record<string, unknown>;
   if (typeof key !== "string" || !HOST_KEY.test(key)) return null;
-  const valid = hostName(name);
-  return valid === null ? null : { key, name: valid };
+  // hostName's check, without loading the codec.
+  if (typeof name !== "string" || !isHostName(name.trim())) return null;
+  return { key, name: name.trim() };
 }
 
 /**

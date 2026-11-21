@@ -1,12 +1,11 @@
 import type { HostInfo } from "@gitui/shared";
 import { withHeaders } from "../withHeaders.ts";
 import { ChannelRequestError } from "./channelFetch.ts";
+import { NearbyError, PageOutdatedError } from "./errors.ts";
 import {
   CONNECT_TIMEOUT,
   connectToHost,
   HostUnverifiedError,
-  NearbyError,
-  PageOutdatedError,
   RefusedError,
   refusalMessage,
   type AuthResult,

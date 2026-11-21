@@ -56,7 +56,11 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   (`createSession` in `session.ts` is the state machine, with its dependencies injected; the
   connection opens one per nearby host in `update()`, and `apiTransport` sends requests over its
   data channel; `peer.ts` loads CPace lazily from `@gitui/shared/nearby-pake`; `state.ts` and
-  `tokens.ts` are its pure parts). `wrangler.jsonc` builds the repo (its `build` command,
+  `tokens.ts` are its pure parts). The codec, and with it Effect, stays out of the main chunk:
+  only `lazy.ts`, `state.ts` and `errors.ts` load up front, and `lazy.ts` imports the rest
+  (`client.ts`) on demand, for the connect screen's host list or a nearby connection, whose
+  session it wraps until it loads. A `vite.config.ts` plugin fails the build if the main chunk
+  has Effect or the codec in it. `wrangler.jsonc` builds the repo (its `build` command,
   with the production rendezvous) and deploys `dist/` as Cloudflare Workers static assets, with the `_headers` file that a `vite.config.ts` plugin writes into the
   build from `hostedHeadersFile` (its CSP follows `VITE_GITUI_RENDEZVOUS_URL`), on the custom
   domain `gitui.diffiii.dev` (`HOSTED_ORIGIN`).

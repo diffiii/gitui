@@ -1,10 +1,9 @@
 import { CLIENT_HEADER, type HostInfo } from "@gitui/shared";
 import { expect, test } from "bun:test";
 import { ChannelRequestError, type FetchProgress } from "./channelFetch.ts";
+import { NearbyError, PageOutdatedError } from "./errors.ts";
 import {
   HostUnverifiedError,
-  NearbyError,
-  PageOutdatedError,
   RefusedError,
   refusalMessage,
   type AuthResult,

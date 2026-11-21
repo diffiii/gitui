@@ -69,6 +69,24 @@ export const RENDEZVOUS_PING = '{"type":"ping"}';
 export const RENDEZVOUS_PONG = '{"type":"pong"}';
 /** Longest host display name, in code points, after trimming (hostName). */
 export const MAX_NAME_LENGTH = 63;
+
+/**
+ * Control characters, line and paragraph separators, and the bidi controls that could make a
+ * name display as another, or a remote string drive or garble a terminal.
+ */
+export const UNSAFE_CHAR = /[\p{Cc}\p{Zl}\p{Zp}؜‎‏‪-‮⁦-⁩]/u;
+export const UNSAFE_CHARS = new RegExp(UNSAFE_CHAR.source, "gu");
+
+/**
+ * Whether `name`, already trimmed, is a valid host display name: 1 to MAX_NAME_LENGTH code
+ * points, with no UNSAFE_CHAR. The codec's hostName trims and checks with this; it is here, out
+ * of the codec, so the web app can check a saved host without loading the codec.
+ */
+export function isHostName(name: string): boolean {
+  const length = Array.from(name).length; // code points
+  return length >= 1 && length <= MAX_NAME_LENGTH && !UNSAFE_CHAR.test(name);
+}
+
 export const DATA_CHANNEL_LABEL = "gitui";
 export const STUN_URLS = ["stun:stun.cloudflare.com:3478"];
 /** Payload bytes per binary frame; safe for SCTP messages in every browser. */

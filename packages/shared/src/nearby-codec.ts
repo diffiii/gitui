@@ -19,6 +19,7 @@ import {
   type ClientMessage,
   ERROR_CODES,
   isErrorCode,
+  isHostName,
   isRefusalReason,
   type Fingerprint,
   type GuestMessage,
@@ -38,6 +39,7 @@ import {
   RENDEZVOUS_PATH,
   type ServerMessage,
   type SignalData,
+  UNSAFE_CHARS,
 } from "./nearby.ts";
 
 /** A message that breaks the contract; `message` says how. */
@@ -128,11 +130,6 @@ const Headers = withMessage(
 );
 export const isHeaders: (value: unknown) => value is [string, string][] = Schema.is(Headers);
 
-// Control characters, line and paragraph separators, and the bidi controls that could make a
-// name display as another, or a remote string drive or garble a terminal.
-const UNSAFE_CHAR = /[\p{Cc}\p{Zl}\p{Zp}؜‎‏‪-‮⁦-⁩]/u;
-const UNSAFE_CHARS = new RegExp(UNSAFE_CHAR.source, "gu");
-
 /** The longest text `printable` returns, in code points. */
 export const MAX_PRINTABLE_LENGTH = 500;
 
@@ -155,13 +152,7 @@ const HostName = withMessage(Schema.String, "invalid name")
       withMessage(
         Schema.String,
         "invalid name",
-        Schema.makeFilter(
-          (name: string) => {
-            const length = Array.from(name).length; // code points
-            return length >= 1 && length <= MAX_NAME_LENGTH && !UNSAFE_CHAR.test(name);
-          },
-          { message: "invalid name" },
-        ),
+        Schema.makeFilter(isHostName, { message: "invalid name" }),
       ),
       SchemaTransformation.trim(),
     ),

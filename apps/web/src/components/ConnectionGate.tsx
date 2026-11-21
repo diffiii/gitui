@@ -11,7 +11,7 @@ import {
   Terminal,
   Unplug,
 } from "lucide-react";
-import { useState, useSyncExternalStore } from "react";
+import { Suspense, use, useState, useSyncExternalStore } from "react";
 import { CenteredScreen } from "@/components/CenteredScreen";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -26,8 +26,9 @@ import {
   useDisconnect,
   type ConnectionStatus,
 } from "@/lib/connection";
-import { rendezvous } from "@/lib/nearby/rendezvous";
+import { loadNearby, type Nearby } from "@/lib/nearby/lazy";
 import type { NearbySession } from "@/lib/nearby/session";
+import { PageOutdatedError } from "@/lib/nearby/errors";
 import type { NearbyState } from "@/lib/nearby/state";
 
 /**
@@ -145,7 +146,9 @@ function ConnectScreen({ notice }: { notice?: React.ReactNode }) {
         </>
       }
     >
-      <NearbyHosts />
+      <Suspense fallback={<NearbyHostsStatus status="connecting" />}>
+        <NearbyHosts />
+      </Suspense>
       <section className="mt-8 border-t pt-6">
         <h2 className="mb-1 px-1 text-sm font-medium">gitui on this computer?</h2>
         <p className="mb-3 px-1 text-xs text-muted-foreground">
@@ -158,8 +161,25 @@ function ConnectScreen({ notice }: { notice?: React.ReactNode }) {
   );
 }
 
+/** The computers nearby, once the nearby code has loaded (it suspends until then). */
 function NearbyHosts() {
-  const client = rendezvous();
+  const nearby = use(loadNearby());
+  if (!nearby) {
+    return (
+      <div className="flex flex-col items-center gap-3 rounded-lg border p-4 text-center text-sm text-muted-foreground">
+        <p>{new PageOutdatedError().message}</p>
+        <Button variant="outline" onClick={() => location.reload()}>
+          <RotateCw />
+          Reload
+        </Button>
+      </div>
+    );
+  }
+  return <NearbyHostList nearby={nearby} />;
+}
+
+function NearbyHostList({ nearby }: { nearby: Nearby }) {
+  const client = nearby.rendezvous();
   const { status, hosts } = useSyncExternalStore(client.subscribe, client.getSnapshot);
   if (hosts.length > 0) {
     return (
@@ -191,15 +211,18 @@ function NearbyHosts() {
       </div>
     );
   }
-  return (
-    <p className="flex items-center justify-center gap-2 rounded-lg border p-4 text-sm text-muted-foreground">
-      <LoaderCircle className="size-4 shrink-0 animate-spin" />
-      {status === "connecting"
-        ? "Looking for computers on this network…"
-        : "Can't reach the rendezvous server. Retrying…"}
-    </p>
-  );
+  return <NearbyHostsStatus status={status} />;
 }
+
+/** While there is no list of hosts yet: the nearby code or the rendezvous is still connecting. */
+const NearbyHostsStatus = ({ status }: { status: "connecting" | "retrying" }) => (
+  <p className="flex items-center justify-center gap-2 rounded-lg border p-4 text-sm text-muted-foreground">
+    <LoaderCircle className="size-4 shrink-0 animate-spin" />
+    {status === "connecting"
+      ? "Looking for computers on this network…"
+      : "Can't reach the rendezvous server. Retrying…"}
+  </p>
+);
 
 function CodeScreen({
   session,
