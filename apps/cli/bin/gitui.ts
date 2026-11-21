@@ -26,18 +26,16 @@ const nearbyUrl = Effect.suspend(() => {
 });
 
 /**
- * Lists this machine for phones on the network; their requests go to an app of their own, whose
- * access rules trust the authenticated data channel (see server/access.ts).
+ * Lists this machine for phones on the network until gitui stops; their requests go to an app of
+ * their own, whose access rules trust the authenticated data channel (see server/access.ts).
  */
-function listenNearby({ name, url }: Nearby & { url: string }, repo: string | undefined) {
-  const app = createApp({ listener: { kind: "nearby" }, initialRepo: repo });
+const listenNearby = ({ name, url }: Nearby & { url: string }, repo: string | undefined) =>
   startNearby({
     url,
     name: name ?? hostnameAsName(os.hostname()),
-    fetch: app.fetch,
+    fetch: createApp({ listener: { kind: "nearby" }, initialRepo: repo }).fetch,
     log: (line) => console.log(line),
   });
-}
 
 function openBrowser(url: string) {
   // No shell: the pairing link's `&` would split a cmd.exe command line. Detached and left to
@@ -77,7 +75,7 @@ const main = Effect.gen(function* () {
   );
   const pairing = pairingUrl(HOSTED_ORIGIN, { port: bound, token: listener.token });
   yield* Console.log(`pairing link: ${pairing}`);
-  if (nearby) listenNearby(nearby, repo);
+  if (nearby) yield* listenNearby(nearby, repo);
   if (open) openBrowser(pairing);
   return yield* Effect.never;
 }).pipe(

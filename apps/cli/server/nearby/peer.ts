@@ -3,6 +3,10 @@
 // resume token (@gitui/shared's nearby-pake.ts) as auth.ts's Gatekeeper decides, and then hands
 // the channel to the bridge. Nothing reaches the bridge before the guest proved itself. An error
 // in one of its callbacks closes the session, not the process.
+//
+// Its protocol runs in werift's and the channel's callbacks, as they come. What it waits for (the
+// answer, its candidates, the auth timeout, the last message out before refusing) runs as fibers
+// of its own, which closing it interrupts.
 import {
   AUTH_ATTEMPTS,
   decodeChannelMessage,
@@ -14,6 +18,7 @@ import {
   type SentSignal,
 } from "@gitui/shared";
 import { hostFinish, hostRespond, resumeAnswer } from "@gitui/shared/nearby-pake";
+import { Deferred, Effect, Exit, type Fiber } from "effect";
 import {
   fingerprints,
   Gatekeeper,
@@ -88,8 +93,12 @@ interface Expected {
 export class GuestSession {
   readonly #options: GuestOptions;
   readonly #peer: AnsweringPeer;
-  readonly #answered: Promise<void>;
-  readonly #timer: ReturnType<typeof setTimeout>;
+  /** Done once the offer is answered, or couldn't be. */
+  readonly #answered = Deferred.makeUnsafe<void>();
+  /** The session's fibers, interrupted when it closes. */
+  readonly #fibers = new Set<Fiber.Fiber<void>>();
+  /** Ends the session if the guest hasn't proved itself in time. */
+  readonly #timer: Fiber.Fiber<void> | undefined;
   readonly #gate: Gatekeeper<Run>;
   /** The candidates the guest trickled for this offer. */
   #candidates = 0;
@@ -114,12 +123,28 @@ export class GuestSession {
       closed: () => this.close(),
       error: (error) => this.close(errorLine(error)),
     });
-    this.#timer = setTimeout(
-      () =>
-        this.close(this.#codeShown ? `Nearby: code ${this.#expected?.code} expired` : undefined),
-      options.authTimeout ?? AUTH_TIMEOUT,
+    this.#timer = this.#fork(
+      Effect.sleep(options.authTimeout ?? AUTH_TIMEOUT).pipe(
+        Effect.andThen(
+          Effect.sync(() =>
+            this.close(
+              this.#codeShown ? `Nearby: code ${this.#expected?.code} expired` : undefined,
+            ),
+          ),
+        ),
+      ),
     );
-    this.#answered = this.#answer();
+    this.#fork(this.#answer());
+  }
+
+  /** Runs `effect` as a fiber of this session's, until it ends or the session closes. */
+  #fork(effect: Effect.Effect<void>): Fiber.Fiber<void> | undefined {
+    if (this.#state === "closed") return undefined;
+    const fiber = Effect.runFork(effect);
+    if (fiber.pollUnsafe()) return fiber;
+    this.#fibers.add(fiber);
+    fiber.addObserver(() => this.#fibers.delete(fiber));
+    return fiber;
   }
 
   /**
@@ -140,9 +165,11 @@ export class GuestSession {
     // A candidate of an earlier offer of this guest's belongs to a connection that is gone.
     if (offerId !== this.#options.offerId) return;
     if (++this.#candidates > MAX_REMOTE_CANDIDATES) return;
-    void this.#answered.then(() => {
-      if (this.#state !== "closed") return this.#peer.addCandidate(candidate);
-    });
+    this.#fork(
+      Deferred.await(this.#answered).pipe(
+        Effect.andThen(Effect.promise(() => this.#peer.addCandidate(candidate))),
+      ),
+    );
   }
 
   /**
@@ -153,7 +180,7 @@ export class GuestSession {
     if (this.#state === "closed") return;
     const wasOpen = this.#state === "open";
     this.#state = "closed";
-    clearTimeout(this.#timer);
+    for (const fiber of this.#fibers) fiber.interruptUnsafe();
     const { log, onEnd } = this.#options;
     try {
       const steps = [
@@ -175,25 +202,33 @@ export class GuestSession {
     }
   }
 
-  async #answer() {
+  /** Answers the offer; closing the session meanwhile interrupts it, and it stays quiet. */
+  #answer(): Effect.Effect<void> {
     const { offerSdp, offerId, signal } = this.#options;
-    try {
-      const answerSdp = await this.#peer.answer(offerSdp);
-      // A session closed meanwhile stays closed, and quiet.
-      if (this.#state === "closed") return;
-      const prints = fingerprints(offerSdp, answerSdp);
-      if (!prints) {
-        return this.#refuseOffer(
-          "Nearby: refused an offer without exactly one SHA-256 DTLS fingerprint",
-        );
-      }
-      this.#expected = { code: newCode(), prints };
-      this.#state = "authenticating";
-      signal({ kind: "answer", offerId, sdp: answerSdp });
-    } catch (e) {
-      if (this.#state === "closed") return;
-      this.#refuseOffer(`Nearby: couldn't answer a device: ${(e as Error).message}`);
-    }
+    return Effect.tryPromise({
+      try: () => this.#peer.answer(offerSdp),
+      catch: (e) => e as Error,
+    }).pipe(
+      Effect.map((answerSdp) => {
+        if (this.#state === "closed") return;
+        const prints = fingerprints(offerSdp, answerSdp);
+        if (!prints) {
+          return this.#refuseOffer(
+            "Nearby: refused an offer without exactly one SHA-256 DTLS fingerprint",
+          );
+        }
+        this.#expected = { code: newCode(), prints };
+        this.#state = "authenticating";
+        signal({ kind: "answer", offerId, sdp: answerSdp });
+      }),
+      Effect.catch((e) =>
+        Effect.sync(() => {
+          if (this.#state === "closed") return;
+          this.#refuseOffer(`Nearby: couldn't answer a device: ${e.message}`);
+        }),
+      ),
+      Effect.ensuring(Effect.sync(() => void Deferred.doneUnsafe(this.#answered, Exit.void))),
+    );
   }
 
   /** Tells the guest its offer is of no use, so it needn't wait for an answer, and ends. */
@@ -299,7 +334,7 @@ export class GuestSession {
 
   /** The guest proved itself: requests go to the bridge from now on. */
   #open(channel: DataChannel, line: string | null) {
-    clearTimeout(this.#timer);
+    this.#timer?.interruptUnsafe();
     this.#state = "open";
     this.#bridge = new Bridge(channel, this.#options.fetch);
     this.#options.log(line ?? "Nearby: device connected");
@@ -308,6 +343,10 @@ export class GuestSession {
   /** Out of attempts: the last `auth-fail` leaves, then the channel closes. */
   #refuse(channel: DataChannel, line?: string) {
     this.#expected = null;
-    void channel.drain(0).then(() => this.close(line));
+    this.#fork(
+      Effect.promise(() => channel.drain(0)).pipe(
+        Effect.andThen(Effect.sync(() => this.close(line))),
+      ),
+    );
   }
 }

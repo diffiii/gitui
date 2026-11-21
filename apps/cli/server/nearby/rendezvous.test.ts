@@ -1,9 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
 import type { ClientMessage } from "@gitui/shared";
 import { fakeSockets } from "./fake-socket.ts";
+import { startScoped } from "../test-scope.ts";
 import {
   backoffDelay,
-  RendezvousClient,
+  rendezvousClient,
   type RendezvousEvents,
   type RendezvousOptions,
 } from "./rendezvous.ts";
@@ -23,9 +24,9 @@ const until = async (condition: () => boolean) => {
   expect(condition()).toBe(true);
 };
 
-let cleanup: (() => void)[] = [];
-afterEach(() => {
-  for (const fn of cleanup.splice(0)) fn();
+let cleanup: (() => unknown)[] = [];
+afterEach(async () => {
+  for (const fn of cleanup.splice(0)) await fn();
 });
 
 const SECRET = "s".repeat(43);
@@ -42,18 +43,19 @@ function client(options: Partial<RendezvousOptions> = {}) {
     gone: (id) => log.push(`gone ${id}`),
     error: (code, message) => log.push(`error ${code} ${message}`),
   };
-  const rendezvous = new RendezvousClient({
-    url: "wss://rendezvous.example/v1/connect",
-    family: 6,
-    name: "Desk",
-    secret: SECRET,
-    events,
-    open: fake.open,
-    backoff: { first: 10, max: 20 },
-    ...options,
-  });
+  const rendezvous = startScoped(
+    rendezvousClient({
+      url: "wss://rendezvous.example/v1/connect",
+      family: 6,
+      name: "Desk",
+      secret: SECRET,
+      events,
+      open: fake.open,
+      backoff: { first: 10, max: 20 },
+      ...options,
+    }),
+  );
   cleanup.push(() => rendezvous.stop());
-  rendezvous.start();
   return { rendezvous, log, ...fake };
 }
 
@@ -141,7 +143,7 @@ test("an unreachable service is retried until it answers", async () => {
 test("stopping closes the socket and reconnects no more", async () => {
   const { rendezvous, log, sockets } = client();
   sockets[0].open();
-  rendezvous.stop();
+  await rendezvous.stop();
   await new Promise((r) => setTimeout(r, 50));
   expect(sockets).toHaveLength(1);
   expect(log).toEqual([]);
@@ -167,22 +169,23 @@ test("over a real WebSocket: hello with the secret, protocol pings, IPv4 and IPv
     () => void v6.stop(true),
   );
   for (const family of [4, 6] as const) {
-    const rendezvous = new RendezvousClient({
-      url: `ws://localhost:${v4.port}`,
-      family,
-      name: "Desk",
-      secret: SECRET,
-      keepalive: { interval: 20, timeout: 1000 },
-      events: {
-        welcome() {},
-        down() {},
-        signal() {},
-        gone() {},
-        error() {},
-      },
-    });
+    const rendezvous = startScoped(
+      rendezvousClient({
+        url: `ws://localhost:${v4.port}`,
+        family,
+        name: "Desk",
+        secret: SECRET,
+        keepalive: { interval: 20, timeout: 1000 },
+        events: {
+          welcome() {},
+          down() {},
+          signal() {},
+          gone() {},
+          error() {},
+        },
+      }),
+    );
     cleanup.push(() => rendezvous.stop());
-    rendezvous.start();
   }
   await until(() => hellos.length === 2 && new Set(pings).size === 2);
   expect(hellos.toSorted()).toEqual([

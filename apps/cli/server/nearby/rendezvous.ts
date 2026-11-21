@@ -1,6 +1,9 @@
 // The host's connection to the rendezvous service (the contract's step 1): announces this
-// machine to guests on the same network and relays WebRTC signals. One RendezvousClient keeps
-// one socket, pinned to an IP family, alive: it pings, and reconnects with backoff.
+// machine to guests on the same network and relays WebRTC signals. One rendezvousClient keeps
+// one socket, pinned to an IP family, alive for as long as its scope: a fiber opens the socket,
+// pings it, and reconnects with backoff when it closes. Socket events are handled as they come,
+// in the socket's callbacks.
+import { Deferred, Effect, Exit, Option, type Scope } from "effect";
 import {
   type ClientMessage,
   type ErrorCode,
@@ -80,88 +83,95 @@ export interface RendezvousOptions {
   open?: SocketFactory;
 }
 
-export class RendezvousClient {
+/** A live rendezvous connection, kept up until its scope closes. */
+export interface RendezvousClient {
   readonly family: Family;
-  readonly #options: RendezvousOptions;
-  #socket: RendezvousSocket | null = null;
-  #attempt = 0;
-  #timer: ReturnType<typeof setTimeout> | undefined;
-  #stopped = false;
-
-  constructor(options: RendezvousOptions) {
-    this.family = options.family;
-    this.#options = options;
-  }
-
-  start() {
-    this.#connect();
-  }
-
   /** Relays `data` to peer `to`; dropped while the socket is down. */
-  send(to: string, data: SentSignal) {
-    this.#send({ type: "signal", to, data });
-  }
-
-  stop() {
-    this.#stopped = true;
-    clearTimeout(this.#timer);
-    this.#socket?.close();
-  }
-
-  #send(message: ClientMessage) {
-    if (this.#socket?.readyState === OPEN) this.#socket.send(JSON.stringify(message));
-  }
-
-  #connect() {
-    const { url, family, name, secret, events } = this.#options;
-    const { interval, timeout } = this.#options.keepalive ?? KEEPALIVE;
-    const socket = (this.#options.open ?? openSocket)(url, family);
-    this.#socket = socket;
-    let ping: ReturnType<typeof setInterval> | undefined;
-    let pong: ReturnType<typeof setTimeout> | undefined;
-
-    socket.on("open", () => {
-      this.#send({ type: "hello", role: "host", name, secret });
-      ping = setInterval(() => {
-        // One ping at a time: the timeout ends the socket before the next is due.
-        if (pong !== undefined) return;
-        socket.ping();
-        pong = setTimeout(() => socket.terminate(), timeout);
-      }, interval);
-    });
-    socket.on("pong", () => {
-      clearTimeout(pong);
-      pong = undefined;
-    });
-    socket.on("message", (data, isBinary) => {
-      if (this.#socket !== socket) return;
-      // Hosts get no `hosts` lists, and send no text pings to get `pong`s for.
-      const message = isBinary ? null : parseServerMessage(String(data));
-      switch (message?.type) {
-        case "welcome":
-          this.#attempt = 0;
-          return events.welcome(message.id);
-        case "signal":
-          return events.signal(message.from, message.data);
-        case "gone":
-          return events.gone(message.id);
-        case "error":
-          return events.error(message.code, message.message);
-      }
-    });
-    // A socket that fails to open emits `error`, then `close`, so `close` covers both.
-    socket.on("error", () => {});
-    socket.on("close", () => {
-      clearInterval(ping);
-      clearTimeout(pong);
-      if (this.#socket !== socket) return;
-      this.#socket = null;
-      if (this.#stopped) return;
-      events.down();
-      this.#timer = setTimeout(
-        () => this.#connect(),
-        backoffDelay(this.#attempt++, this.#options.backoff),
-      );
-    });
-  }
+  send(to: string, data: SentSignal): void;
 }
+
+/**
+ * Connects to the rendezvous service and stays connected until the scope closes, which closes
+ * the socket and stops reconnecting. The first socket opens before this returns.
+ */
+export const rendezvousClient = (
+  options: RendezvousOptions,
+): Effect.Effect<RendezvousClient, never, Scope.Scope> =>
+  Effect.gen(function* () {
+    const { url, family, name, secret, events } = options;
+    const { interval, timeout } = options.keepalive ?? KEEPALIVE;
+    let socket: RendezvousSocket | null = null;
+    let attempt = 0;
+    /** Set when the scope closes: a socket closing then isn't `down`. */
+    let stopped = false;
+
+    const send = (message: ClientMessage) => {
+      if (socket?.readyState === OPEN) socket.send(JSON.stringify(message));
+    };
+
+    /** Pings `ws` every `interval`; one without a pong `timeout` later ends it. */
+    const keepalive = (ws: RendezvousSocket, pongs: { next: Deferred.Deferred<void> }) =>
+      Effect.gen(function* () {
+        for (;;) {
+          yield* Effect.sleep(interval);
+          pongs.next = Deferred.makeUnsafe<void>();
+          ws.ping();
+          const pong = yield* Effect.timeoutOption(Deferred.await(pongs.next), timeout);
+          if (Option.isNone(pong)) return ws.terminate();
+        }
+      });
+
+    /** One socket, from opening it until it closes. */
+    const connection = Effect.gen(function* () {
+      const opened = Deferred.makeUnsafe<void>();
+      const closed = Deferred.makeUnsafe<void>();
+      const pongs = { next: Deferred.makeUnsafe<void>() };
+      const ws = yield* Effect.acquireRelease(
+        Effect.sync(() => (options.open ?? openSocket)(url, family)),
+        (ws) => Effect.sync(() => ws.close()),
+      );
+      socket = ws;
+      ws.on("open", () => {
+        send({ type: "hello", role: "host", name, secret });
+        Deferred.doneUnsafe(opened, Exit.void);
+      });
+      ws.on("pong", () => void Deferred.doneUnsafe(pongs.next, Exit.void));
+      ws.on("message", (data, isBinary) => {
+        if (socket !== ws) return;
+        // Hosts get no `hosts` lists, and send no text pings to get `pong`s for.
+        const message = isBinary ? null : parseServerMessage(String(data));
+        switch (message?.type) {
+          case "welcome":
+            attempt = 0;
+            return events.welcome(message.id);
+          case "signal":
+            return events.signal(message.from, message.data);
+          case "gone":
+            return events.gone(message.id);
+          case "error":
+            return events.error(message.code, message.message);
+        }
+      });
+      // A socket that fails to open emits `error`, then `close`, so `close` covers both.
+      ws.on("error", () => {});
+      ws.on("close", () => {
+        if (socket !== ws) return;
+        socket = null;
+        Deferred.doneUnsafe(closed, Exit.void);
+        if (!stopped) events.down();
+      });
+      yield* Effect.forkScoped(Effect.andThen(Deferred.await(opened), keepalive(ws, pongs)));
+      yield* Deferred.await(closed);
+    }).pipe(Effect.scoped);
+
+    yield* Effect.forkScoped(
+      Effect.forever(
+        Effect.andThen(connection, () => Effect.sleep(backoffDelay(attempt++, options.backoff))),
+      ),
+      { startImmediately: true },
+    );
+    // Added last, so it runs first: the socket the loop's interruption closes isn't `down`.
+    yield* Effect.addFinalizer(() => Effect.sync(() => void (stopped = true)));
+
+    return { family, send: (to, data) => send({ type: "signal", to, data }) };
+  });
