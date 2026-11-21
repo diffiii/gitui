@@ -505,3 +505,30 @@ test("an error in a callback werift calls closes the session, through PeerEvents
   await sleep(50);
   expect(log).toEqual(["Nearby: closed a connection after an error: Error: boom"]);
 });
+
+test("an error in one of the session's fibers closes it and says so, once", async () => {
+  const fake = fakePeers();
+  const log: string[] = [];
+  let ended = 0;
+  const session = new GuestSession({
+    offerSdp: sdpWithPrint("cd"),
+    offerId: OFFER_ID,
+    stunUrls: [],
+    tokens: new Tokens(),
+    budget: new PairingBudget(),
+    // Sending the answer fails, in the fiber that waited for it.
+    signal: () => {
+      throw new Error("boom");
+    },
+    fetch: () => new Response(),
+    log: (line) => log.push(line),
+    onEnd: () => ended++,
+    peer: fake.peer,
+  });
+  sessions.push(session);
+  await until(() => ended > 0);
+  await sleep(20);
+  expect(ended).toBe(1);
+  expect(fake.peers[0]!.closed).toBe(true);
+  expect(log).toEqual(["Nearby: closed a connection after an error: Error: boom"]);
+});
