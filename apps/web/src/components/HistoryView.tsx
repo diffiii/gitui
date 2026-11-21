@@ -55,7 +55,7 @@ export function HistoryPane({
   const { repo, api } = useRepo();
   const [limit, setLimit] = useState(PAGE);
   const { commit } = useUrl();
-  const { data, error, isLoading, isFetching } = useQuery({
+  const { data, error, isLoading, isFetching, isPlaceholderData } = useQuery({
     queryKey: [repo, "log", gitRef ?? null, all, limit],
     queryFn: (c) => api.log({ limit, all, ref: gitRef }, c),
     placeholderData: (prev) => prev,
@@ -134,8 +134,10 @@ export function HistoryPane({
                 choice.choose({ commit: hash });
                 openDetails();
               }}
+              // While the next page loads, the previous one is shown (placeholderData) and is
+              // shorter than `limit`: keep the footer, with its spinner, up until it arrives.
               footer={
-                commits.length >= limit && (
+                (commits.length >= limit || isPlaceholderData) && (
                   <div className="p-3">
                     <Button
                       variant="outline"
@@ -274,7 +276,7 @@ function CommitDetail({ hash, onSelect }: { hash: string; onSelect: (hash: strin
     queryFn: (c) => api.showCommit(hash, c),
     staleTime: Infinity,
   });
-  const files = useParsedPatch(data?.patch ?? "");
+  const { files, failed } = useParsedPatch(data?.patch ?? "");
   const paths = useMemo(() => files.map(fileKey), [files]);
   const gitStatus = useMemo(
     () => files.map((f) => ({ path: fileKey(f), status: CHANGE_STATUS[f.type] })),
@@ -378,7 +380,7 @@ function CommitDetail({ hash, onSelect }: { hash: string; onSelect: (hash: strin
           </section>
         )}
 
-        <DiffFiles files={files} />
+        <DiffFiles files={files} failed={failed} />
       </div>
     </ScrollArea>
   );

@@ -34,6 +34,7 @@ import { useUrl } from "@/lib/url";
 import { useListChoice } from "@/lib/listChoice";
 import { BELOW_LG } from "@/lib/media";
 import { cn } from "@/lib/utils";
+import { EmptyState } from "./EmptyState";
 import { FilterInput } from "./FilterInput";
 import { HistoryPane } from "./HistoryView";
 import { ListDetail } from "./ListDetail";
@@ -125,6 +126,17 @@ export function BranchesView() {
               </div>
             </ScrollArea>
           </>
+        }
+        empty={
+          data && branches.length === 0 ? (
+            <EmptyState
+              icon={GitBranch}
+              title="No branches yet"
+              description="The first commit creates one."
+            />
+          ) : (
+            <EmptyState icon={GitBranch} title="Select a branch" />
+          )
         }
         detail={
           shown && {
