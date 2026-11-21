@@ -26,6 +26,7 @@ import {
 } from "@/lib/changes";
 import { useListChoice } from "@/lib/listChoice";
 import { NARROW } from "@/lib/media";
+import { fileRowPath } from "@/lib/pathTree";
 import { useGitMutation, useRepo } from "@/lib/repo";
 import { useStatus } from "@/lib/status";
 import { useUrl } from "@/lib/url";
@@ -217,7 +218,10 @@ function FileSection({
       ) : (
         <div
           className="min-h-0 flex-1 px-1 pb-1"
-          onDoubleClick={() => selected && toggle([selected])}
+          onDoubleClick={(e) => {
+            const path = fileRowPath(e.nativeEvent.composedPath());
+            if (path && paths.includes(path)) toggle([path]);
+          }}
         >
           <PathTree
             paths={paths}

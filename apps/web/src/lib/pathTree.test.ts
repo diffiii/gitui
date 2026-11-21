@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { FileTree, type FileTreeDirectoryHandle } from "@pierre/trees";
-import { dirsOf, treeChanges, treePaths, updatePaths } from "./pathTree.ts";
+import { dirsOf, fileRowPath, treeChanges, treePaths, updatePaths } from "./pathTree.ts";
 
 /** A real tree model, as `PathTree` makes one, with no DOM. */
 const tree = (paths: string[], initialExpansion: "open" | "closed" = "open") =>
@@ -128,4 +128,30 @@ test("treePaths drops a file that is also another path's folder", () => {
   expect(treePaths(["a/b", "a", "c"])).toEqual(["a/b", "c"]);
   const same = ["x/y", "z"];
   expect(treePaths(same)).toBe(same);
+});
+
+/** A stand-in for a DOM element: only what `fileRowPath` reads, with no DOM. */
+const el = (attrs: Record<string, string>) =>
+  ({ getAttribute: (name: string) => attrs[name] ?? null }) as unknown as EventTarget;
+const row = (type: "file" | "folder", path: string) =>
+  el({ "data-type": "item", "data-item-type": type, "data-item-path": path });
+
+test("fileRowPath gives the path of the file row an event went through", () => {
+  expect(fileRowPath([el({}), row("file", "src/a.ts"), el({ "data-type": "root" })])).toBe(
+    "src/a.ts",
+  );
+});
+
+test("fileRowPath gives null for a folder row", () => {
+  expect(fileRowPath([el({}), row("folder", "src/")])).toBeNull();
+});
+
+test("fileRowPath gives null for a row's action section", () => {
+  expect(fileRowPath([el({ "data-item-section": "action" }), row("file", "src/a.ts")])).toBeNull();
+});
+
+test("fileRowPath gives null outside any row", () => {
+  const windowLike = {} as EventTarget;
+  expect(fileRowPath([el({}), el({ "data-type": "root" }), windowLike])).toBeNull();
+  expect(fileRowPath([])).toBeNull();
 });

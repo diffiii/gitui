@@ -63,3 +63,22 @@ export function updatePaths(
     model.resetPaths(next);
   }
 }
+
+/**
+ * The file row an event went through, from its `composedPath()` (the file tree's rows are in an
+ * open shadow root): its `data-item-path`, or null for a folder row, a row's action button,
+ * or anywhere outside a row.
+ */
+export function fileRowPath(targets: readonly EventTarget[]): string | null {
+  for (const t of targets) {
+    const el = t as Partial<Pick<Element, "getAttribute">>;
+    if (typeof el.getAttribute !== "function") continue;
+    if (el.getAttribute("data-item-section") === "action") return null;
+    if (el.getAttribute("data-type") === "item") {
+      return el.getAttribute("data-item-type") === "file"
+        ? el.getAttribute("data-item-path")
+        : null;
+    }
+  }
+  return null;
+}
