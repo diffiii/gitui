@@ -19,27 +19,23 @@ import {
   type ClientMessage,
   ERROR_CODES,
   isErrorCode,
-  isHostName,
   isRefusalReason,
-  type Fingerprint,
   type GuestMessage,
   HOST_KEY,
   HOST_SECRET,
+  hostName,
   type HostInfo,
   type HostMessage,
   type IceCandidate,
   MAX_MESSAGE_LENGTH,
-  MAX_NAME_LENGTH,
   OFFER_ID,
   parseChunk,
   PEER_ID,
   REASON_SLUG,
   REFUSAL_REASONS,
   type RelayedSignal,
-  RENDEZVOUS_PATH,
   type ServerMessage,
   type SignalData,
-  UNSAFE_CHARS,
 } from "./nearby.ts";
 
 /** A message that breaks the contract; `message` says how. */
@@ -147,57 +143,16 @@ const Headers = Schema.mutable(
 );
 export const isHeaders: (value: unknown) => value is [string, string][] = Schema.is(Headers);
 
-/** The longest text `printable` returns, in code points. */
-export const MAX_PRINTABLE_LENGTH = 500;
-
-/**
- * `text` safe to print where it may quote others (a terminal, a log): without the characters
- * that hostName refuses, and cut to `max` code points, ending in "…" if it was cut.
- */
-export function printable(text: string, max = MAX_PRINTABLE_LENGTH): string {
-  const kept = Array.from(text.replace(UNSAFE_CHARS, ""));
-  return kept.length > max ? `${kept.slice(0, max - 1).join("")}…` : kept.join("");
-}
-
 /**
  * A host's display name, trimmed, if it is 1 to MAX_NAME_LENGTH code points long and has no
  * control or bidi characters.
  */
-const HostName = Schema.String.pipe(
-  Schema.decodeTo(Schema.String.check(Schema.makeFilter(isHostName)), SchemaTransformation.trim()),
+const HostName = Schema.String.check(Schema.makeFilter((name) => hostName(name) !== null)).pipe(
+  Schema.decodeTo(
+    Schema.String,
+    SchemaTransformation.transform({ decode: (name) => hostName(name)!, encode: (name) => name }),
+  ),
 );
-const decodeHostName = Schema.decodeUnknownOption(HostName);
-
-/**
- * A host's display name, trimmed, if it is 1 to MAX_NAME_LENGTH code points long and has no
- * control or bidi characters; else null. The Worker, `--name` and saved hosts all use this.
- */
-export const hostName = (value: unknown): string | null => Option.getOrNull(decodeHostName(value));
-
-/**
- * `text` made into a valid hostName if it can be: the unsafe characters dropped and the rest cut
- * to MAX_NAME_LENGTH code points. Null if nothing is left.
- */
-export function toHostName(text: string): string | null {
-  const kept = Array.from(text.replace(UNSAFE_CHARS, "").trim()).slice(0, MAX_NAME_LENGTH);
-  return hostName(kept.join(""));
-}
-
-/**
- * The rendezvous WebSocket URL for `origin`, a ws: or wss: origin (no path, no trailing slash),
- * or null if it isn't one. The CLI (GITUI_RENDEZVOUS_URL), the web app and its CSP
- * (VITE_GITUI_RENDEZVOUS_URL) all check the origin with this.
- */
-export function rendezvousUrl(origin: string): string | null {
-  let url: URL;
-  try {
-    url = new URL(origin);
-  } catch {
-    return null;
-  }
-  const valid = (url.protocol === "ws:" || url.protocol === "wss:") && origin === url.origin;
-  return valid ? url.origin + RENDEZVOUS_PATH : null;
-}
 
 /**
  * A string `from` decodes, as one of the `known` values, or as `unknown` if it's none of them:
@@ -481,21 +436,3 @@ export type SchemasMatchContract = [
   Assert<Equals<GuestMessage, (typeof GuestMessageSchema)["Type"]>>,
   Assert<Equals<HostMessage, (typeof HostMessageSchema)["Type"]>>,
 ];
-
-// ── SDP ────────────────────────────────────────────────────────────────────────────────────
-
-const FINGERPRINT = /^a=fingerprint:sha-256 ((?:[0-9a-f]{2}:){31}[0-9a-f]{2})$/i;
-
-/**
- * The DTLS fingerprint of an SDP, as "sha-256 ab:cd:…" (lowercase), or null unless it has
- * exactly one fingerprint line and that one is a well-formed SHA-256. WebRTC stacks accept a
- * certificate that matches any listed fingerprint (werift does), so with two lines the one read
- * here could be the one not used. Lines are split on every kind of line break, and any line
- * that mentions "fingerprint" counts, so no SDP parser finds one that this misses.
- */
-export function sdpFingerprint(sdp: string): Fingerprint | null {
-  const lines = sdp.split(/\r\n|\r|\n/).filter((line) => /fingerprint/i.test(line));
-  if (lines.length !== 1) return null;
-  const match = FINGERPRINT.exec(lines[0]!.trim());
-  return match ? (`sha-256 ${match[1]!.toLowerCase()}` as Fingerprint) : null;
-}

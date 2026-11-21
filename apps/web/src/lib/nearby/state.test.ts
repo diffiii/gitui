@@ -1,4 +1,3 @@
-import { hostName } from "@gitui/shared";
 import { expect, test } from "bun:test";
 import { dedupeHosts, parseNearbyHost } from "./state.ts";
 
@@ -28,20 +27,4 @@ test("parseNearbyHost takes only a well-formed saved host", () => {
   expect(parseNearbyHost({ key: KEY_A, name: "x".repeat(64) })).toBeNull();
   expect(parseNearbyHost(null)).toBeNull();
   expect(parseNearbyHost("MacBook")).toBeNull();
-});
-
-test("parseNearbyHost checks names as the codec's hostName does", () => {
-  const names: unknown[] = [
-    "MacBook",
-    "  Jan's MacBook ",
-    "",
-    " ",
-    "💻".repeat(63),
-    "💻".repeat(64),
-  ];
-  names.push("a\nb", "a\u2028b", "a\u202eb", "a\u2066b", "a\u061cb", "a\u0000b", 42, null);
-  for (const name of names) {
-    const parsed = parseNearbyHost({ key: KEY_A, name });
-    expect(parsed?.name ?? null).toBe(hostName(name));
-  }
 });

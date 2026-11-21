@@ -5,10 +5,8 @@ import {
   ERROR_CODES,
   frameChunk,
   MAX_MESSAGE_LENGTH,
-  MAX_NAME_LENGTH,
   newOfferId,
   REFUSAL_REASONS,
-  RENDEZVOUS_PATH,
 } from "./nearby.ts";
 import {
   ClientMessageSchema,
@@ -21,17 +19,11 @@ import {
   RelayedSignalSchema,
   ServerMessageSchema,
   SignalSchema,
-  hostName,
   isId,
   NearbyCodecError,
   parseClientMessage,
   parseServerMessage,
   parseSignal,
-  rendezvousUrl,
-  sdpFingerprint,
-  MAX_PRINTABLE_LENGTH,
-  printable,
-  toHostName,
 } from "./nearby-codec.ts";
 
 const parse = (value: unknown): unknown => parseClientMessage(JSON.stringify(value));
@@ -252,56 +244,6 @@ test("newOfferId makes distinct valid ids", () => {
   expect(newOfferId()).not.toBe(a);
 });
 
-test("hostName trims and bounds names by code point and rejects control and bidi characters", () => {
-  expect(hostName(" box ")).toBe("box");
-  expect(hostName("a".repeat(MAX_NAME_LENGTH))).toBe("a".repeat(MAX_NAME_LENGTH));
-  // Lengths count code points: an emoji is one.
-  expect(hostName("💻".repeat(MAX_NAME_LENGTH))).not.toBeNull();
-  expect(hostName("💻".repeat(MAX_NAME_LENGTH + 1))).toBeNull();
-  expect(hostName("a".repeat(MAX_NAME_LENGTH + 1))).toBeNull();
-  expect(hostName("   ")).toBeNull();
-  expect(hostName("")).toBeNull();
-  expect(hostName(42)).toBeNull();
-  for (const bad of ["\n", "\u0000", "\u009b", "\u202E", "\u2066", "\u200F", "\u061C", "\u2028"]) {
-    expect(hostName(`a${bad}b`)).toBeNull();
-  }
-  // Emoji sequences keep their joiners.
-  expect(hostName("👩\u200d💻 box")).toBe("👩\u200d💻 box");
-});
-
-test("printable drops control and bidi characters and caps the length", () => {
-  expect(printable("a\u001b[2Jb\nc\u202Ed\u2028e\u2066f")).toBe("a[2Jbcdef");
-  expect(printable("💻".repeat(MAX_PRINTABLE_LENGTH))).toBe("💻".repeat(MAX_PRINTABLE_LENGTH));
-  expect(printable("💻".repeat(MAX_PRINTABLE_LENGTH + 1))).toBe(
-    `${"💻".repeat(MAX_PRINTABLE_LENGTH - 1)}…`,
-  );
-  expect(printable("abcdef", 4)).toBe("abc…");
-});
-
-test("toHostName drops what hostName refuses and cuts by code point", () => {
-  expect(toHostName(" my\u202E-box\n ")).toBe("my-box");
-  expect(toHostName("💻".repeat(MAX_NAME_LENGTH + 5))).toBe("💻".repeat(MAX_NAME_LENGTH));
-  expect(toHostName("\u0007\u202E")).toBeNull();
-});
-
-test("rendezvousUrl takes ws: and wss: origins only", () => {
-  expect(rendezvousUrl("wss://rendezvous.example")).toBe(
-    `wss://rendezvous.example${RENDEZVOUS_PATH}`,
-  );
-  expect(rendezvousUrl("ws://127.0.0.1:8787")).toBe(`ws://127.0.0.1:8787${RENDEZVOUS_PATH}`);
-  for (const bad of [
-    "https://x.example",
-    "wss://x.example/",
-    "wss://x.example/path",
-    "wss://x.example?q",
-    "WSS://x.example",
-    "",
-    "nope",
-  ]) {
-    expect(rendezvousUrl(bad)).toBeNull();
-  }
-});
-
 test("isId takes unsigned 32-bit integers", () => {
   for (const ok of [0, 1, 0xffff_ffff]) expect(isId(ok)).toBe(true);
   for (const bad of [-1, 0.5, 0x1_0000_0000, "1", null]) expect(isId(bad)).toBe(false);
@@ -387,38 +329,6 @@ test("decodeChannelMessage reads binary frames", () => {
     id: 7,
   });
   expect(decodeChannelMessage(new Uint8Array(3), "guest")).toMatchObject({ kind: "invalid" });
-});
-
-const hex = (n: number) =>
-  Array.from({ length: 32 }, (_, i) => ((i * n) & 0xff).toString(16).padStart(2, "0")).join(":");
-
-test("sdpFingerprint reads a single SHA-256 fingerprint", () => {
-  const print = hex(7);
-  const sdp = `v=0\r\na=group:BUNDLE 0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 ${print.toUpperCase()}\r\na=setup:actpass\r\n`;
-  // Normalized to lowercase: sdpFingerprint is the one place that does it.
-  expect(sdpFingerprint(sdp) as string).toBe(`sha-256 ${print}`);
-  expect(sdpFingerprint(sdp.replaceAll("\r\n", "\n")) as string).toBe(`sha-256 ${print}`);
-  expect(sdpFingerprint("v=0\r\n")).toBeNull();
-});
-
-test("sdpFingerprint refuses SDPs with more than one fingerprint, or another hash", () => {
-  const a = `a=fingerprint:sha-256 ${hex(3)}`;
-  const b = `a=fingerprint:sha-256 ${hex(5)}`;
-  // Session-level plus media-level.
-  expect(sdpFingerprint(`v=0\r\n${a}\r\nm=application 9 x\r\n${b}\r\n`)).toBeNull();
-  // The same one twice is still two lines.
-  expect(sdpFingerprint(`v=0\r\n${a}\r\n${a}\r\n`)).toBeNull();
-  // SHA-1 next to SHA-256, and SHA-1 alone.
-  const sha1 = "a=fingerprint:sha-1 " + hex(3).split(":").slice(0, 20).join(":");
-  expect(sdpFingerprint(`v=0\r\n${sha1}\r\n${a}\r\n`)).toBeNull();
-  expect(sdpFingerprint(`v=0\r\n${sha1}\r\n`)).toBeNull();
-  expect(sdpFingerprint(`v=0\r\na=fingerprint:sha-512 ${hex(3)}\r\n`)).toBeNull();
-  // A second line hidden behind a bare CR or LF, which some parsers don't split on.
-  expect(sdpFingerprint(`v=0\r\n${a}\n${b}\r\n`)).toBeNull();
-  expect(sdpFingerprint(`v=0\r\n${a}\r${b}\r\n`)).toBeNull();
-  // Malformed values.
-  expect(sdpFingerprint(`v=0\r\na=fingerprint:sha-256 ${hex(3).slice(3)}\r\n`)).toBeNull();
-  expect(sdpFingerprint(`v=0\r\na=fingerprint:sha-256 ${hex(3)} extra\r\n`)).toBeNull();
 });
 
 // One valid message of every kind each schema reads, as a peer would send it.

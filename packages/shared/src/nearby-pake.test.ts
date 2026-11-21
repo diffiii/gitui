@@ -1,7 +1,6 @@
 import { expect, test } from "bun:test";
 import { fromBase64Url, toBase64Url } from "./bytes.ts";
-import type { Fingerprints } from "./nearby.ts";
-import { sdpFingerprint } from "./nearby-codec.ts";
+import { type Fingerprints, sdpFingerprint } from "./nearby.ts";
 import {
   guestFinish,
   guestStart,
