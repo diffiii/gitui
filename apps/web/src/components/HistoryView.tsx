@@ -161,7 +161,11 @@ export function HistoryPane({
               // Side by side, a collapsed panel shows nothing.
               content:
                 closed && !stacked ? null : (
-                  <CommitDetail hash={shown} onSelect={(hash) => select({ commit: hash })} />
+                  <CommitDetail
+                    key={shown}
+                    hash={shown}
+                    onSelect={(hash) => select({ commit: hash })}
+                  />
                 ),
               title: <span className="font-mono text-sm">{shown.slice(0, 7)}</span>,
               label: `Commit ${shown.slice(0, 7)}`,
