@@ -207,7 +207,10 @@ const exists = (p: string) =>
 /**
  * `p` with symlinks resolved, or null if it doesn't exist. Every repository path gitui keeps or
  * compares is in this form: fs.promises.realpath is the system's (fs.realpath.native), which on
- * Windows also means long names (not `RUNNER~1`) and backslashes.
+ * Windows also means long names (not `RUNNER~1`) and backslashes, and on macOS the disk's own
+ * case, as git prints it. Not Effect's FileSystem.realPath: that is Node's JS realpath off
+ * Windows, which keeps a path's case as typed, so on macOS a case variant of an opened repository
+ * would no longer match it in the repo gate.
  */
 export const realPath = (p: string) => Effect.promise(() => realpath(p).catch(() => null));
 
