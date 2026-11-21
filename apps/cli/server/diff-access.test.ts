@@ -3,7 +3,7 @@
 import { afterAll, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import * as files_ from "./files.ts";
+import { untrackedDiff as diffUntracked } from "./files.ts";
 import {
   commitFile,
   git,
@@ -12,12 +12,10 @@ import {
   testApp,
   tmpDir,
   write,
-  promised,
+  run,
 } from "./test-repo.ts";
 
 afterAll(removeTempDirs);
-
-const { untrackedDiff: diffUntracked } = promised(files_);
 
 const outside = tmpDir();
 fs.writeFileSync(path.join(outside, "secret.txt"), "top secret\n");
@@ -76,6 +74,6 @@ test("refuses a nested repo's folder and the paths into it", async () => {
     expect(body).not.toContain("token");
   }
   // The diff checks for itself, whoever calls it.
-  const err = await diffUntracked(repo, "nested/").catch((e: Error) => e);
+  const err = await run(diffUntracked(repo, "nested/")).catch((e: Error) => e);
   expect((err as Error).message).toBe("Not an untracked file in this repository: nested/");
 });

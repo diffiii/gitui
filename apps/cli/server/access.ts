@@ -111,62 +111,65 @@ function rules(listener: Listener): Rules {
   }
 }
 
-/** Whether `url` (a request's path and query) is under /api. */
-const isApi = (url: string) => {
+/**
+ * Whether `url`'s path is spelled the one way the router matches without rewriting it: the
+ * router decodes percent escapes and stops a path at `;`, so `/%61pi/config` or `/api/config;x`
+ * would reach a route under another name.
+ */
+const canonicalPath = (url: string) => {
   const path = url.split("?", 1)[0]!;
-  return path === "/api" || path.startsWith("/api/");
+  return path.startsWith("/") && !/[%;#\\]|\/\//.test(path);
 };
 
 /**
- * The access checks on `/api/*`, as global router middleware, and the listener's repository
- * scope, for its RepoGate (repo-scope.ts).
+ * The access checks, as router middleware for the API routes, and the listener's repository
+ * scope, for its RepoGate (repo-scope.ts). The middleware runs on the routes it is provided to,
+ * whatever path the router matched them by; the server's other routes (main.ts) are left alone.
  */
 export function access({ listener }: AccessOptions) {
   const { hostAllowed, allowedOrigins, authError, repoScope } = rules(listener);
 
-  const middleware = HttpRouter.middleware(
-    (route) =>
-      Effect.gen(function* () {
-        const req = yield* HttpServerRequest.HttpServerRequest;
-        if (!isApi(req.url)) return yield* route;
-        const headers: Headers = req.headers;
-        const host = headers.host ?? "";
-        if (!hostAllowed(host)) return HttpServerResponse.text("Forbidden host", { status: 403 });
+  const middleware = HttpRouter.middleware((route) =>
+    Effect.gen(function* () {
+      const req = yield* HttpServerRequest.HttpServerRequest;
+      if (!canonicalPath(req.url)) return HttpServerResponse.text("Not found", { status: 404 });
+      const headers: Headers = req.headers;
+      const host = headers.host ?? "";
+      if (!hostAllowed(host)) return HttpServerResponse.text("Forbidden host", { status: 403 });
 
-        const origin = headers.origin;
-        const crossOrigin = origin !== undefined && origin !== `http://${host}`;
-        // Every response to an allowed cross-origin page carries these, errors included.
-        let cors: Record<string, string> = {};
-        if (crossOrigin) {
-          if (!allowedOrigins.includes(origin)) {
-            return HttpServerResponse.text("Forbidden origin", { status: 403 });
-          }
-          cors = { "Access-Control-Allow-Origin": origin, Vary: "Origin" };
-          if (req.method === "OPTIONS") {
-            return HttpServerResponse.empty({
-              status: 204,
-              headers: {
-                ...cors,
-                "Access-Control-Allow-Methods": "GET, POST",
-                "Access-Control-Allow-Headers": `${CLIENT_HEADER}, content-type, authorization`,
-                // Older Chrome sends a private-network preflight before a public page calls
-                // localhost.
-                "Access-Control-Allow-Private-Network": "true",
-                "Access-Control-Max-Age": "600",
-              },
-            });
-          }
+      const origin = headers.origin;
+      const crossOrigin = origin !== undefined && origin !== `http://${host}`;
+      // Every response to an allowed cross-origin page carries these, errors included.
+      let cors: Record<string, string> = {};
+      if (crossOrigin) {
+        if (!allowedOrigins.includes(origin)) {
+          return HttpServerResponse.text("Forbidden origin", { status: 403 });
         }
-        const withCors = HttpServerResponse.setHeaders(cors);
+        cors = { "Access-Control-Allow-Origin": origin, Vary: "Origin" };
+        if (req.method === "OPTIONS") {
+          return HttpServerResponse.empty({
+            status: 204,
+            headers: {
+              ...cors,
+              "Access-Control-Allow-Methods": "GET, POST",
+              "Access-Control-Allow-Headers": `${CLIENT_HEADER}, content-type, authorization`,
+              // Older Chrome sends a private-network preflight before a public page calls
+              // localhost.
+              "Access-Control-Allow-Private-Network": "true",
+              "Access-Control-Max-Age": "600",
+            },
+          });
+        }
+      }
+      const withCors = HttpServerResponse.setHeaders(cors);
 
-        if (headers[CLIENT_HEADER] !== "1")
-          return HttpServerResponse.text("Forbidden", { status: 403 });
-        // A JSON 401 (with CORS headers) lets the page tell "not paired" from "CLI not running".
-        const error = authError(headers, crossOrigin);
-        if (error) return withCors(HttpServerResponse.jsonUnsafe({ error }, { status: 401 }));
-        return withCors(yield* route);
-      }),
-    { global: true },
+      if (headers[CLIENT_HEADER] !== "1")
+        return HttpServerResponse.text("Forbidden", { status: 403 });
+      // A JSON 401 (with CORS headers) lets the page tell "not paired" from "CLI not running".
+      const error = authError(headers, crossOrigin);
+      if (error) return withCors(HttpServerResponse.jsonUnsafe({ error }, { status: 401 }));
+      return withCors(yield* route);
+    }),
   );
   return { middleware, repoScope };
 }

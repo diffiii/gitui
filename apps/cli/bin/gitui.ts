@@ -5,7 +5,7 @@ import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import { HOSTED_ORIGIN, pairingUrl, RENDEZVOUS_ORIGIN, rendezvousUrl } from "@gitui/shared";
 import { Console, Data, Effect } from "effect";
 import { loopbackListener } from "../server/access.ts";
-import { createApp } from "../server/app.ts";
+import { createApp, toFetch } from "../server/app.ts";
 import { pushRecent } from "../server/config.ts";
 import { resolveRepo } from "../server/git.ts";
 import { start } from "../server/main.ts";
@@ -30,12 +30,14 @@ const nearbyUrl = Effect.suspend(() => {
  * their own, whose access rules trust the authenticated data channel (see server/access.ts).
  */
 const listenNearby = ({ name, url }: Nearby & { url: string }, repo: string | undefined) =>
-  startNearby({
-    url,
-    name: name ?? hostnameAsName(os.hostname()),
-    fetch: createApp({ listener: { kind: "nearby" }, initialRepo: repo }).fetch,
-    log: (line) => console.log(line),
-  });
+  Effect.flatMap(toFetch(createApp({ listener: { kind: "nearby" }, initialRepo: repo })), (fetch) =>
+    startNearby({
+      url,
+      name: name ?? hostnameAsName(os.hostname()),
+      fetch,
+      log: (line) => console.log(line),
+    }),
+  );
 
 function openBrowser(url: string) {
   // No shell: the pairing link's `&` would split a cmd.exe command line. Detached and left to
@@ -86,4 +88,4 @@ const main = Effect.gen(function* () {
   Effect.provide(NodeServices.layer),
 );
 
-NodeRuntime.runMain(main, { disableErrorReporting: false });
+NodeRuntime.runMain(main);

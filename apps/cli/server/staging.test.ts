@@ -1,20 +1,21 @@
 import { afterAll, expect, test } from "bun:test";
+import fs from "node:fs";
+import path from "node:path";
 import { Effect, Fiber } from "effect";
-import * as git_ from "./git.ts";
+import * as g from "./git.ts";
 import { withRepoLock } from "./lock.ts";
 import {
   commitFile,
   git,
   initRepo,
   removeTempDirs,
+  revParse,
+  run,
   testApp,
   write,
-  promised,
 } from "./test-repo.ts";
 
 afterAll(removeTempDirs);
-
-const g = promised(git_);
 
 function makeRepo(commit = true) {
   const dir = initRepo();
@@ -23,7 +24,7 @@ function makeRepo(commit = true) {
 }
 
 const porcelain = async (dir: string) =>
-  (await g.git(dir, ["status", "--porcelain", "--untracked-files=all"]))
+  (await run(g.git(dir, ["status", "--porcelain", "--untracked-files=all"])))
     .split("\n")
     .filter(Boolean)
     .sort();
@@ -45,8 +46,8 @@ async function post(dir: string, route: string, body: unknown) {
 test("stage([]) and unstage([]) throw instead of touching the whole tree", async () => {
   const dir = makeRepo();
   write(dir, "a.txt", "a\n");
-  expect(await rejection(g.stage(dir, []))).toBeInstanceOf(g.GitError);
-  expect(await rejection(g.unstage(dir, []))).toBeInstanceOf(g.GitError);
+  expect(await rejection(run(g.stage(dir, [])))).toBeInstanceOf(g.GitError);
+  expect(await rejection(run(g.unstage(dir, [])))).toBeInstanceOf(g.GitError);
   expect(await porcelain(dir)).toEqual(["?? a.txt"]);
 });
 
@@ -118,7 +119,7 @@ test("unstaging an unrelated path leaves a staged rename alone", async () => {
   const dir = makeRepo();
   git(dir, "mv", "old.txt", "new.txt");
   write(dir, "a.txt", "a\n");
-  await g.stage(dir, ["a.txt"]);
+  await run(g.stage(dir, ["a.txt"]));
   expect((await post(dir, "/unstage", { paths: ["a.txt"] })).status).toBe(200);
   expect(await porcelain(dir)).toEqual(["?? a.txt", "R  old.txt -> new.txt"]);
 });
@@ -126,9 +127,9 @@ test("unstaging an unrelated path leaves a staged rename alone", async () => {
 test("unstage with no paths works on an unborn repo", async () => {
   const dir = makeRepo(false);
   write(dir, "a.txt", "a\n");
-  await g.stage(dir);
+  await run(g.stage(dir));
   expect(await porcelain(dir)).toEqual(["A  a.txt"]);
-  await g.unstage(dir);
+  await run(g.unstage(dir));
   expect(await porcelain(dir)).toEqual(["?? a.txt"]);
 });
 
@@ -188,4 +189,29 @@ test("withRepoLock lets go of a lock whose holder is interrupted", async () => {
   await Bun.sleep(1);
   await Effect.runPromise(Fiber.interrupt(fiber));
   expect(await Effect.runPromise(withRepoLock("i", Effect.succeed("free")))).toBe("free");
+});
+
+test("a commit finishes even if the client goes away while git runs", async () => {
+  const dir = makeRepo();
+  const head = revParse(dir);
+  const hook = path.join(dir, ".git", "hooks", "pre-commit");
+  fs.writeFileSync(hook, "#!/bin/sh\nsleep 1\n", { mode: 0o755 });
+  write(dir, "a.txt", "a\n");
+  git(dir, "add", "a.txt");
+  const aborted = new AbortController();
+  const res = testApp().fetch(
+    new Request(`http://localhost/api/repo/commit?repo=${encodeURIComponent(dir)}`, {
+      method: "POST",
+      headers: { host: "localhost", "x-gitui": "1", "content-type": "application/json" },
+      body: JSON.stringify({ message: "slow" }),
+      signal: aborted.signal,
+    }),
+  );
+  await Bun.sleep(200);
+  aborted.abort();
+  await res.catch(() => {});
+  // The hook is still running; once it's done, so is the commit.
+  expect(revParse(dir)).toBe(head);
+  for (let i = 0; i < 50 && revParse(dir) === head; i++) await Bun.sleep(100);
+  expect(git(dir, "log", "-1", "--format=%s").trim()).toBe("slow");
 });

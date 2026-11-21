@@ -7,7 +7,7 @@
 // app.ts sends every `?repo=` and every `/open` through the listener's RepoGate; the
 // repo-scope test checks that every route under /api/repo goes through it. A route that takes a
 // repository path anywhere else (a field of its body, say) must send it through
-// `repos.resolve` too, and test it with that field set: the gate's middleware only sees `?repo=`.
+// `repos.resolve` too, and test it with that field set: `repoRoute` only gates `?repo=`.
 import { realpath } from "node:fs/promises";
 import path from "node:path";
 import { Effect, Schema } from "effect";
