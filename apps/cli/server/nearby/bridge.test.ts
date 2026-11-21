@@ -255,6 +255,53 @@ test("the guest's cancel stops a response and frees its id", async () => {
   bridge.close();
 });
 
+test("a cancel while the app is still answering cancels the body it answers with", async () => {
+  const channel = new FakeChannel();
+  let answer: (response: Response) => void = () => {};
+  let aborted = false;
+  let cancelled = false;
+  const bridge = new Bridge(channel, (req) => {
+    req.signal.addEventListener("abort", () => (aborted = true));
+    return new Promise<Response>((resolve) => (answer = resolve));
+  });
+  request(bridge, 1, "/slow");
+  await settle();
+  bridge.receive(JSON.stringify({ t: "cancel", id: 1 }));
+  expect(aborted).toBe(true);
+  // An app that answers anyway: nothing reads the body, so it is cancelled.
+  answer(
+    new Response(
+      new ReadableStream<Uint8Array>({
+        pull: (controller) => controller.enqueue(new Uint8Array(CHUNK_SIZE)),
+        cancel: () => {
+          cancelled = true;
+        },
+      }),
+    ),
+  );
+  await settle();
+  expect(cancelled).toBe(true);
+  expect(channel.sent).toEqual([]);
+});
+
+test("an error of the bridge's own while it answers aborts the request and frees its id", async () => {
+  const channel = new FakeChannel();
+  channel.drain = () => Promise.reject(new Error("drain broke"));
+  const bridge = new Bridge(channel, echo);
+  request(bridge, 1, `/big/${2 * CHANNEL_HIGH_WATER}`);
+  await settle();
+  expect(replies(channel).get(1)!.aborted).toBe("drain broke");
+
+  // The id is free again.
+  channel.sent = [];
+  channel.flush();
+  request(bridge, 1, "/again");
+  await settle();
+  const again = replies(channel).get(1)!;
+  expect(again.head?.status).toBe(200);
+  expect(again.ended).toBe(true);
+});
+
 test("a cancel before the end drops the request unanswered", async () => {
   const channel = new FakeChannel();
   let calls = 0;

@@ -6,7 +6,7 @@
 //
 // Its protocol runs in werift's and the channel's callbacks, as they come. What it waits for (the
 // answer, its candidates, the auth timeout, the last message out before refusing) runs as fibers
-// of its own, which closing it interrupts.
+// in the session's scope, which closing it closes. A fiber's defect closes the session too.
 import {
   AUTH_ATTEMPTS,
   decodeChannelMessage,
@@ -18,7 +18,7 @@ import {
   type SentSignal,
 } from "@gitui/shared";
 import { hostFinish, hostRespond, resumeAnswer } from "@gitui/shared/nearby-pake";
-import { Deferred, Effect, Exit, type Fiber } from "effect";
+import { Cause, Deferred, Effect, Exit, type Fiber, Scope } from "effect";
 import {
   fingerprints,
   Gatekeeper,
@@ -95,10 +95,10 @@ export class GuestSession {
   readonly #peer: AnsweringPeer;
   /** Done once the offer is answered, or couldn't be. */
   readonly #answered = Deferred.makeUnsafe<void>();
-  /** The session's fibers, interrupted when it closes. */
-  readonly #fibers = new Set<Fiber.Fiber<void>>();
+  /** Holds the session's fibers; closing the session closes it, which interrupts them. */
+  readonly #scope = Scope.makeUnsafe("parallel");
   /** Ends the session if the guest hasn't proved itself in time. */
-  readonly #timer: Fiber.Fiber<void> | undefined;
+  readonly #timer: Fiber.Fiber<void>;
   readonly #gate: Gatekeeper<Run>;
   /** The candidates the guest trickled for this offer. */
   #candidates = 0;
@@ -137,14 +137,18 @@ export class GuestSession {
     this.#fork(this.#answer());
   }
 
-  /** Runs `effect` as a fiber of this session's, until it ends or the session closes. */
-  #fork(effect: Effect.Effect<void>): Fiber.Fiber<void> | undefined {
-    if (this.#state === "closed") return undefined;
-    const fiber = Effect.runFork(effect);
-    if (fiber.pollUnsafe()) return fiber;
-    this.#fibers.add(fiber);
-    fiber.addObserver(() => this.#fibers.delete(fiber));
-    return fiber;
+  /**
+   * Runs `effect` as a fiber in the session's scope, until it ends or the session closes; a
+   * defect closes the session. It starts at once, so it runs up to its first wait before this
+   * returns.
+   */
+  #fork(effect: Effect.Effect<void>): Fiber.Fiber<void> {
+    const guarded = Effect.catchCause(effect, (cause) =>
+      Cause.hasInterruptsOnly(cause)
+        ? Effect.void
+        : Effect.sync(() => this.close(errorLine(Cause.squash(cause)))),
+    );
+    return Effect.runSync(Effect.forkIn(guarded, this.#scope, { startImmediately: true }));
   }
 
   /**
@@ -180,10 +184,12 @@ export class GuestSession {
     if (this.#state === "closed") return;
     const wasOpen = this.#state === "open";
     this.#state = "closed";
-    for (const fiber of this.#fibers) fiber.interruptUnsafe();
     const { log, onEnd } = this.#options;
     try {
       const steps = [
+        // Interrupts every fiber at once (a parallel scope), but the one calling this, if any,
+        // which ends when it next yields.
+        () => Effect.runFork(Scope.close(this.#scope, Exit.void)),
         () => this.#bridge?.close(),
         () => this.#channel?.close(),
         () => this.#peer.close(),
@@ -210,7 +216,6 @@ export class GuestSession {
       catch: (e) => e as Error,
     }).pipe(
       Effect.map((answerSdp) => {
-        if (this.#state === "closed") return;
         const prints = fingerprints(offerSdp, answerSdp);
         if (!prints) {
           return this.#refuseOffer(
@@ -222,10 +227,7 @@ export class GuestSession {
         signal({ kind: "answer", offerId, sdp: answerSdp });
       }),
       Effect.catch((e) =>
-        Effect.sync(() => {
-          if (this.#state === "closed") return;
-          this.#refuseOffer(`Nearby: couldn't answer a device: ${e.message}`);
-        }),
+        Effect.sync(() => this.#refuseOffer(`Nearby: couldn't answer a device: ${e.message}`)),
       ),
       Effect.ensuring(Effect.sync(() => void Deferred.doneUnsafe(this.#answered, Exit.void))),
     );
@@ -334,7 +336,7 @@ export class GuestSession {
 
   /** The guest proved itself: requests go to the bridge from now on. */
   #open(channel: DataChannel, line: string | null) {
-    this.#timer?.interruptUnsafe();
+    this.#timer.interruptUnsafe();
     this.#state = "open";
     this.#bridge = new Bridge(channel, this.#options.fetch);
     this.#options.log(line ?? "Nearby: device connected");

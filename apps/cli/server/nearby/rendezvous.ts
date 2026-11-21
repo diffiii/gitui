@@ -109,23 +109,12 @@ export const rendezvousClient = (
       if (socket?.readyState === OPEN) socket.send(JSON.stringify(message));
     };
 
-    /** Pings `ws` every `interval`; one without a pong `timeout` later ends it. */
-    const keepalive = (ws: RendezvousSocket, pongs: { next: Deferred.Deferred<void> }) =>
-      Effect.gen(function* () {
-        for (;;) {
-          yield* Effect.sleep(interval);
-          pongs.next = Deferred.makeUnsafe<void>();
-          ws.ping();
-          const pong = yield* Effect.timeoutOption(Deferred.await(pongs.next), timeout);
-          if (Option.isNone(pong)) return ws.terminate();
-        }
-      });
-
     /** One socket, from opening it until it closes. */
     const connection = Effect.gen(function* () {
       const opened = Deferred.makeUnsafe<void>();
       const closed = Deferred.makeUnsafe<void>();
-      const pongs = { next: Deferred.makeUnsafe<void>() };
+      /** Done by the next pong; the keepalive makes a new one for each ping. */
+      let pong = Deferred.makeUnsafe<void>();
       const ws = yield* Effect.acquireRelease(
         Effect.sync(() => (options.open ?? openSocket)(url, family)),
         (ws) => Effect.sync(() => ws.close()),
@@ -135,7 +124,7 @@ export const rendezvousClient = (
         send({ type: "hello", role: "host", name, secret });
         Deferred.doneUnsafe(opened, Exit.void);
       });
-      ws.on("pong", () => void Deferred.doneUnsafe(pongs.next, Exit.void));
+      ws.on("pong", () => void Deferred.doneUnsafe(pong, Exit.void));
       ws.on("message", (data, isBinary) => {
         if (socket !== ws) return;
         // Hosts get no `hosts` lists, and send no text pings to get `pong`s for.
@@ -160,7 +149,17 @@ export const rendezvousClient = (
         Deferred.doneUnsafe(closed, Exit.void);
         if (!stopped) events.down();
       });
-      yield* Effect.forkScoped(Effect.andThen(Deferred.await(opened), keepalive(ws, pongs)));
+      /** Pings `ws` every `interval`; one without a pong `timeout` later ends it. */
+      const keepalive = Effect.gen(function* () {
+        for (;;) {
+          yield* Effect.sleep(interval);
+          pong = Deferred.makeUnsafe<void>();
+          ws.ping();
+          const answered = yield* Effect.timeoutOption(Deferred.await(pong), timeout);
+          if (Option.isNone(answered)) return ws.terminate();
+        }
+      });
+      yield* Effect.forkScoped(Effect.andThen(Deferred.await(opened), keepalive));
       yield* Deferred.await(closed);
     }).pipe(Effect.scoped);
 

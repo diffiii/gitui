@@ -8,7 +8,7 @@
 // startNearby lives in a scope: closing it ends every connection, both sockets and the guard.
 import net from "node:net";
 import { HOSTED_ORIGIN, hostKey, printable, type SignalData, STUN_URLS } from "@gitui/shared";
-import { Effect, type Fiber, type Scope } from "effect";
+import { Effect, type Scope } from "effect";
 import { lockoutLine, newHostSecret, PairingBudget, Tokens } from "./auth.ts";
 import type { Fetch } from "./bridge.ts";
 import { guardWerift } from "./guard.ts";
@@ -94,14 +94,18 @@ export const startNearby = (
       "no-room-sockets": () =>
         "Nearby: the rendezvous service still holds this computer's earlier connections, retrying",
     };
-    /** Reports `timeout` if the families haven't all settled by then. */
-    let statusTimer: Fiber.Fiber<void> | undefined;
     const report = (event: StatusEvent) => {
       const [next, line] = nextStatus(status, event);
       status = next;
-      if (status.phase !== "starting") statusTimer?.interruptUnsafe();
+      if (status.phase !== "starting") statusTimer.interruptUnsafe();
       if (line) log(lines[line]());
     };
+    /** Reports `timeout` if the families haven't all settled by then. */
+    const statusTimer = yield* Effect.forkScoped(
+      Effect.sleep(options.statusDelay ?? STATUS_DELAY).pipe(
+        Effect.andThen(Effect.sync(() => report({ type: "timeout" }))),
+      ),
+    );
 
     /** Runs `fn` about guest `id`; an error of ours there ends its session, not the process. */
     const forGuest = (family: Family, id: string, fn: () => void) => {
@@ -178,12 +182,6 @@ export const startNearby = (
         },
       });
     }
-    statusTimer = yield* Effect.forkScoped(
-      Effect.sleep(options.statusDelay ?? STATUS_DELAY).pipe(
-        Effect.andThen(Effect.sync(() => report({ type: "timeout" }))),
-      ),
-    );
-    if (status.phase !== "starting") statusTimer.interruptUnsafe();
     return { key };
 
     function offer(
