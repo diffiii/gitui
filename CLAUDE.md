@@ -11,6 +11,7 @@ bun install                 # install (--frozen-lockfile to match bun.lock exact
 bun run dev [repo-path]     # API on :4777 (bun --watch) + Vite+ dev server with /api proxy
 bun test                    # bun:test; server tests run against real temp repos
 ./node_modules/.bin/tsc -b  # type check every tsconfig project
+bun run typecheck           # the same with Effect's diagnostics (effect-tsgo); CI runs this
 vp check                    # format, lint (type-aware), type check
 bun run build               # tsc -b, build apps/web, bundle the CLI into apps/cli/dist
 cd apps/web && bun run deploy  # build and deploy the hosted UI to Cloudflare (needs wrangler login)
@@ -127,6 +128,12 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
 - List/detail views go through `ListDetail` (`apps/web/src/components/ListDetail.tsx`) with
   `useListChoice` (`apps/web/src/lib/listChoice.ts`): side by side, or stacked on narrow
   screens, where opening a detail pushes a history entry.
+- Effect's diagnostics come from `@effect/tsgo` (TypeScript 7 has no JS plugins, so not
+  `@effect/language-service`), configured as the `@effect/language-service` plugin in
+  `tsconfig.base.json`: an Effect that is never run (`floatingEffect`) is an error, warnings
+  don't fail the check, and `unstableApiUsage` is off (the CLI builds on Effect's unstable
+  platform modules, pinned exactly). Plain `tsc` ignores the plugin; editors show them only when
+  their TypeScript server is `effect-tsgo tsc --lsp --stdio`.
 - Put each dependency in the package that uses it (in `apps/cli` as devDependencies, since
   they're bundled); shared tooling (typescript, vite-plus, @types/bun) stays at the root.
 - Add shadcn components under `apps/web/src/components/ui` (run `shadcn` from `apps/web`).
