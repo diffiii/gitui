@@ -6,8 +6,8 @@
 // A response stops sending once the channel holds more than CHANNEL_HIGH_WATER queued bytes,
 // and resumes when it drains to CHANNEL_LOW_WATER, so a large diff never sits in memory twice.
 // Each dispatched request is a fiber of the bridge's: a `cancel`, or the bridge closing,
-// interrupts it, which aborts the app's request and cancels the response body. Nothing here
-// knows about WebRTC.
+// interrupts it, which aborts the app's request and cancels the response body; a defect in it
+// aborts the request too. Nothing here knows about WebRTC.
 import {
   CHANNEL_HIGH_WATER,
   CHANNEL_LOW_WATER,
@@ -17,7 +17,7 @@ import {
   type GuestMessage,
   type HostMessage,
 } from "@gitui/shared";
-import { Effect, type Fiber } from "effect";
+import { Cause, Effect, type Fiber } from "effect";
 import { NEARBY_HOST } from "../access.ts";
 
 /** What the bridge needs of a data channel. */
@@ -63,6 +63,18 @@ function concat(parts: Uint8Array[], size: number) {
     at += part.byteLength;
   }
   return body;
+}
+
+/** The app's request for `head` and `body`, which `signal` aborts; throws if they are no request. */
+function toRequest(head: RequestHead, body: Uint8Array | undefined, signal: AbortSignal) {
+  const { method, path, headers } = head;
+  if (body && (method === "GET" || method === "HEAD")) {
+    throw new Error(`a ${method} request can't have a body`);
+  }
+  const init = new Headers(headers);
+  // The access policy's proof that the request came through the bridge.
+  init.set("host", NEARBY_HOST);
+  return new Request(new URL(path, ORIGIN).href, { method, headers: init, body, signal });
 }
 
 /** Serves the requests of one authenticated channel with `fetch`. */
@@ -137,46 +149,50 @@ export class Bridge {
 
   #dispatch(id: number, open: OpenRequest, body: Uint8Array[]) {
     open.body = null;
-    const { method, path, headers } = open.head;
-    let request: Request;
-    try {
-      if (open.size && (method === "GET" || method === "HEAD")) {
-        throw new Error(`a ${method} request can't have a body`);
-      }
-      const init = new Headers(headers);
-      // The access policy's proof that the request came through the bridge.
-      init.set("host", NEARBY_HOST);
-      request = new Request(new URL(path, ORIGIN).href, {
-        method,
-        headers: init,
-        body: open.size ? concat(body, open.size) : undefined,
-      });
-    } catch (e) {
-      return this.#fail(id, (e as Error).message);
-    }
     open.fiber = Effect.runFork(
-      this.#respond(id, request).pipe(
+      this.#respond(id, open.head, open.size ? concat(body, open.size) : undefined).pipe(
         Effect.map(() => this.#forget(id, open)),
-        Effect.catch((e: Error) => Effect.sync(() => this.#fail(id, e.message))),
+        Effect.catchCause((cause) => {
+          if (Cause.hasInterruptsOnly(cause)) return Effect.void;
+          const error = Cause.squash(cause);
+          return Effect.sync(() =>
+            this.#fail(id, error instanceof Error ? error.message : String(error)),
+          );
+        }),
       ),
     );
   }
 
-  /** Answers request `id` with the app's response; interrupting it aborts the request. */
-  #respond(id: number, request: Request): Effect.Effect<void, Error> {
+  /**
+   * Answers request `id` with the app's response to `head` and `body`; interrupting it aborts
+   * the request.
+   */
+  #respond(
+    id: number,
+    head: RequestHead,
+    body: Uint8Array | undefined,
+  ): Effect.Effect<void, Error> {
     return Effect.gen({ self: this }, function* () {
       const response = yield* Effect.tryPromise({
         // The fiber's interruption aborts `signal`, and so the app's request.
-        try: async (signal) => this.#fetch(new Request(request, { signal })),
+        try: (signal) => {
+          const response = Promise.resolve(this.#fetch(toRequest(head, body, signal)));
+          // Given up before the fiber took the response, which tryPromise then drops: its body
+          // is cancelled here.
+          signal.addEventListener("abort", () => {
+            response.then((r) => r.body?.cancel()).catch(() => {});
+          });
+          return response;
+        },
         catch: (e) => e as Error,
       });
-      const head: HostMessage = {
+      const res: HostMessage = {
         t: "res",
         id,
         status: response.status,
         headers: [...response.headers],
       };
-      this.#send(JSON.stringify(head));
+      this.#send(JSON.stringify(res));
       if (response.body) yield* this.#stream(id, response.body);
       this.#send(JSON.stringify({ t: "end", id } satisfies HostMessage));
     });
