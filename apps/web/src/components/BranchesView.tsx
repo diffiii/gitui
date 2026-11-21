@@ -328,7 +328,7 @@ function DeleteBranchDialog({ branch, onClose }: { branch: Branch | null; onClos
     "Branch deleted",
   );
   return (
-    <Dialog open={!!branch} onOpenChange={(o) => !o && onClose()}>
+    <Dialog open={!!branch} onOpenChange={(o) => !o && !del.isPending && onClose()}>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Delete branch?</DialogTitle>
@@ -338,12 +338,13 @@ function DeleteBranchDialog({ branch, onClose }: { branch: Branch | null; onClos
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>
+          <Button variant="outline" disabled={del.isPending} onClick={onClose}>
             Cancel
           </Button>
           <Button
             variant="outline"
             className="text-destructive"
+            disabled={del.isPending}
             onClick={() =>
               branch && del.mutate({ name: branch.name, force: true }, { onSuccess: onClose })
             }
@@ -352,6 +353,7 @@ function DeleteBranchDialog({ branch, onClose }: { branch: Branch | null; onClos
           </Button>
           <Button
             variant="destructive"
+            disabled={del.isPending}
             onClick={() =>
               branch && del.mutate({ name: branch.name, force: false }, { onSuccess: onClose })
             }
