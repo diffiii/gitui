@@ -3,7 +3,9 @@ import { LoaderCircle } from "lucide-react";
 import { Suspense, use, useState } from "react";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { getConfig } from "@/lib/api";
+import { type AppConfig, getConfig } from "@/lib/api";
+import { asksBeforeOpening } from "@/lib/asksBeforeOpening";
+import { useConnection } from "@/lib/connection";
 import { notOpened } from "@/lib/notOpened";
 import { RepoProvider } from "@/lib/repo";
 import { useStatus } from "@/lib/status";
@@ -11,7 +13,7 @@ import { openRepo, setView, useUrl } from "@/lib/url";
 import type { View } from "@/lib/views";
 import { AppHeader } from "./components/AppHeader";
 import { PageOutdated } from "./components/PageOutdated";
-import { RepoWelcome } from "./components/RepoPicker";
+import { ConfirmOpenRepo, RepoWelcome } from "./components/RepoPicker";
 import { ViewTabBar } from "./components/ViewTabs";
 
 type RepoViewsModule = typeof import("./components/RepoViews");
@@ -30,32 +32,25 @@ function loadRepoViews(): Promise<RepoViewsModule | null> {
   return repoViews;
 }
 
+/**
+ * Repositories the user said yes to, or that gitui had opened, so the question isn't asked again
+ * if the recent list later drops one.
+ */
+const trusted = new Set<string>();
+
 export default function App() {
   const { repo: urlRepo, view } = useUrl();
   const { data: config, isLoading } = useQuery({ queryKey: ["config"], queryFn: getConfig });
   // `gitui <path>` passes the repo to the server; use it while the URL has none.
   const repo = urlRepo ?? config?.initialRepo ?? null;
-  // The views' chunk loads alongside the repo's first status, not after it.
-  if (repo) void loadRepoViews();
-
-  const onView = (v: View) => setView(repo, v);
 
   return (
     <TooltipProvider delayDuration={400}>
       <title>{repo ? `${repo.split("/").pop()} · gitui` : "gitui"}</title>
-      {repo ? (
-        <RepoProvider key={repo} repo={repo}>
-          {/* viewport-fit=cover (index.html) lays the page under iOS's notch and home indicator. */}
-          <div className="flex h-svh flex-col bg-background pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)] md:pb-[env(safe-area-inset-bottom)]">
-            <AppHeader view={view} onView={onView} onOpenRepo={openRepo} />
-            <main className="min-h-0 flex-1">
-              <OpenedRepo repo={repo} view={view} />
-            </main>
-            <ViewTabBar view={view} onView={onView} />
-          </div>
-        </RepoProvider>
-      ) : isLoading ? null : (
+      {isLoading ? null : repo === null ? (
         <RepoWelcome onOpen={openRepo} />
+      ) : (
+        <RepoGate repo={repo} view={view} config={config} />
       )}
       <Toaster
         position="bottom-right"
@@ -63,6 +58,55 @@ export default function App() {
         mobileOffset={{ bottom: "var(--toaster-mobile-bottom)" }}
       />
     </TooltipProvider>
+  );
+}
+
+/** Asks first for a repo that a link named and gitui hasn't opened; see `asksBeforeOpening`. */
+function RepoGate({
+  repo,
+  view,
+  config,
+}: {
+  repo: string;
+  view: View;
+  config: AppConfig | undefined;
+}) {
+  const connection = useConnection();
+  if (!trusted.has(repo)) {
+    if (asksBeforeOpening(config, repo, connection.kind)) {
+      return (
+        <ConfirmOpenRepo
+          repo={repo}
+          onOpen={(root) => {
+            trusted.add(repo);
+            trusted.add(root);
+            openRepo(root);
+          }}
+          onCancel={() => setView(null, view)}
+        />
+      );
+    }
+    trusted.add(repo);
+  }
+  return <RepoScreen repo={repo} view={view} />;
+}
+
+function RepoScreen({ repo, view }: { repo: string; view: View }) {
+  const onView = (v: View) => setView(repo, v);
+  // The views' chunk loads alongside the repo's first status, not after it. It starts only here,
+  // once the repo is allowed, so nothing loads while the question is asked.
+  void loadRepoViews();
+  return (
+    <RepoProvider key={repo} repo={repo}>
+      {/* viewport-fit=cover (index.html) lays the page under iOS's notch and home indicator. */}
+      <div className="flex h-svh flex-col bg-background pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)] md:pb-[env(safe-area-inset-bottom)]">
+        <AppHeader view={view} onView={onView} onOpenRepo={openRepo} />
+        <main className="min-h-0 flex-1">
+          <OpenedRepo repo={repo} view={view} />
+        </main>
+        <ViewTabBar view={view} onView={onView} />
+      </div>
+    </RepoProvider>
   );
 }
 

@@ -72,7 +72,8 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   `wrangler.jsonc` builds the repo (its `build` command,
   with the production rendezvous) and deploys `dist/` as Cloudflare Workers static assets, with the `_headers` file that a `vite.config.ts` plugin writes into the
   build from `hostedHeadersFile` (its CSP follows `VITE_GITUI_RENDEZVOUS_URL`), on the custom
-  domain `gitui.diffiii.dev` (`HOSTED_ORIGIN`).
+  domain `gitui.diffiii.dev` (`HOSTED_ORIGIN`). A `?repo=` that the CLI hasn't opened waits
+  for the user's OK (`ConfirmOpenRepo`), except over nearby.
 - `apps/rendezvous/` (`@gitui/rendezvous`): the "nearby" rendezvous Worker (protocol in
   `packages/shared/src/nearby.ts`). `src/route.ts` checks the upgrade and Origin and names the
   caller's network with an HMAC keyed by the `NETWORK_KEY_SECRET` secret (500 without it),
@@ -110,7 +111,12 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
 - Run git only through `git()` (or `run()`/`gitPatch()`) in `apps/cli/server/git.ts`, with
   argument arrays and never shell strings. User-supplied paths go after `--`, through `pathspec()`
   (which makes them literal; git otherwise reads `[id].tsx` or `:!x` as patterns). Not
-  `GIT_LITERAL_PATHSPECS`, which hooks inherit.
+  `GIT_LITERAL_PATHSPECS`, which hooks inherit. `run()` passes `-c core.fsmonitor=false`, and
+  every diff passes `--no-ext-diff --no-textconv`, so reads never run commands a repository's own
+  config names. Its clean and process filters still run, as git LFS needs them. The web app asks
+  before opening a `?repo=` that gitui hasn't opened (`asksBeforeOpening` in
+  `apps/web/src/lib/asksBeforeOpening.ts`). Keep both when adding git calls or ways to open a
+  repo.
 - CLI code is Effect code: server functions return Effects that fail with typed errors
   (`GitError`, `RepoNotOpenedError`; the app maps them to 400 and 403) and need the Node
   services (`NodeServices.layer`), which the app provides per request. Things that live for a

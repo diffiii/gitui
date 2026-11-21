@@ -1,4 +1,4 @@
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronsUpDown, FolderGit2, FolderOpen } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -15,7 +15,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { getConfig, openRepo } from "@/lib/api";
-import { isApiError } from "@/lib/connection";
+import { isApiError, useConnection } from "@/lib/connection";
 
 const basename = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
 
@@ -24,9 +24,16 @@ const basename = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
  * running gitui; that refusal shows in the picker (`notOpened`) rather than as a toast.
  */
 function useOpenRepo(onOpen: (root: string) => void) {
+  const qc = useQueryClient();
+  const { kind } = useConnection();
   const open = useMutation({
     mutationFn: openRepo,
-    onSuccess: (r) => onOpen(r.root),
+    onSuccess: async (r) => {
+      // Opening puts it in the recent list, which the app checks the URL's repo against. A nearby
+      // device doesn't open anything new, and never asks.
+      if (kind !== "nearby") await qc.invalidateQueries({ queryKey: ["config"] });
+      onOpen(r.root);
+    },
     onError: (e) => {
       if (!isApiError(e, "not-opened")) toast.error(e.message);
     },
@@ -43,6 +50,47 @@ const NOT_OPENED_EITHER = "That one isn't opened on the computer either.";
 
 function tildify(p: string, home?: string) {
   return home && p.startsWith(home) ? `~${p.slice(home.length)}` : p;
+}
+
+/**
+ * Asks before opening a repository that a link named and gitui hasn't opened: git runs there with
+ * that repository's own settings.
+ */
+export function ConfirmOpenRepo({
+  repo,
+  onOpen,
+  onCancel,
+}: {
+  repo: string;
+  onOpen: (root: string) => void;
+  onCancel: () => void;
+}) {
+  const { data: config } = useQuery({ queryKey: ["config"], queryFn: getConfig });
+  const open = useOpenRepo(onOpen);
+
+  return (
+    <CenteredScreen
+      icon={FolderGit2}
+      title={`Open ${basename(repo)}?`}
+      description={
+        <>
+          A link asked gitui to open{" "}
+          <span className="font-mono break-all text-foreground">{tildify(repo, config?.home)}</span>
+          . gitui runs git there with that repository's own settings, so open it only if you trust
+          it.
+        </>
+      }
+    >
+      <div className="flex justify-center gap-2">
+        <Button variant="outline" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button onClick={() => open.mutate(repo)} disabled={open.isPending}>
+          Open
+        </Button>
+      </div>
+    </CenteredScreen>
+  );
 }
 
 /**
