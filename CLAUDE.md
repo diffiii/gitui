@@ -43,7 +43,8 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   (`scripts/build.ts`) bundles `bin/gitui.ts` for Node into `dist/gitui.js` and copies the root
   `LICENSE` into the package; with `README.md` that is all the package ships, with no runtime
   dependencies.
-  Code in `bin/` and `server/` must run on Node too: no `Bun.*` APIs outside tests, `dev.ts`
+  Code in `bin/` and `server/` must run on Node too (22.15 or later: Effect's Node server turns on strict
+  Content-Length checks, which older 22.x releases get wrong): no `Bun.*` APIs outside tests, `dev.ts`
   and `test-repo.ts` (a lint rule enforces it). Tests live next to the code (`server/*.test.ts`).
 - `apps/web/` (`@gitui/web`): React app. `src/lib/` holds the API client, graph layout and
   prefs, `src/components/` the views, and `src/components/ui/` the shadcn components. Unit

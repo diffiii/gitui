@@ -33,6 +33,6 @@ jobs:
       # After the build: the tooling (vite-plus) needs a newer Node than the package's floor.
       - uses: actions/setup-node@v5
         with:
-          node-version: 22.1.0 # the engines floor of the published package
+          node-version: 22.15.0 # the engines floor of the published package (22.15 fixed strict Content-Length checks, which Effect's Node server turns on)
       - name: Smoke test the bundle under Node
         run: scripts/smoke.sh

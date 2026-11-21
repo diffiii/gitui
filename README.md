@@ -11,7 +11,7 @@ A lazygit-inspired git client that runs in your browser on localhost.
 
 ## Usage
 
-Needs `git`, and Node.js 22.1 or later or Bun. Run it without installing:
+Needs `git`, and Node.js 22.15 or later or Bun. Run it without installing:
 
 ```sh
 npx @diffiii/gitui@latest       # Node
