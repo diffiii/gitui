@@ -33,6 +33,9 @@ interface RunOptions {
 
 const MAX_OUTPUT = 8 * 1024 * 1024;
 
+/** How much of git's stderr is kept (the rest is read and dropped); it only becomes a message. */
+const MAX_STDERR = 64 * 1024;
+
 /** How long git and what it started get after a SIGTERM before a SIGKILL. */
 const FORCE_KILL_AFTER = "2 seconds";
 
@@ -103,10 +106,19 @@ export const run = (
   const program = Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const handle = yield* spawner.spawn(command);
-    // Read stderr alongside stdout, so git never blocks on a full pipe; ending the scope (the
-    // output was cut) interrupts it.
+    // Read stderr alongside stdout, so git never blocks on a full pipe, keeping its first
+    // MAX_STDERR bytes; ending the scope (the output was cut) interrupts it.
+    const err: Uint8Array[] = [];
+    let errSize = 0;
     const stderr = yield* Effect.forkScoped(
-      Stream.runCollect(handle.stderr).pipe(Effect.map(text)),
+      Stream.runForEach(handle.stderr, (chunk) =>
+        Effect.sync(() => {
+          if (errSize >= MAX_STDERR) return;
+          const kept = chunk.subarray(0, MAX_STDERR - errSize);
+          err.push(kept);
+          errSize += kept.length;
+        }),
+      ).pipe(Effect.map(() => text(err))),
     );
     const out: Uint8Array[] = [];
     let size = 0;
