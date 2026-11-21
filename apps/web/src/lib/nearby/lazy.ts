@@ -1,6 +1,6 @@
 import { NearbyError, PageOutdatedError } from "./errors.ts";
 import type { NearbySession } from "./session.ts";
-import type { NearbyHost, NearbyState } from "./state.ts";
+import { type NearbyHost, type NearbyState, OUTDATED } from "./state.ts";
 
 // The nearby code (client.ts) reads the protocol with the codec, which brings Effect: too much
 // for a page paired with gitui on this computer, which never uses it. So it loads on demand, when
@@ -32,13 +32,6 @@ export function loadNearby(): Promise<Nearby | null> {
 
 /** The nearby code if it has loaded, else null. */
 export const loadedNearby = (): Nearby | null => loaded;
-
-const OUTDATED: NearbyState = {
-  kind: "failed",
-  reason: new PageOutdatedError().message,
-  retryOnWake: false,
-  reload: true,
-};
 
 /**
  * A session with `host` that loads its code first: `connecting` meanwhile (as a session starts

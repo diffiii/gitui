@@ -28,7 +28,7 @@ import {
 } from "@/lib/connection";
 import { loadNearby, type Nearby } from "@/lib/nearby/lazy";
 import type { NearbySession } from "@/lib/nearby/session";
-import { PageOutdatedError } from "@/lib/nearby/errors";
+import { PAGE_OUTDATED } from "@/lib/nearby/errors";
 import type { NearbyState } from "@/lib/nearby/state";
 
 /**
@@ -102,10 +102,7 @@ function NearbyGate({ session, children }: { session: NearbySession; children: R
         <CenteredScreen icon={CircleAlert} title={name} description={state.reason}>
           <div className="flex flex-col gap-2">
             {state.reload ? (
-              <Button size="lg" onClick={() => location.reload()}>
-                <RotateCw />
-                Reload
-              </Button>
+              <ReloadButton size="lg" />
             ) : (
               <Button size="lg" onClick={session.retry}>
                 <RotateCw />
@@ -121,6 +118,14 @@ function NearbyGate({ session, children }: { session: NearbySession; children: R
 
 const Code = ({ children }: { children: React.ReactNode }) => (
   <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">{children}</code>
+);
+
+/** Reloads the page: all that helps once it is out of date. */
+const ReloadButton = (props: Pick<React.ComponentProps<typeof Button>, "size" | "variant">) => (
+  <Button {...props} onClick={() => location.reload()}>
+    <RotateCw />
+    Reload
+  </Button>
 );
 
 /** Forgets the nearby host, back to the list. */
@@ -167,11 +172,8 @@ function NearbyHosts() {
   if (!nearby) {
     return (
       <div className="flex flex-col items-center gap-3 rounded-lg border p-4 text-center text-sm text-muted-foreground">
-        <p>{new PageOutdatedError().message}</p>
-        <Button variant="outline" onClick={() => location.reload()}>
-          <RotateCw />
-          Reload
-        </Button>
+        <p>{PAGE_OUTDATED}</p>
+        <ReloadButton variant="outline" />
       </div>
     );
   }

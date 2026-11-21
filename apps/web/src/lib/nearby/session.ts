@@ -12,7 +12,7 @@ import {
   type GuestPeer,
 } from "./peer.ts";
 import { rendezvous, type Rendezvous } from "./rendezvous.ts";
-import type { NearbyHost, NearbyState } from "./state.ts";
+import { type NearbyHost, type NearbyState, OUTDATED } from "./state.ts";
 import { tokens, type TokenStore } from "./tokens.ts";
 
 // A session with one nearby host, from when the user picks it (or a reload finds it saved) until
@@ -164,8 +164,7 @@ export function createSession(host: NearbyHost, deps: SessionDeps): NearbySessio
         if (e instanceof HostUnverifiedError) return fail(e.message, false);
         if (e instanceof HostGoneError) return set({ kind: "gone" });
         // Another offer can't help; only a reload can.
-        if (e instanceof PageOutdatedError)
-          return set({ kind: "failed", reason: e.message, retryOnWake: false, reload: true });
+        if (e instanceof PageOutdatedError) return set(OUTDATED);
         // The host refused the offer (more offers would only add to its load or limit, which all
         // its guests share). Connecting, the user decides when to try again. Reconnecting, the app
         // is up, so a busy host gets another offer after a longer pause, until the window is up;
