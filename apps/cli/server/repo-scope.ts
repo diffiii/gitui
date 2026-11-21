@@ -10,8 +10,9 @@
 // `repos.resolve` too, and test it with that field set: the gate's middleware only sees `?repo=`.
 import { realpath } from "node:fs/promises";
 import path from "node:path";
+import { Effect, Schema } from "effect";
 import { CONFIG_DIR, pushRecent, readRecent } from "./config.ts";
-import { expandHome, resolveRepo } from "./git.ts";
+import { expandHome, type GitError, type GitServices, resolveRepo } from "./git.ts";
 
 /**
  * Which repositories a listener's clients may use: `any` path they name, or only those `opened`
@@ -20,18 +21,23 @@ import { expandHome, resolveRepo } from "./git.ts";
 export type RepoScope = "any" | "opened";
 
 /** A client asked for a repository outside its listener's scope. */
-export class RepoNotOpenedError extends Error {
-  constructor() {
-    super("This repository wasn't opened on the computer running gitui");
-  }
-}
+export class RepoNotOpenedError extends Schema.TaggedError<RepoNotOpenedError>()(
+  "RepoNotOpenedError",
+  {
+    message: Schema.String.pipe(
+      Schema.withConstructorDefault(
+        Effect.succeed("This repository wasn't opened on the computer running gitui"),
+      ),
+    ),
+  },
+) {}
 
 /** How a client's repository paths become repository roots. */
 export interface RepoGate {
-  /** The root of the repository at `input` (it or any folder in it); throws RepoNotOpenedError. */
-  resolve(input: string): Promise<string>;
+  /** The root of the repository at `input` (it or any folder in it). */
+  resolve(input: string): Effect.Effect<string, GitError | RepoNotOpenedError, GitServices>;
   /** As `resolve`, for a client opening the repository, which the gate may remember. */
-  open(input: string): Promise<string>;
+  open(input: string): Effect.Effect<string, GitError | RepoNotOpenedError, GitServices>;
 }
 
 export interface RepoGateOptions {
@@ -42,7 +48,7 @@ export interface RepoGateOptions {
 }
 
 /** `p` with symlinks resolved, or null if it doesn't exist. */
-const real = (p: string) => realpath(p).catch(() => null);
+const real = (p: string) => Effect.promise(() => realpath(p).catch(() => null));
 
 /** The gate for a listener's `scope`. */
 export function repoGate(scope: RepoScope, options: RepoGateOptions = {}): RepoGate {
@@ -53,11 +59,8 @@ export function repoGate(scope: RepoScope, options: RepoGateOptions = {}): RepoG
 function anyRepo({ configDir = CONFIG_DIR }: RepoGateOptions): RepoGate {
   return {
     resolve: resolveRepo,
-    async open(input) {
-      const root = await resolveRepo(input);
-      await pushRecent(root, configDir);
-      return root;
-    },
+    open: (input) =>
+      Effect.tap(resolveRepo(input), (root) => Effect.orDie(pushRecent(root, configDir))),
   };
 }
 
@@ -68,18 +71,20 @@ function anyRepo({ configDir = CONFIG_DIR }: RepoGateOptions): RepoGate {
  * nested repository). Paths compare with symlinks resolved.
  */
 function openedRepos({ initialRepo, configDir = CONFIG_DIR }: RepoGateOptions): RepoGate {
-  const allowed = async () => {
-    const roots = [...(initialRepo ? [initialRepo] : []), ...(await readRecent(configDir))];
-    const resolved = await Promise.all(roots.map(real));
+  const allowed = Effect.gen(function* () {
+    const roots = [...(initialRepo ? [initialRepo] : []), ...(yield* readRecent(configDir))];
+    const resolved = yield* Effect.forEach(roots, real, { concurrency: "unbounded" });
     return new Set(resolved.filter((r) => r !== null));
-  };
-  const resolve = async (input: string) => {
-    const [roots, target] = await Promise.all([allowed(), real(path.resolve(expandHome(input)))]);
+  });
+  const resolve = Effect.fnUntraced(function* (input: string) {
+    const [roots, target] = yield* Effect.all([allowed, real(path.resolve(expandHome(input)))], {
+      concurrency: 2,
+    });
     const inside = (root: string) => target === root || target?.startsWith(root + path.sep);
-    if (!target || ![...roots].some(inside)) throw new RepoNotOpenedError();
-    const root = await resolveRepo(target);
-    if (!roots.has((await real(root)) ?? "")) throw new RepoNotOpenedError();
+    if (!target || ![...roots].some(inside)) return yield* new RepoNotOpenedError();
+    const root = yield* resolveRepo(target);
+    if (!roots.has((yield* real(root)) ?? "")) return yield* new RepoNotOpenedError();
     return root;
-  };
+  });
   return { resolve, open: resolve };
 }

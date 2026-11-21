@@ -5,10 +5,12 @@ import path from "node:path";
 import { REPO_NOT_OPENED } from "@gitui/shared";
 import { type Listener, NEARBY_HOST } from "./access.ts";
 import { createApp } from "./app.ts";
-import { pushRecent, readRecent } from "./config.ts";
-import { commitFile, initRepo, removeTempDirs, tmpDir, write } from "./test-repo.ts";
+import * as config_ from "./config.ts";
+import { commitFile, initRepo, removeTempDirs, tmpDir, write, promised } from "./test-repo.ts";
 
 afterAll(removeTempDirs);
+
+const { pushRecent, readRecent } = promised(config_);
 
 /** Routes outside /api/repo, which take no `?repo=`: /open goes through the gate on its own. */
 const UNGATED = ["GET /api/config", "POST /api/open"];
@@ -17,9 +19,8 @@ const UNGATED = ["GET /api/config", "POST /api/open"];
 const PARAMS: Record<string, string> = { hash: "HEAD", action: "fetch" };
 
 /**
- * The app's middleware and its 404 fallback, which its router lists like routes: the access
- * policy and the fallback on /api/*, and the repo gate on /api/repo/*. Middleware added on any
- * other path shows up as an endpoint, and fails the gate test until it is listed here.
+ * The app's 404 fallbacks, which answer no path of their own: on /api/* and, past the repo
+ * gate, /api/repo/*. Any other route shows up as an endpoint.
  */
 const MIDDLEWARE = ["ALL /api/*", "ALL /api/repo/*"];
 
@@ -131,17 +132,15 @@ for (const { listener, host, headers } of clients) {
         }
       });
 
-      test("the route list leaves out middleware only, so all() routes are checked too", () => {
-        const routes = app();
-        routes.all("/api/repo/extra", (c) => c.text("x"));
-        routes.all("/api/repo/more/*", (c) => c.text("x"));
-        const names = endpoints(routes).map((e) => e.name);
-        expect(names).toContain("ALL /api/repo/extra");
-        expect(names).toContain("ALL /api/repo/more/*");
-        expect(endpoints(app()).filter((e) => e.name.endsWith("*"))).toEqual([]);
-        expect(endpoints(routes).find((e) => e.name === "ALL /api/repo/more/*")?.path).toBe(
-          "/api/repo/more/x",
-        );
+      test("the route list has every route, and paths no route has are gated too", async () => {
+        const names = app().routes.map((r) => `${r.method} ${r.path}`);
+        expect(names).toContain("GET /api/repo/status");
+        // The catch-all under /api/repo is a route like the others, so the test above sends
+        // it a path of its own, and it answers 404 only past the gate.
+        expect(names).toContain("ALL /api/repo/*");
+        await refused(await send(`/api/repo/nope?repo=${encodeURIComponent(other)}`));
+        const res = await send(`/api/repo/nope?repo=${encodeURIComponent(initial)}`);
+        expect(res.status).toBe(404);
       });
 
       test("another repository is refused, for reads and writes", async () => {

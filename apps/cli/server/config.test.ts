@@ -1,10 +1,12 @@
 import { afterAll, expect, test } from "bun:test";
 import { statSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { loadToken } from "./config.ts";
-import { removeTempDirs, tmpDir } from "./test-repo.ts";
+import * as config_ from "./config.ts";
+import { removeTempDirs, tmpDir, promised } from "./test-repo.ts";
 
 afterAll(removeTempDirs);
+
+const { loadToken } = promised(config_);
 
 test("creates a private token once and reuses it", async () => {
   const dir = path.join(tmpDir(), "gitui");

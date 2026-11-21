@@ -1,9 +1,20 @@
 import { afterAll, expect, test } from "bun:test";
-import * as g from "./git.ts";
+import { Effect, Fiber } from "effect";
+import * as git_ from "./git.ts";
 import { withRepoLock } from "./lock.ts";
-import { commitFile, git, initRepo, removeTempDirs, testApp, write } from "./test-repo.ts";
+import {
+  commitFile,
+  git,
+  initRepo,
+  removeTempDirs,
+  testApp,
+  write,
+  promised,
+} from "./test-repo.ts";
 
 afterAll(removeTempDirs);
+
+const g = promised(git_);
 
 function makeRepo(commit = true) {
   const dir = initRepo();
@@ -132,27 +143,49 @@ test("concurrent stage requests are serialized per repo", async () => {
   expect(await porcelain(dir)).toEqual(names.map((n) => `A  ${n}`).sort());
 });
 
-test("withRepoLock runs callers one at a time and releases after a throw", async () => {
+test("withRepoLock runs callers one at a time and releases after a failure", async () => {
   const events: string[] = [];
   const job = (name: string, fail = false) =>
-    withRepoLock("k", async () => {
-      events.push(`start ${name}`);
-      await Bun.sleep(5);
-      events.push(`end ${name}`);
-      if (fail) throw new Error(name);
-      return name;
-    });
-  const results = await Promise.allSettled([job("a"), job("b", true), job("c")]);
+    withRepoLock(
+      "k",
+      Effect.gen(function* () {
+        events.push(`start ${name}`);
+        yield* Effect.sleep(5);
+        events.push(`end ${name}`);
+        if (fail) return yield* Effect.fail(new Error(name));
+        return name;
+      }),
+    );
+  const results = await Promise.allSettled(
+    [job("a"), job("b", true), job("c")].map((e) => Effect.runPromise(e)),
+  );
   expect(results.map((r) => r.status)).toEqual(["fulfilled", "rejected", "fulfilled"]);
   expect(events).toEqual(["start a", "end a", "start b", "end b", "start c", "end c"]);
   // Different keys don't block each other.
   const order: string[] = [];
   let release!: () => void;
-  const held = withRepoLock("x", () => new Promise<void>((r) => (release = r)));
-  await withRepoLock("y", async () => order.push("y"));
+  const held = Effect.runPromise(
+    withRepoLock(
+      "x",
+      Effect.promise(() => new Promise<void>((r) => (release = r))),
+    ),
+  );
+  await Effect.runPromise(
+    withRepoLock(
+      "y",
+      Effect.sync(() => order.push("y")),
+    ),
+  );
   release();
   await held;
   expect(order).toEqual(["y"]);
   // And the lock is free again after the failure.
-  expect(await withRepoLock("k", async () => "free")).toBe("free");
+  expect(await Effect.runPromise(withRepoLock("k", Effect.succeed("free")))).toBe("free");
+});
+
+test("withRepoLock lets go of a lock whose holder is interrupted", async () => {
+  const fiber = Effect.runFork(withRepoLock("i", Effect.never));
+  await Bun.sleep(1);
+  await Effect.runPromise(Fiber.interrupt(fiber));
+  expect(await Effect.runPromise(withRepoLock("i", Effect.succeed("free")))).toBe("free");
 });

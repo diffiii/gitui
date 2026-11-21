@@ -3,10 +3,21 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import { open } from "node:fs/promises";
 import path from "node:path";
-import * as g from "./files.ts";
-import { commitFile, git, initRepo, removeTempDirs, testApp, tmpDir, write } from "./test-repo.ts";
+import * as files_ from "./files.ts";
+import {
+  commitFile,
+  git,
+  initRepo,
+  removeTempDirs,
+  testApp,
+  tmpDir,
+  write,
+  promised,
+} from "./test-repo.ts";
 
 afterAll(removeTempDirs);
+
+const g = promised(files_);
 
 async function get<T>(repo: string, route: string, params: Record<string, string> = {}) {
   const sp = new URLSearchParams({ repo, ...params });
@@ -16,11 +27,11 @@ async function get<T>(repo: string, route: string, params: Record<string, string
   return { status: res.status, body: (await res.json()) as T };
 }
 
-const listFiles = (repo: string) => get<g.WorkingFiles>(repo, "/files");
+const listFiles = (repo: string) => get<files_.WorkingFiles>(repo, "/files");
 
 /** Every field of a file's body, or of an error, so a test can read whichever came back. */
 type FileBody = Partial<{
-  kind: g.WorkingFile["kind"];
+  kind: files_.WorkingFile["kind"];
   size: number;
   content: string;
   target: string;

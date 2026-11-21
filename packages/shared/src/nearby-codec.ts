@@ -9,11 +9,10 @@
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import type * as SchemaAST from "effect/SchemaAST";
-import type * as SchemaIssue from "effect/SchemaIssue";
 import * as SchemaParser from "effect/SchemaParser";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import { fromBase64Url } from "./bytes.ts";
+import { issueMessage, withMessage } from "./schema-messages.ts";
 import {
   AUTH_ATTEMPTS,
   type ChannelMessage,
@@ -65,37 +64,6 @@ function orNull<A extends unknown[], T>(decode: (...args: A) => T): (...args: A)
 // ── Decoding ───────────────────────────────────────────────────────────────────────────────
 
 /**
- * What an issue says is wrong: the `message` of the deepest schema, check or missing key on the
- * first failure that has one. Every schema below annotates each way it can fail.
- */
-function reason(issue: SchemaIssue.Issue): string | undefined {
-  switch (issue._tag) {
-    case "Pointer":
-    case "Encoding":
-      return reason(issue.issue);
-    case "Filter":
-      return reason(issue.issue) ?? issue.filter.annotations?.message;
-    case "Composite":
-    case "AnyOf":
-      for (const inner of issue.issues) {
-        const found = reason(inner);
-        if (found !== undefined) return found;
-      }
-      return issue.ast.annotations?.message as string | undefined;
-    case "MissingKey":
-      return issue.annotations?.messageMissingKey;
-    case "InvalidType":
-    case "OneOf":
-      return issue.ast.annotations?.message as string | undefined;
-    case "InvalidValue":
-    case "Forbidden":
-      return issue.annotations?.message as string | undefined;
-    case "UnexpectedKey":
-      return undefined;
-  }
-}
-
-/**
  * A decoder for `schema` that throws a NearbyCodecError with the issue's reason, or with
  * `otherwise(input)` if it has none (a top-level union none of whose members' tags match).
  */
@@ -108,7 +76,7 @@ function decoder<S extends Schema.Decoder<unknown>>(
   return (input) => {
     const result = decode(input);
     if (Result.isSuccess(result)) return result.success;
-    return fail(reason(result.failure) ?? otherwise(input));
+    return fail(issueMessage(result.failure) ?? otherwise(input));
   };
 }
 
@@ -130,35 +98,19 @@ function json(text: string): unknown {
 
 // ── Values ─────────────────────────────────────────────────────────────────────────────────
 
-/**
- * `schema`, failing with `message` when its value has the wrong type or its key is missing,
- * and then `checks`, which carry their own messages. (Annotating a schema that has checks
- * annotates its last check instead, hence the order.)
- */
-function says<S extends Schema.Top>(
-  schema: S,
-  message: string,
-  ...checks: [] | [SchemaAST.Check<S["Type"]>, ...SchemaAST.Check<S["Type"]>[]]
-): S["Rebuild"] {
-  const annotated = schema.annotate({ message });
-  const checked =
-    checks.length === 0 ? annotated : annotated.check(...(checks as [SchemaAST.Check<S["Type"]>]));
-  return checked.annotateKey({ messageMissingKey: message });
-}
-
 /** A string, "`what` isn't a string" otherwise; "invalid `what`" unless it matches `pattern`. */
 const text = (what: string, pattern?: RegExp) =>
   pattern
-    ? says(
+    ? withMessage(
         Schema.String,
         `${what} isn't a string`,
         Schema.isPattern(pattern, { message: `invalid ${what}` }),
       )
-    : says(Schema.String, `${what} isn't a string`);
+    : withMessage(Schema.String, `${what} isn't a string`);
 
 /** A whole number from `minimum` to `maximum`; `message` for anything else. */
 const integer = (minimum: number, maximum: number, message: string) =>
-  says(
+  withMessage(
     Schema.Number,
     message,
     Schema.isInt({ message }),
@@ -170,7 +122,7 @@ const RequestId = integer(0, 0xffff_ffff, "no request id");
 export const isId: (value: unknown) => value is number = Schema.is(RequestId);
 
 /** HTTP headers as name/value pairs. */
-const Headers = says(
+const Headers = withMessage(
   Schema.mutable(Schema.Array(Schema.mutable(Schema.Tuple([Schema.String, Schema.String])))),
   "invalid headers",
 );
@@ -197,10 +149,10 @@ export function printable(text: string, max = MAX_PRINTABLE_LENGTH): string {
  * A host's display name, trimmed, if it is 1 to MAX_NAME_LENGTH code points long and has no
  * control or bidi characters.
  */
-const HostName = says(Schema.String, "invalid name")
+const HostName = withMessage(Schema.String, "invalid name")
   .pipe(
     Schema.decodeTo(
-      says(
+      withMessage(
         Schema.String,
         "invalid name",
         Schema.makeFilter(
@@ -274,18 +226,21 @@ function open<K extends string>(
 
 const PeerId = text("peer id", PEER_ID);
 const OfferId = text("offerId", OFFER_ID);
-const Sdp = says(
+const Sdp = withMessage(
   Schema.String,
   "sdp isn't a string",
   Schema.isMaxLength(MAX_MESSAGE_LENGTH, { message: "sdp too long" }),
 );
 
-const Candidate = says(
+const Candidate = withMessage(
   Schema.Struct({
     candidate: text("candidate line"),
-    sdpMid: Schema.optionalKey(says(Schema.NullishOr(Schema.String), "invalid sdpMid")),
+    sdpMid: Schema.optionalKey(withMessage(Schema.NullishOr(Schema.String), "invalid sdpMid")),
     sdpMLineIndex: Schema.optionalKey(
-      says(Schema.NullishOr(integer(0, 0xffff, "invalid sdpMLineIndex")), "invalid sdpMLineIndex"),
+      withMessage(
+        Schema.NullishOr(integer(0, 0xffff, "invalid sdpMLineIndex")),
+        "invalid sdpMLineIndex",
+      ),
     ),
   }),
   "candidate isn't an object",
@@ -304,7 +259,7 @@ const Resume = Schema.optionalKey(Schema.Unknown).pipe(
 
 /** A WebRTC signal, with `Reason` as a refusal's reason. */
 function signal<R extends Schema.Top>(Reason: R) {
-  return says(
+  return withMessage(
     Schema.Union([
       Schema.Struct({ kind: Schema.Literal("offer"), offerId: OfferId, sdp: Sdp, resume: Resume }),
       Schema.Struct({ kind: Schema.Literal("answer"), offerId: OfferId, sdp: Sdp }),
@@ -327,7 +282,7 @@ const SignalField = <S extends Schema.Top>(signal: S): S["Rebuild"] =>
 
 /** A message a peer sends the rendezvous. RENDEZVOUS_PING isn't one. */
 export const ClientMessageSchema = Schema.Union([
-  says(
+  withMessage(
     Schema.Union([
       Schema.Struct({
         type: Schema.Literal("hello"),
@@ -346,7 +301,7 @@ export const ClientMessageSchema = Schema.Union([
   }),
 ]);
 
-export const HostInfoSchema = says(
+export const HostInfoSchema = withMessage(
   Schema.Struct({ id: PeerId, name: HostName, key: text("key", HOST_KEY) }),
   "host isn't an object",
 );
@@ -357,7 +312,7 @@ export const ServerMessageSchema = Schema.Union([
   Schema.Struct({ type: Schema.Literal("welcome"), id: PeerId }),
   Schema.Struct({
     type: Schema.Literal("hosts"),
-    hosts: says(Schema.Array(Schema.Unknown), "hosts isn't an array").pipe(
+    hosts: withMessage(Schema.Array(Schema.Unknown), "hosts isn't an array").pipe(
       Schema.decodeTo(
         Schema.mutable(Schema.Array(Schema.toType(HostInfoSchema))),
         SchemaTransformation.transform({
@@ -428,7 +383,7 @@ export type Incoming<M extends ChannelMessage = ChannelMessage> =
 
 /** `what`: 32 bytes in canonical base64url (CPace shares, tags, resume proofs and tokens). */
 const bytes32 = (what: string) =>
-  says(
+  withMessage(
     Schema.String,
     `${what} isn't a string`,
     Schema.makeFilter((text: string) => fromBase64Url(text, 32) !== null, {
@@ -466,12 +421,12 @@ export const GuestMessageSchema = Schema.Union([
   tagged("resume", { nonce: text("nonce", NONCE), proof: Proof }),
   tagged("req", {
     id: RequestId,
-    method: says(
+    method: withMessage(
       Schema.String,
       "invalid method",
       Schema.isPattern(METHOD, { message: "invalid method" }),
     ),
-    path: says(
+    path: withMessage(
       Schema.String,
       "invalid path",
       Schema.makeFilter(isPath, { message: "invalid path" }),

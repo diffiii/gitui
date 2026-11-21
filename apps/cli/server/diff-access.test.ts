@@ -3,10 +3,21 @@
 import { afterAll, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { untrackedDiff as diffUntracked } from "./files.ts";
-import { commitFile, git, initRepo, removeTempDirs, testApp, tmpDir, write } from "./test-repo.ts";
+import * as files_ from "./files.ts";
+import {
+  commitFile,
+  git,
+  initRepo,
+  removeTempDirs,
+  testApp,
+  tmpDir,
+  write,
+  promised,
+} from "./test-repo.ts";
 
 afterAll(removeTempDirs);
+
+const { untrackedDiff: diffUntracked } = promised(files_);
 
 const outside = tmpDir();
 fs.writeFileSync(path.join(outside, "secret.txt"), "top secret\n");

@@ -1,8 +1,10 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { GitError, log } from "./git.ts";
-import { git, initRepo, removeTempDirs, revParse, testApp } from "./test-repo.ts";
+import * as git_ from "./git.ts";
+import { git, initRepo, removeTempDirs, revParse, testApp, promised } from "./test-repo.ts";
 
 afterAll(removeTempDirs);
+
+const { GitError, log } = promised(git_);
 
 function commit(dir: string, message: string) {
   git(dir, "commit", "-q", "--allow-empty", "-m", message);

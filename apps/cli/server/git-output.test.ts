@@ -1,11 +1,14 @@
 import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { parsePatchFiles } from "@pierre/diffs";
-import { untrackedDiff } from "./files.ts";
-import { git, GitError, showCommit } from "./git.ts";
-import { git as sh, initRepo, removeTempDirs, revParse, write } from "./test-repo.ts";
+import * as files_ from "./files.ts";
+import * as git_ from "./git.ts";
+import { git as sh, initRepo, removeTempDirs, revParse, write, promised } from "./test-repo.ts";
 
 afterAll(removeTempDirs);
+
+const { untrackedDiff } = promised(files_);
+const { git, GitError, showCommit } = promised(git_);
 
 let repo: string;
 let head: string;

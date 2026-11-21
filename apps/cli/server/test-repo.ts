@@ -8,6 +8,8 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { NodeServices } from "@effect/platform-node";
+import { Effect } from "effect";
 import { createApp } from "./app.ts";
 
 process.env.GIT_CONFIG_GLOBAL = os.devNull;
@@ -19,6 +21,35 @@ export const testApp = () =>
     listener: { kind: "loopback", allowedOrigins: [], token: "unused" },
     configDir: tmpDir(),
   });
+
+/** Runs a server Effect with the Node services the server runs with. */
+export const run = <A, E>(effect: Effect.Effect<A, E, NodeServices.NodeServices>): Promise<A> =>
+  Effect.runPromise(Effect.provide(effect, NodeServices.layer));
+
+/** `module` with each function that returns an Effect returning a Promise of it instead (`run`). */
+export type Promised<M> = {
+  [K in keyof M]: M[K] extends (...args: infer A) => Effect.Effect<infer R, infer _E, infer _S>
+    ? (...args: A) => Promise<R>
+    : M[K];
+};
+
+/** `module`, its Effects run as Promises: for tests that call server modules directly. */
+export function promised<M extends object>(module: M): Promised<M> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(module)) {
+    const isClass = typeof value === "function" && /^class[\s{]/.test(String(value));
+    out[key] =
+      typeof value !== "function" || isClass
+        ? value
+        : (...args: unknown[]) => {
+            const result: unknown = value(...args);
+            return Effect.isEffect(result)
+              ? run(result as Effect.Effect<unknown, unknown, never>)
+              : result;
+          };
+  }
+  return out as Promised<M>;
+}
 
 const dirs: string[] = [];
 

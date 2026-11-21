@@ -23,13 +23,13 @@
     "build": "bun scripts/build.ts"
   },
   "devDependencies": {
+    "@effect/platform-node": "4.1.4",
     "@gitui/shared": "workspace:*",
-    "@hono/node-server": "^2.1.11",
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0",
     "@pierre/diffs": "^1.6.4",
     "@types/ws": "8.18.2",
-    "hono": "^4.13.19",
+    "effect": "4.1.4",
     "werift": "0.26.0",
     "ws": "8.22.1"
   },

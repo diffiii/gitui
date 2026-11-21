@@ -1,12 +1,13 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import * as g from "./git.ts";
+import * as git_ from "./git.ts";
 import {
   clone,
   commitFile,
   git,
   initRepo,
+  promised,
   removeTempDirs,
   repoWithOrigin,
   revParse,
@@ -16,7 +17,9 @@ import {
 
 afterAll(removeTempDirs);
 
-const byPath = (st: g.Status, p: string) => st.files.find((f) => f.path === p);
+const g = promised(git_);
+
+const byPath = (st: git_.Status, p: string) => st.files.find((f) => f.path === p);
 
 /** Resolves to the rejection reason, failing if the promise resolves. */
 async function rejection(p: Promise<unknown>): Promise<Error> {
