@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import * as Schema from "effect/Schema";
 import {
   AUTH_ATTEMPTS,
   ERROR_CODES,
@@ -9,17 +8,10 @@ import {
   REFUSAL_REASONS,
 } from "./nearby.ts";
 import {
-  ClientMessageSchema,
   decodeChannelMessage,
   decodeClientMessage,
+  decodeServerMessage,
   decodeSignal,
-  GuestMessageSchema,
-  HostInfoSchema,
-  HostMessageSchema,
-  RelayedSignalSchema,
-  ServerMessageSchema,
-  SignalSchema,
-  isId,
   NearbyCodecError,
   parseClientMessage,
   parseServerMessage,
@@ -244,9 +236,15 @@ test("newOfferId makes distinct valid ids", () => {
   expect(newOfferId()).not.toBe(a);
 });
 
-test("isId takes unsigned 32-bit integers", () => {
-  for (const ok of [0, 1, 0xffff_ffff]) expect(isId(ok)).toBe(true);
-  for (const bad of [-1, 0.5, 0x1_0000_0000, "1", null]) expect(isId(bad)).toBe(false);
+test("an invalid channel message names its request only by an unsigned 32-bit id", () => {
+  const id = (value: unknown) => {
+    const incoming = decodeChannelMessage(JSON.stringify({ t: "end", id: value, x: 1 }), "guest");
+    return incoming.kind === "invalid" ? incoming.id : "valid";
+  };
+  for (const ok of [0, 1, 0xffff_ffff]) expect(id(ok)).toBe("valid");
+  for (const bad of [-1, 0.5, 0x1_0000_0000, "1", null]) expect(id(bad)).toBeNull();
+  const req = { t: "req", id: 0xffff_ffff, method: "G T", path: "/", headers: [] };
+  expect(decodeChannelMessage(JSON.stringify(req), "guest")).toMatchObject({ id: 0xffff_ffff });
 });
 
 test("decodeChannelMessage reads each side's messages only", () => {
@@ -331,7 +329,6 @@ test("decodeChannelMessage reads binary frames", () => {
   expect(decodeChannelMessage(new Uint8Array(3), "guest")).toMatchObject({ kind: "invalid" });
 });
 
-// One valid message of every kind each schema reads, as a peer would send it.
 const sdp = "v=0";
 const candidate = {
   candidate: "candidate:1 1 udp 1 192.0.2.1 9 typ host",
@@ -346,22 +343,30 @@ const signals = [
   { kind: "candidate", offerId, candidate: { candidate: "", sdpMid: null, sdpMLineIndex: null } },
   { kind: "refused", offerId, reason: "busy" },
 ];
-const valid: [string, Schema.Codec<unknown>, object[]][] = [
-  ["RelayedSignal", RelayedSignalSchema, signals],
-  ["SignalData", SignalSchema, signals],
+/** `decodeChannelMessage` for `from`'s messages, as a value that throws unless it is one. */
+const channel = (from: "guest" | "host") => (value: unknown) => {
+  const text = JSON.stringify(value);
+  const incoming =
+    from === "guest" ? decodeChannelMessage(text, "guest") : decodeChannelMessage(text, "host");
+  if (incoming.kind !== "message") throw new Error(JSON.stringify(incoming));
+  return incoming.message;
+};
+// Each decoder production reads with, and one valid message of every kind it reads. A
+// RelayedSignal is read inside a ClientMessage, and a HostInfo inside a ServerMessage.
+const valid: [string, (value: unknown) => unknown, object[]][] = [
+  ["SignalData", decodeSignal, signals],
   [
     "ClientMessage",
-    ClientMessageSchema,
+    (value) => decodeClientMessage(JSON.stringify(value)),
     [
       { type: "hello", role: "guest" },
       { type: "hello", role: "host", name: "box", secret },
       ...signals.map((data) => ({ type: "signal", to: "p1", data })),
     ],
   ],
-  ["HostInfo", HostInfoSchema, [{ id: "p1", name: "box", key }]],
   [
     "ServerMessage",
-    ServerMessageSchema,
+    (value) => decodeServerMessage(JSON.stringify(value)),
     [
       { type: "welcome", id: "p1" },
       { type: "hosts", hosts: [{ id: "p1", name: "box", key }] },
@@ -373,7 +378,7 @@ const valid: [string, Schema.Codec<unknown>, object[]][] = [
   ],
   [
     "GuestMessage",
-    GuestMessageSchema,
+    channel("guest"),
     [
       { t: "pake", y: b43 },
       { t: "pake-confirm", confirm: b43 },
@@ -386,7 +391,7 @@ const valid: [string, Schema.Codec<unknown>, object[]][] = [
   ],
   [
     "HostMessage",
-    HostMessageSchema,
+    channel("host"),
     [
       { t: "pake", y: b43, confirm: b43 },
       { t: "resume-ok", proof: b43 },
@@ -401,19 +406,13 @@ const valid: [string, Schema.Codec<unknown>, object[]][] = [
   ],
 ];
 
-test("every schema round-trips valid messages: decoding then encoding gives the message back", () => {
-  for (const [name, schema, messages] of valid) {
-    const decode = Schema.decodeUnknownSync(schema);
-    const encode = Schema.encodeSync(schema);
-    for (const message of messages) {
-      const decoded = decode(message);
-      expect([name, decoded]).toEqual([name, message]);
-      expect([name, encode(decoded)]).toEqual([name, message]);
-    }
+test("every decoder gives valid messages back as they were sent", () => {
+  for (const [name, decode, messages] of valid) {
+    for (const message of messages) expect([name, decode(message)]).toEqual([name, message]);
   }
 });
 
-test("every schema strips fields the contract doesn't have, at every level", () => {
+test("every decoder strips fields the contract doesn't have, at every level", () => {
   /** `value` with an `extra` field added to it and to every object inside it. */
   const withExtras = (value: unknown): unknown => {
     if (Array.isArray(value)) return value.map(withExtras);
@@ -421,8 +420,7 @@ test("every schema strips fields the contract doesn't have, at every level", () 
     const entries = Object.entries(value).map(([k, v]) => [k, withExtras(v)]);
     return { ...Object.fromEntries(entries), extra: 1 };
   };
-  for (const [name, schema, messages] of valid) {
-    const decode = Schema.decodeUnknownSync(schema);
+  for (const [name, decode, messages] of valid) {
     for (const message of messages) {
       expect([name, decode(withExtras(message))]).toEqual([name, message]);
     }

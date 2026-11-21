@@ -135,13 +135,12 @@ const integer = (minimum: number, maximum: number) =>
 
 /** A request id: an unsigned 32-bit integer, as body frames carry it. */
 const RequestId = integer(0, 0xffff_ffff);
-export const isId: (value: unknown) => value is number = Schema.is(RequestId);
+const isId: (value: unknown) => value is number = Schema.is(RequestId);
 
 /** HTTP headers as name/value pairs. */
 const Headers = Schema.mutable(
   Schema.Array(Schema.mutable(Schema.Tuple([Schema.String, Schema.String]))),
 );
-export const isHeaders: (value: unknown) => value is [string, string][] = Schema.is(Headers);
 
 /**
  * A host's display name, trimmed, if it is 1 to MAX_NAME_LENGTH code points long and has no
@@ -209,12 +208,12 @@ function signal<R extends Schema.Top>(Reason: R) {
 
 const ReasonSlug = text(REASON_SLUG);
 /** A WebRTC signal as the rendezvous relays it: a refusal's reason is any REASON_SLUG. */
-export const RelayedSignalSchema = signal(ReasonSlug);
+const RelayedSignalSchema = signal(ReasonSlug);
 /** A WebRTC signal as its receiver reads it: a reason this version doesn't know is `unknown`. */
-export const SignalSchema = signal(open(ReasonSlug, REFUSAL_REASONS, isRefusalReason));
+const SignalSchema = signal(open(ReasonSlug, REFUSAL_REASONS, isRefusalReason));
 
 /** A message a peer sends the rendezvous. RENDEZVOUS_PING isn't one. */
-export const ClientMessageSchema = Schema.Union([
+const ClientMessageSchema = Schema.Union([
   Schema.Union([
     Schema.Struct({
       type: Schema.Literal("hello"),
@@ -227,11 +226,11 @@ export const ClientMessageSchema = Schema.Union([
   Schema.Struct({ type: Schema.Literal("signal"), to: PeerId, data: RelayedSignalSchema }),
 ]);
 
-export const HostInfoSchema = Schema.Struct({ id: PeerId, name: HostName, key: text(HOST_KEY) });
+const HostInfoSchema = Schema.Struct({ id: PeerId, name: HostName, key: text(HOST_KEY) });
 const parseHost = Schema.decodeUnknownOption(HostInfoSchema);
 
 /** A message from the rendezvous. Hosts that break the contract are left out. */
-export const ServerMessageSchema = Schema.Union([
+const ServerMessageSchema = Schema.Union([
   Schema.Struct({ type: Schema.Literal("welcome"), id: PeerId }),
   Schema.Struct({
     type: Schema.Literal("hosts"),
@@ -264,14 +263,9 @@ export const ServerMessageSchema = Schema.Union([
   Schema.Struct({ type: Schema.Literal("pong") }),
 ]);
 
-const decodeRelayed = decoder(RelayedSignalSchema, "kind");
 const decodeSignalData = decoder(SignalSchema, "kind");
 const decodeClient = decoder(ClientMessageSchema, "type");
 const decodeServer = decoder(ServerMessageSchema, "type");
-
-/** A WebRTC signal as the rendezvous relays it (RelayedSignal). */
-export const decodeRelayedSignal = (value: unknown): RelayedSignal =>
-  decodeRelayed(record(value, "signal"));
 
 /** A WebRTC signal as its receiver reads it (SignalData). */
 export const decodeSignal = (value: unknown): SignalData =>
@@ -326,7 +320,7 @@ const tagged = <const T extends string, const F extends Schema.Struct.Fields>(t:
   Schema.Struct({ t: Schema.Literal(t), ...fields });
 
 /** JSON text messages the guest sends on the data channel. */
-export const GuestMessageSchema = Schema.Union([
+const GuestMessageSchema = Schema.Union([
   tagged("pake", { y: Bytes32 }),
   tagged("pake-confirm", { confirm: Bytes32 }),
   tagged("pake-fail", {}),
@@ -344,7 +338,7 @@ export const GuestMessageSchema = Schema.Union([
 const AttemptsLeft = integer(0, AUTH_ATTEMPTS);
 
 /** JSON text messages the host sends on the data channel. */
-export const HostMessageSchema = Schema.Union([
+const HostMessageSchema = Schema.Union([
   tagged("pake", { y: Bytes32, confirm: Bytes32 }),
   tagged("resume-ok", { proof: Bytes32 }),
   tagged("auth-ok", {}),
