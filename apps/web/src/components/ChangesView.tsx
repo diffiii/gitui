@@ -309,7 +309,9 @@ function FileDiffPane({ file, staged }: { file: FileStatus; staged: boolean }) {
     queryKey: [repo, "diff", file.path, file.origPath, staged, untracked],
     queryFn: (c) => api.diff({ path: file.path, origPath: file.origPath, staged, untracked }, c),
     refetchInterval: 3000,
-    placeholderData: (prev) => prev,
+    // The same file moving between the staged and unstaged lists keeps its diff up until the
+    // other side's arrives; another file never shows this one's.
+    placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[2] === file.path ? prev : undefined),
   });
   if (error) return <div className="p-6 text-sm text-destructive">{error.message}</div>;
   if (!data) return null;
