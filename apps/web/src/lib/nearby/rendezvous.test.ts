@@ -1,5 +1,5 @@
 import { RENDEZVOUS_PING, type ServerMessage } from "@gitui/shared";
-import { expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, jest, test } from "bun:test";
 import { Rendezvous, type RendezvousOptions, type SocketLike } from "./rendezvous.ts";
 
 class FakeSocket implements SocketLike {
@@ -46,7 +46,11 @@ function setup(options: Partial<RendezvousOptions> = {}) {
   return { client, sockets, delays };
 }
 
-const wait = (ms = 1) => new Promise((r) => setTimeout(r, ms));
+// Fake timers: the client's watchdog, keepalive, ping deadline and retries run on the test's
+// clock, so a slow machine can't reorder them.
+beforeEach(() => jest.useFakeTimers());
+afterEach(() => jest.useRealTimers());
+const wait = (ms = 1) => jest.advanceTimersByTime(ms);
 const host = { id: "h1", name: "Jan's MacBook", key: "k".repeat(16) };
 
 test("says hello as a guest and publishes the hosts", () => {
