@@ -11,3 +11,12 @@ export const SLOW_POLL_MS = 15_000;
  */
 export const pollInterval = (chars: number | undefined) =>
   (chars ?? 0) > LARGE_PAYLOAD ? SLOW_POLL_MS : POLL_MS;
+
+/**
+ * Whether a mutation's refresh of the repo's queries refetches this one. Not a commit's details
+ * (`[repo, "commit", hash]`) that have loaded: a commit's hash fixes them, all but its refs, which
+ * the History view takes from the log, which is refreshed. One that failed (e.g. a commit
+ * fetched since) is retried.
+ */
+export const refreshedByMutations = (queryKey: readonly unknown[], hasData: boolean) =>
+  queryKey[1] !== "commit" || !hasData;
