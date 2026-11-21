@@ -1,7 +1,8 @@
 # gitui
 
-A lazygit-inspired git client that runs in the browser on localhost. A Bun + Hono API shells
-out to the `git` CLI; a React 19 + TanStack Query + shadcn/ui frontend talks to it over `/api`.
+A lazygit-inspired git client that runs in the browser on localhost. An Effect API (Effect 4's
+HttpRouter, on Node) shells out to the `git` CLI; a React 19 + TanStack Query + shadcn/ui
+frontend talks to it over `/api`.
 
 ## Commands
 
@@ -21,15 +22,20 @@ scripts/smoke.sh            # run the built CLI with node and probe it
 
 Bun workspaces monorepo (`apps/*`, `packages/*`).
 
-- `apps/cli/` (`@diffiii/gitui`, published to npm): the `gitui` bin (`bin/gitui.ts`) and the
-  Hono API in `server/`. `app.ts` holds the routes, `git.ts` wraps the git CLI and parses its
-  output, `main.ts` starts the server (`@hono/node-server`) on 127.0.0.1, with only a plain-text
-  pointer to the hosted app at `/`: the CLI serves no UI. `bin/args.ts` parses the command line,
-  `dev.ts` is the dev API entry. `server/nearby/` is `--nearby`, the host
+- `apps/cli/` (`@diffiii/gitui`, published to npm): the `gitui` bin (`bin/gitui.ts`, an Effect
+  program run with `NodeRuntime.runMain`) and the API in `server/`, on Effect. `app.ts` holds
+  the routes (Effect's `HttpRouter`; `createApp` returns its `layer`, and `fetch`, a web handler
+  for the nearby bridge and tests), `git.ts` runs the git CLI (Effect's `ChildProcessSpawner`,
+  each git in a process group of its own) and parses its output, `main.ts` serves the app with
+  `NodeHttpServer` on 127.0.0.1, with only a plain-text pointer to the hosted app at `/`: the
+  CLI serves no UI. `bin/args.ts` parses the command line (pure), `dev.ts` is the dev API
+  entry. `server/nearby/` is `--nearby`, the host
   side of `@gitui/shared`'s nearby protocol: `rendezvous.ts` (one `ws` socket, pinned to IPv4
-  or IPv6, with pings and reconnects), `peer.ts` (one guest: answer, trickle, CPace or resume
-  check from `auth.ts`), `bridge.ts` (HTTP over the data channel, pure and unit-tested),
-  `host.ts` (wires them up: two sockets, sessions bound to theirs), `guard.ts` (survives
+  or IPv6, kept up by a fiber that pings and reconnects), `peer.ts` (one guest: answer,
+  trickle, CPace or resume check from `auth.ts`; its waits are fibers its close interrupts),
+  `bridge.ts` (HTTP over the data channel, one fiber per request, unit-tested),
+  `host.ts` (`startNearby`, a scoped Effect that wires them up: two sockets, sessions bound to
+  theirs; closing the scope ends them all), `guard.ts` (survives
   werift's unhandled rejections on malformed SCTP packets; werift callbacks go through
   `isolate`) and `webrtc.ts`, the only file that imports werift. `bun run build`
   (`scripts/build.ts`) bundles `bin/gitui.ts` for Node into `dist/gitui.js` and copies the root
@@ -69,7 +75,9 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   protocol: `nearby.ts` (the contract and its docs), `nearby-codec.ts` (every check on what
   crosses its wires, used by the Worker, the CLI and the web app alike: each message is an
   Effect Schema, decoding keeps only the contract's fields, so a new protocol field goes into
-  its schema there and its type in `nearby.ts`, which a type-level assertion keeps equal) and `nearby-pake.ts` (CPace on
+  its schema there and its type in `nearby.ts`, which a type-level assertion keeps equal), `schema-messages.ts`
+  (`withMessage` and `issueMessage`: Schema errors in our own words, for the codec and the CLI's
+  request schemas) and `nearby-pake.ts` (CPace on
   ristretto255 for the code and HMAC proofs both ways for resume tokens, pure and synchronous,
   with `@noble/curves` and `@noble/hashes`, which the CLI bundles). Its public functions are
   only in the `@gitui/shared/nearby-pake` entry (`pake.ts`), not in `@gitui/shared`, so the
@@ -82,10 +90,17 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
 
 ## Conventions
 
-- Run git only through `git()` in `apps/cli/server/git.ts`, with argument arrays and never
-  shell strings. User-supplied paths go after `--`.
-- Validate ref-like request inputs (branch names, hashes, refs) with `ref()` in
-  `apps/cli/server/app.ts`, which rejects anything git could parse as an option.
+- Run git only through `git()` (or `run()`/`gitPatch()`) in `apps/cli/server/git.ts`, with
+  argument arrays and never shell strings. User-supplied paths go after `--`.
+- CLI code is Effect code: server functions return Effects that fail with typed errors
+  (`GitError`, `RepoNotOpenedError`; the app maps them to 400 and 403) and need the Node
+  services (`NodeServices.layer`), which the app provides per request. Things that live for a
+  while (servers, sockets, the nearby host) are scoped and end with their scope. Code that a
+  callback must answer synchronously (socket and werift events, protocol state machines like
+  `nearby/auth.ts`) stays plain, and so do pure parsers.
+- Validate request bodies and parameters with the schemas in `apps/cli/server/app.ts`; ref-like
+  inputs (branch names, hashes, refs) go through `Ref`, which rejects anything git could parse
+  as an option. Their `withMessage` messages (`@gitui/shared`) are the 400s' errors.
 - `/api/*` access policy lives in `apps/cli/server/access.ts`, keyed by the `Listener`: the
   `x-gitui` header always. `loopback`: localhost `Host`; cross-origin callers only from
   `allowedOrigins`, with CORS headers and the pairing token (`loadToken` in `server/config.ts`)
@@ -94,8 +109,9 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   routes or `main.ts`.
 - Each listener also has a `repoScope`: `loopback` is `any`; `nearby` (other devices) is
   `opened`, i.e. only the `initialRepo` and the recent list, compared as realpaths, read per
-  request. Every repo path a request names goes through `repoGate` (`server/repo-scope.ts`): the `repo`
-  middleware and `/open`, which only records repos in the recent list for `any`. A refusal is a
+  request. Every repo path a request names goes through `repoGate` (`server/repo-scope.ts`): every
+  route made with `repoRoute` in `app.ts` and `/open`, which only records repos in the recent
+  list for `any`. A refusal is a
   403 `{ error, code: REPO_NOT_OPENED }`. New routes that take a repo path must use the gate.
   Server tests pass `configDir` to `createApp` so they never touch the real recent list.
 - Frontend data goes through TanStack Query with keys that start with the repo:
@@ -113,7 +129,9 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
 - Tests: don't import `apps/web/src/lib/prefs.ts`, because it touches `window` at import time.
   Server tests build repos with the helpers in `apps/cli/server/test-repo.ts`, which isolate
   git from the global and system config, set the identity per repo and delete the temp dirs on
-  exit.
+  exit; its `promised(module)` runs a module's Effects as Promises with the Node services, and
+  `server/test-scope.ts`'s `startScoped` starts a scoped one (a rendezvous client, a nearby
+  host) with a `stop`.
 
 ## Commits
 
