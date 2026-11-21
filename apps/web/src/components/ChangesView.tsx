@@ -1,18 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
-import { CheckCheck, FileDiff, Loader2, Minus, Plus, Undo2 } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { CheckCheck, FileDiff, Minus, Plus, Undo2 } from "lucide-react";
+import { useMemo, useReducer, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import type { FileStatus } from "@/lib/api";
 import {
@@ -26,10 +19,10 @@ import {
 } from "@/lib/changes";
 import { useListChoice } from "@/lib/listChoice";
 import { NARROW } from "@/lib/media";
-import { fileRowPath } from "@/lib/pathTree";
 import { useGitMutation, useRepo } from "@/lib/repo";
 import { useStatus } from "@/lib/status";
 import { useUrl } from "@/lib/url";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { DiffView } from "./DiffView";
 import { EmptyState } from "./EmptyState";
 import { FileTitle } from "./FileTitle";
@@ -91,7 +84,7 @@ export function ChangesView() {
         }
         detail={
           shown && {
-            content: <FileDiffPane file={shown.file} staged={shown.staged} />,
+            content: <FileDiffPane key={shown.file.path} file={shown.file} staged={shown.staged} />,
             title: <FileTitle path={shown.file.path} />,
             label: shown.file.path,
             backLabel: "Back to changes",
@@ -216,18 +209,13 @@ function FileSection({
       {files.length === 0 ? (
         <p className="px-3 pb-3 text-xs text-muted-foreground/70">{empty}</p>
       ) : (
-        <div
-          className="min-h-0 flex-1 px-1 pb-1"
-          onDoubleClick={(e) => {
-            const path = fileRowPath(e.nativeEvent.composedPath());
-            if (path && paths.includes(path)) toggle([path]);
-          }}
-        >
+        <div className="min-h-0 flex-1 px-1 pb-1">
           <PathTree
             paths={paths}
             gitStatus={gitStatus}
             selected={selected}
             onSelect={onSelect}
+            onActivate={(path) => toggle([path])}
             actions={(item) => [
               {
                 label: staged ? "Unstage" : "Stage",
@@ -267,48 +255,39 @@ function DiscardDialog({
   );
   const single = files?.length === 1 ? files[0] : null;
   return (
-    <Dialog open={!!files} onOpenChange={(o) => !o && !discard.isPending && onClose()}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Discard changes?</DialogTitle>
-          <DialogDescription>
-            {single ? (
-              <>
-                {single.untracked
-                  ? "This deletes the untracked file "
-                  : "This reverts unstaged changes in "}
-                <code className="font-mono wrap-break-word text-foreground">{single.path}</code>.
-              </>
-            ) : (
-              <>
-                This reverts unstaged changes in {files?.length} files and deletes untracked ones.
-              </>
-            )}{" "}
-            This can&apos;t be undone.
-          </DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
-          <Button variant="outline" disabled={discard.isPending} onClick={onClose}>
-            Cancel
-          </Button>
-          <Button
-            variant="destructive"
-            disabled={discard.isPending}
-            onClick={() => {
-              if (files) {
-                discard.mutate(files, {
-                  onSuccess: () => onConfirm(files),
-                  onSettled: onClose,
-                });
-              }
-            }}
-          >
-            {discard.isPending && <Loader2 className="animate-spin" />}
-            Discard
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <ConfirmDialog
+      open={!!files}
+      onClose={onClose}
+      title="Discard changes?"
+      pending={discard.isPending}
+      description={
+        <>
+          {single ? (
+            <>
+              {single.untracked
+                ? "This deletes the untracked file "
+                : "This reverts unstaged changes in "}
+              <code className="font-mono wrap-break-word text-foreground">{single.path}</code>.
+            </>
+          ) : (
+            <>This reverts unstaged changes in {files?.length} files and deletes untracked ones.</>
+          )}{" "}
+          This can&apos;t be undone.
+        </>
+      }
+      actions={[
+        {
+          label: "Discard",
+          variant: "destructive",
+          onSelect: () => {
+            if (!files) return;
+            // Closes when settled, failure included: after a partial failure the list of files
+            // is stale, and the error toast says how far it got.
+            discard.mutate(files, { onSuccess: () => onConfirm(files), onSettled: onClose });
+          },
+        },
+      ]}
+    />
   );
 }
 
@@ -319,12 +298,21 @@ function FileDiffPane({ file, staged }: { file: FileStatus; staged: boolean }) {
     queryKey: [repo, "diff", file.path, file.origPath, staged, untracked],
     queryFn: (c) => api.diff({ path: file.path, origPath: file.origPath, staged, untracked }, c),
     refetchInterval: 3000,
-    // The same file moving between the staged and unstaged lists keeps its diff up until the
-    // other side's arrives; another file never shows this one's.
-    placeholderData: (prev, prevQuery) => (prevQuery?.queryKey[2] === file.path ? prev : undefined),
+    // The pane is keyed by path, so another file mounts fresh and never shows this one's diff;
+    // the same file moving between the staged and unstaged lists keeps it up until the other
+    // side's arrives.
+    placeholderData: (prev) => prev,
   });
   if (error) return <div className="p-6 text-sm text-destructive">{error.message}</div>;
-  if (!data) return null;
+  if (!data) {
+    return (
+      <div className="flex flex-col gap-3 p-4">
+        <Skeleton className="h-6 w-2/3" />
+        <Skeleton className="h-4 w-1/2" />
+        <Skeleton className="h-40 w-full" />
+      </div>
+    );
+  }
   if (!data.diff.trim()) {
     return data.truncated ? (
       <EmptyState
@@ -339,15 +327,40 @@ function FileDiffPane({ file, staged }: { file: FileStatus; staged: boolean }) {
   return (
     <ScrollArea className="h-full">
       {data.truncated && <TruncatedNotice className="mx-3 mt-3" />}
-      <DiffView raw={data.diff} className="p-3" />
+      <DiffView raw={data.diff} truncated={data.truncated} className="p-3" />
     </ScrollArea>
   );
 }
 
+interface CommitDraft {
+  message: string;
+  amend: boolean;
+}
+
+type CommitDraftAction =
+  | { type: "message"; text: string }
+  | { type: "amend"; on: boolean }
+  | { type: "lastMessage"; text: string }
+  | { type: "reset" };
+
+function commitDraft(state: CommitDraft, action: CommitDraftAction): CommitDraft {
+  switch (action.type) {
+    case "message":
+      return { ...state, message: action.text };
+    case "amend":
+      return { ...state, amend: action.on };
+    // The last commit's message arrives late: it fills the box only if still amending, and
+    // only if nothing was typed meanwhile.
+    case "lastMessage":
+      return state.amend && !state.message.trim() ? { ...state, message: action.text } : state;
+    case "reset":
+      return { message: "", amend: false };
+  }
+}
+
 function CommitBox({ stagedCount }: { stagedCount: number }) {
   const { api } = useRepo();
-  const [message, setMessage] = useState("");
-  const [amend, setAmend] = useState(false);
+  const [{ message, amend }, dispatch] = useReducer(commitDraft, { message: "", amend: false });
   const commit = useGitMutation(
     (api, v: { message: string; amend: boolean }) => api.commit(v.message, v.amend),
     amend ? "Commit amended" : "Committed",
@@ -356,29 +369,15 @@ function CommitBox({ stagedCount }: { stagedCount: number }) {
 
   const submit = () => {
     if (!canCommit) return;
-    commit.mutate(
-      { message, amend },
-      {
-        onSuccess: () => {
-          setMessage("");
-          setAmend(false);
-        },
-      },
-    );
+    commit.mutate({ message, amend }, { onSuccess: () => dispatch({ type: "reset" }) });
   };
 
-  // Each toggle starts a new turn; a reply fills the box only if no toggle came after it and the
-  // box is still empty.
-  const amendTurn = useRef(0);
   const toggleAmend = (on: boolean) => {
-    setAmend(on);
-    const turn = ++amendTurn.current;
+    dispatch({ type: "amend", on });
     if (!on || message.trim()) return;
     api.lastMessage().then(
-      ({ message: last }) => {
-        if (amendTurn.current === turn) setMessage((m) => (m.trim() ? m : last.trim()));
-      },
-      (e: Error) => toast.error(e.message),
+      ({ message: last }) => dispatch({ type: "lastMessage", text: last.trim() }),
+      (e: unknown) => toast.error(e instanceof Error ? e.message : String(e)),
     );
   };
 
@@ -386,7 +385,7 @@ function CommitBox({ stagedCount }: { stagedCount: number }) {
     <div className="flex flex-col gap-2 border-t bg-muted/30 p-3">
       <Textarea
         value={message}
-        onChange={(e) => setMessage(e.target.value)}
+        onChange={(e) => dispatch({ type: "message", text: e.target.value })}
         onKeyDown={(e) => {
           if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
             e.preventDefault();

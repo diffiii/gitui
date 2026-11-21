@@ -7,7 +7,12 @@ import { useDiffStyle, usePalette, useTheme } from "@/lib/prefs";
 import { cn } from "@/lib/utils";
 
 /** The files of a raw patch; `failed` when it couldn't be parsed, which is not an empty diff. */
-export function useParsedPatch(raw: string): { files: FileDiffMetadata[]; failed: boolean } {
+export interface ParsedPatch {
+  files: FileDiffMetadata[];
+  failed: boolean;
+}
+
+export function useParsedPatch(raw: string): ParsedPatch {
   return useMemo(() => {
     try {
       return { files: parsePatchFiles(raw).flatMap((p) => p.files), failed: false };
@@ -20,9 +25,16 @@ export function useParsedPatch(raw: string): { files: FileDiffMetadata[]; failed
 export const fileKey = (f: FileDiffMetadata) => f.name;
 
 /** Renders every file of a unified git patch with Pierre Diffs. */
-export function DiffView({ raw, className }: { raw: string; className?: string }) {
-  const { files, failed } = useParsedPatch(raw);
-  return <DiffFiles files={files} failed={failed} className={className} />;
+export function DiffView({
+  raw,
+  truncated,
+  className,
+}: {
+  raw: string;
+  truncated?: boolean;
+  className?: string;
+}) {
+  return <DiffFiles patch={useParsedPatch(raw)} truncated={truncated} className={className} />;
 }
 
 /** The options Pierre Diffs' diffs and files share: the palette and light or dark, from the prefs. */
@@ -35,13 +47,17 @@ function useCodeOptions() {
   );
 }
 
+/**
+ * The files of `patch`. A `truncated` patch that fails to parse shows nothing here: its cut-off
+ * end is the likely cause, and the truncation notice the caller shows already says so.
+ */
 export function DiffFiles({
-  files,
-  failed,
+  patch: { files, failed },
+  truncated = false,
   className,
 }: {
-  files: FileDiffMetadata[];
-  failed?: boolean;
+  patch: ParsedPatch;
+  truncated?: boolean;
   className?: string;
 }) {
   const code = useCodeOptions();
@@ -58,6 +74,7 @@ export function DiffFiles({
     [code, diffStyle],
   );
 
+  if (failed && truncated) return null;
   if (failed) {
     return (
       <div className={cn("p-6 text-sm text-destructive", className)}>

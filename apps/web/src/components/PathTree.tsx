@@ -2,7 +2,7 @@ import type { ContextMenuItem, ContextMenuOpenContext, GitStatusEntry } from "@p
 import { FileTree, useFileTree } from "@pierre/trees/react";
 import { useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { COARSE, useMediaQuery } from "@/lib/media";
-import { dirsOf, treePaths, updatePaths } from "@/lib/pathTree";
+import { dirsOf, fileRowPath, treePaths, updatePaths } from "@/lib/pathTree";
 import { useTheme } from "@/lib/prefs";
 import { cn } from "@/lib/utils";
 
@@ -18,6 +18,8 @@ interface PathTreeProps {
   gitStatus?: GitStatusEntry[];
   selected?: string | null;
   onSelect?: (path: string) => void;
+  /** A file row was double-clicked. */
+  onActivate?: (path: string) => void;
   /** Row actions shown in the context menu (right-click or the row button). */
   actions?: (item: ContextMenuItem) => TreeAction[];
   /**
@@ -42,6 +44,7 @@ function FileTreeView({
   gitStatus,
   selected,
   onSelect,
+  onActivate,
   actions,
   collapsed = false,
   search = "",
@@ -51,9 +54,11 @@ function FileTreeView({
   const { resolved } = useTheme();
   const paths = useMemo(() => treePaths(listed), [listed]);
   const onSelectRef = useRef(onSelect);
+  const onActivateRef = useRef(onActivate);
   const files = useRef(new Set(paths));
   useLayoutEffect(() => {
     onSelectRef.current = onSelect;
+    onActivateRef.current = onActivate;
     files.current = new Set(paths);
   });
 
@@ -108,28 +113,38 @@ function FileTreeView({
   }, [model, selected, pathsKey]);
 
   return (
-    <FileTree
-      model={model}
-      className={cn("block h-full", className)}
-      style={
-        {
-          colorScheme: resolved,
-          "--trees-bg-override": "transparent",
-          "--trees-font-family-override": "var(--font-sans)",
-          "--trees-font-size-override": "13px",
-          "--trees-selected-bg-override": "var(--accent)",
-          "--trees-selected-fg-override": "var(--accent-foreground)",
-          "--trees-border-color-override": "var(--border)",
-          "--trees-fg-override": "var(--foreground)",
-          "--trees-fg-muted-override": "var(--muted-foreground)",
-        } as React.CSSProperties
-      }
-      renderContextMenu={
-        actions
-          ? (item, ctx) => <TreeMenu items={actions(item)} item={item} ctx={ctx} />
-          : undefined
-      }
-    />
+    // `contents`: the wrapper only listens; the tree lays out as if it were the root.
+    <div
+      className="contents"
+      onDoubleClick={(e) => {
+        // The rows are in the tree's open shadow root, which the event's path reaches into.
+        const path = fileRowPath(e.nativeEvent.composedPath());
+        if (path && files.current.has(path)) onActivateRef.current?.(path);
+      }}
+    >
+      <FileTree
+        model={model}
+        className={cn("block h-full", className)}
+        style={
+          {
+            colorScheme: resolved,
+            "--trees-bg-override": "transparent",
+            "--trees-font-family-override": "var(--font-sans)",
+            "--trees-font-size-override": "13px",
+            "--trees-selected-bg-override": "var(--accent)",
+            "--trees-selected-fg-override": "var(--accent-foreground)",
+            "--trees-border-color-override": "var(--border)",
+            "--trees-fg-override": "var(--foreground)",
+            "--trees-fg-muted-override": "var(--muted-foreground)",
+          } as React.CSSProperties
+        }
+        renderContextMenu={
+          actions
+            ? (item, ctx) => <TreeMenu items={actions(item)} item={item} ctx={ctx} />
+            : undefined
+        }
+      />
+    </div>
   );
 }
 

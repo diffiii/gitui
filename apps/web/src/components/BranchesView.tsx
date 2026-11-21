@@ -34,6 +34,7 @@ import { useUrl } from "@/lib/url";
 import { useListChoice } from "@/lib/listChoice";
 import { BELOW_LG } from "@/lib/media";
 import { cn } from "@/lib/utils";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { EmptyState } from "./EmptyState";
 import { FilterInput } from "./FilterInput";
 import { HistoryPane } from "./HistoryView";
@@ -113,31 +114,29 @@ export function BranchesView() {
                 <GitBranchPlus />
               </Button>
             </div>
-            <ScrollArea className="min-h-0 flex-1">
-              <div className="flex flex-col gap-4 p-2">
-                <BranchGroup title="Local" count={local.length}>
-                  {local.map(row)}
-                </BranchGroup>
-                {remote.length > 0 && (
-                  <BranchGroup title="Remote" count={remote.length}>
-                    {remote.map(row)}
+            {data && branches.length === 0 ? (
+              <EmptyState
+                icon={GitBranch}
+                title="No branches yet"
+                description="The first commit creates one."
+              />
+            ) : (
+              <ScrollArea className="min-h-0 flex-1">
+                <div className="flex flex-col gap-4 p-2">
+                  <BranchGroup title="Local" count={local.length}>
+                    {local.map(row)}
                   </BranchGroup>
-                )}
-              </div>
-            </ScrollArea>
+                  {remote.length > 0 && (
+                    <BranchGroup title="Remote" count={remote.length}>
+                      {remote.map(row)}
+                    </BranchGroup>
+                  )}
+                </div>
+              </ScrollArea>
+            )}
           </>
         }
-        empty={
-          data && branches.length === 0 ? (
-            <EmptyState
-              icon={GitBranch}
-              title="No branches yet"
-              description="The first commit creates one."
-            />
-          ) : (
-            <EmptyState icon={GitBranch} title="Select a branch" />
-          )
-        }
+        empty={<EmptyState icon={GitBranch} title="Select a branch" />}
         detail={
           shown && {
             // Stacked, the bar above names the branch.
@@ -339,41 +338,37 @@ function DeleteBranchDialog({ branch, onClose }: { branch: Branch | null; onClos
     (api, v: { name: string; force: boolean }) => api.deleteBranch(v.name, v.force),
     "Branch deleted",
   );
+  const remove = (force: boolean) =>
+    branch && del.mutate({ name: branch.name, force }, { onSuccess: onClose });
+  // Stays open on an error: a plain delete of an unmerged branch is refused, and Force delete is
+  // the retry.
   return (
-    <Dialog open={!!branch} onOpenChange={(o) => !o && !del.isPending && onClose()}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Delete branch?</DialogTitle>
-          <DialogDescription>
-            Delete <code className="font-mono text-foreground">{branch?.name}</code>. Force delete
-            also removes it if it has unmerged commits.
-          </DialogDescription>
-        </DialogHeader>
-        <DialogFooter>
-          <Button variant="outline" disabled={del.isPending} onClick={onClose}>
-            Cancel
-          </Button>
-          <Button
-            variant="outline"
-            className="text-destructive"
-            disabled={del.isPending}
-            onClick={() =>
-              branch && del.mutate({ name: branch.name, force: true }, { onSuccess: onClose })
-            }
-          >
-            Force delete
-          </Button>
-          <Button
-            variant="destructive"
-            disabled={del.isPending}
-            onClick={() =>
-              branch && del.mutate({ name: branch.name, force: false }, { onSuccess: onClose })
-            }
-          >
-            Delete
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <ConfirmDialog
+      open={!!branch}
+      onClose={onClose}
+      title="Delete branch?"
+      pending={del.isPending}
+      description={
+        <>
+          Delete <code className="font-mono text-foreground">{branch?.name}</code>. Force delete
+          also removes it if it has unmerged commits.
+        </>
+      }
+      actions={[
+        {
+          label: "Force delete",
+          variant: "outline",
+          className: "text-destructive",
+          busy: del.variables?.force === true,
+          onSelect: () => remove(true),
+        },
+        {
+          label: "Delete",
+          variant: "destructive",
+          busy: del.variables?.force === false,
+          onSelect: () => remove(false),
+        },
+      ]}
+    />
   );
 }

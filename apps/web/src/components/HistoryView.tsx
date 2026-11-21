@@ -61,6 +61,10 @@ export function HistoryPane({
     placeholderData: (prev) => prev,
     refetchInterval: 10000,
   });
+  // Only `limit` changes the key within one HistoryPane (it is remounted for another ref or `all`),
+  // so a placeholder means the next page is loading: the previous one is shown, shorter than
+  // `limit`, and the footer with its spinner has to stay up until the new one arrives.
+  const loadingMore = isPlaceholderData;
   const commits = useMemo(() => data?.commits ?? [], [data]);
   const choice = useListChoice({
     param: "commit",
@@ -134,10 +138,8 @@ export function HistoryPane({
                 choice.choose({ commit: hash });
                 openDetails();
               }}
-              // While the next page loads, the previous one is shown (placeholderData) and is
-              // shorter than `limit`: keep the footer, with its spinner, up until it arrives.
               footer={
-                (commits.length >= limit || isPlaceholderData) && (
+                (commits.length >= limit || loadingMore) && (
                   <div className="p-3">
                     <Button
                       variant="outline"
@@ -276,7 +278,8 @@ function CommitDetail({ hash, onSelect }: { hash: string; onSelect: (hash: strin
     queryFn: (c) => api.showCommit(hash, c),
     staleTime: Infinity,
   });
-  const { files, failed } = useParsedPatch(data?.patch ?? "");
+  const patch = useParsedPatch(data?.patch ?? "");
+  const { files } = patch;
   const paths = useMemo(() => files.map(fileKey), [files]);
   const gitStatus = useMemo(
     () => files.map((f) => ({ path: fileKey(f), status: CHANGE_STATUS[f.type] })),
@@ -380,7 +383,7 @@ function CommitDetail({ hash, onSelect }: { hash: string; onSelect: (hash: strin
           </section>
         )}
 
-        <DiffFiles files={files} failed={failed} />
+        <DiffFiles patch={patch} truncated={data.truncated} />
       </div>
     </ScrollArea>
   );

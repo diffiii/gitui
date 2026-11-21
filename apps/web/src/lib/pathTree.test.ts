@@ -131,8 +131,9 @@ test("treePaths drops a file that is also another path's folder", () => {
 });
 
 /** A stand-in for a DOM element: only what `fileRowPath` reads, with no DOM. */
-const el = (attrs: Record<string, string>) =>
-  ({ getAttribute: (name: string) => attrs[name] ?? null }) as unknown as EventTarget;
+const el = (attrs: Record<string, string>) => ({
+  getAttribute: (name: string) => attrs[name] ?? null,
+});
 const row = (type: "file" | "folder", path: string) =>
   el({ "data-type": "item", "data-item-type": type, "data-item-path": path });
 
@@ -151,7 +152,7 @@ test("fileRowPath gives null for a row's action section", () => {
 });
 
 test("fileRowPath gives null outside any row", () => {
-  const windowLike = {} as EventTarget;
+  const windowLike = {};
   expect(fileRowPath([el({}), el({ "data-type": "root" }), windowLike])).toBeNull();
   expect(fileRowPath([])).toBeNull();
 });
