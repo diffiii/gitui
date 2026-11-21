@@ -14,7 +14,7 @@
     },
     "apps/cli": {
       "name": "@diffiii/gitui",
-      "version": "0.7.0",
+      "version": "0.8.0",
       "bin": {
         "gitui": "./dist/gitui.js",
       },
