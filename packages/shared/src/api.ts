@@ -1,11 +1,13 @@
 // The HTTP API between the CLI and the web app, declared once: each endpoint's method and path
-// (API), and what it takes and answers (ApiTypes). The server's route table (apps/cli/server/
-// app.ts) must serve exactly these, with schemas and answers that match, and the web client
-// (apps/web/src/lib/api.ts) is built from them, so a mismatch fails the type check. Plain
-// types: the web's main chunk carries no Effect, and responses aren't validated at runtime there
-// (the server produces them, and the type check ties both sides together).
+// (API), what it takes and answers (ApiTypes), and how a request to it is spelled (apiUrl). The
+// server's route table (apps/cli/server/app.ts) must serve exactly these, with schemas and
+// answers that match, and the web client (apps/web/src/lib/api.ts) is built from them, so a
+// mismatch fails the type check. Plain types: the web's main chunk carries no Effect, and
+// responses aren't validated at runtime there (the server produces them, and the type check ties
+// both sides together).
 // `query` is what the client passes before encoding (booleans travel as "1"/"0", numbers as
-// decimal strings, absent keys are left out); `body` is the JSON as sent.
+// decimal strings, absent keys are left out); `body` is the JSON as sent. Path parameters
+// (`:name`) come from the path itself.
 import type {
   AppConfig,
   Branch,
@@ -17,6 +19,50 @@ import type {
   WorkingFiles,
 } from "./types.ts";
 
+export interface Ok {
+  ok: true;
+}
+export interface OkOutput {
+  ok: true;
+  output: string;
+}
+
+/** The file a discard names, as the web sends it (a FileStatus; the server reads only `path`). */
+export type DiscardFile = Pick<FileStatus, "path" | "origPath" | "untracked" | "conflicted"> & {
+  x?: string;
+  y?: string;
+};
+
+export interface ApiTypes {
+  config: { response: AppConfig };
+  open: { body: { path: string }; response: { root: string; name: string } };
+  status: { response: Status };
+  diff: {
+    query: { path: string; origPath?: string; staged: boolean; untracked: boolean };
+    response: { diff: string; truncated: boolean };
+  };
+  stage: { body: { paths?: string[] }; response: Ok };
+  unstage: { body: { paths?: string[] }; response: Ok };
+  discard: { body: { file: DiscardFile }; response: Ok };
+  commit: { body: { message: string; amend?: boolean }; response: OkOutput };
+  lastMessage: { response: { message: string } };
+  log: {
+    query: { limit: number; all: boolean; ref?: string };
+    response: { commits: Commit[] };
+  };
+  showCommit: { response: CommitDetail };
+  files: { response: WorkingFiles };
+  file: { query: { path: string }; response: WorkingFile };
+  branches: { response: { branches: Branch[] } };
+  checkout: { body: { name: string; remote?: boolean }; response: Ok };
+  createBranch: { body: { name: string; from?: string; checkout?: boolean }; response: Ok };
+  deleteBranch: { body: { name: string; force?: boolean }; response: Ok };
+  fetch: { response: OkOutput };
+  pull: { response: OkOutput };
+  push: { response: OkOutput };
+}
+
+// Keyed by ApiTypes, so an endpoint in one and not the other fails here, either way round.
 export const API = {
   config: { method: "GET", path: "/api/config" },
   open: { method: "POST", path: "/api/open" },
@@ -38,59 +84,59 @@ export const API = {
   fetch: { method: "POST", path: "/api/repo/remote/fetch" },
   pull: { method: "POST", path: "/api/repo/remote/pull" },
   push: { method: "POST", path: "/api/repo/remote/push" },
-} as const satisfies Record<string, { method: "GET" | "POST"; path: `/api/${string}` }>;
+} as const satisfies {
+  [K in keyof ApiTypes]: { method: "GET" | "POST"; path: `/api/${string}` };
+};
 
 export type ApiKey = keyof typeof API;
 /** The endpoints under /api/repo, which name their repository in `?repo=`. */
 export type RepoApiKey = {
   [K in ApiKey]: (typeof API)[K]["path"] extends `/api/repo/${string}` ? K : never;
 }[ApiKey];
+/** The remote operations, one endpoint each. */
+export type RemoteAction = Extract<ApiKey, "fetch" | "pull" | "push">;
 
-export interface Ok {
-  ok: true;
-}
-export interface OkOutput {
-  ok: true;
-  output: string;
-}
-
-export interface ApiTypes {
-  config: { response: AppConfig };
-  open: { body: { path: string }; response: { root: string; name: string } };
-  status: { response: Status };
-  diff: {
-    query: { path: string; origPath?: string; staged: boolean; untracked: boolean };
-    response: { diff: string; truncated: boolean };
-  };
-  stage: { body: { paths?: string[] }; response: Ok };
-  unstage: { body: { paths?: string[] }; response: Ok };
-  discard: { body: { file: DiscardFile }; response: Ok };
-  commit: { body: { message: string; amend?: boolean }; response: OkOutput };
-  lastMessage: { response: { message: string } };
-  log: {
-    query: { limit: number; all: boolean; ref?: string };
-    response: { commits: Commit[] };
-  };
-  showCommit: { params: { hash: string }; response: CommitDetail };
-  files: { response: WorkingFiles };
-  file: { query: { path: string }; response: WorkingFile };
-  branches: { response: { branches: Branch[] } };
-  checkout: { body: { name: string; remote?: boolean }; response: Ok };
-  createBranch: { body: { name: string; from?: string; checkout?: boolean }; response: Ok };
-  deleteBranch: { body: { name: string; force?: boolean }; response: Ok };
-  fetch: { response: OkOutput };
-  pull: { response: OkOutput };
-  push: { response: OkOutput };
-}
-
-/** The file a discard names, as the web sends it (a FileStatus; the server reads only `path`). */
-export type DiscardFile = Pick<FileStatus, "path" | "origPath" | "untracked" | "conflicted"> & {
-  x?: string;
-  y?: string;
-};
-
-// Helpers: what each endpoint takes and answers (never, where it takes none).
-export type QueryOf<K extends ApiKey> = ApiTypes[K] extends { query: infer Q } ? Q : never;
-export type BodyOf<K extends ApiKey> = ApiTypes[K] extends { body: infer B } ? B : never;
-export type ParamsOf<K extends ApiKey> = ApiTypes[K] extends { params: infer P } ? P : never;
+/** The names of a path's `:name` parameters. */
+type ParamName<P extends string> = P extends `${string}:${infer Name}/${infer Rest}`
+  ? Name | ParamName<Rest>
+  : P extends `${string}:${infer Name}`
+    ? Name
+    : never;
+/** A path's `:name` parameters, each a string. */
+export type PathParams<P extends string> = { [N in ParamName<P>]: string };
+/** The path parameters of the endpoint `K`. */
+export type ParamsOf<K extends ApiKey> = PathParams<(typeof API)[K]["path"]>;
 export type ResponseOf<K extends ApiKey> = ApiTypes[K]["response"];
+
+/**
+ * What a request to `K` takes: its query and body as the contract has them, its repository for
+ * one under /api/repo, and its path parameters for one whose path has some.
+ */
+export type ApiRequest<K extends ApiKey> = Omit<ApiTypes[K], "response"> &
+  (K extends RepoApiKey ? { repo: string } : { repo?: never }) &
+  ([keyof ParamsOf<K>] extends [never] ? { params?: never } : { params: ParamsOf<K> });
+
+/** Every endpoint's request, loosely, as `apiUrl` reads it. */
+interface AnyRequest {
+  repo?: string;
+  params?: Record<string, string>;
+  query?: Record<string, string | number | boolean | undefined>;
+}
+
+/**
+ * The path and query string of a request to `key`: its `:name` path parameters filled in
+ * (escaped), then `repo` first and the query's own keys in their order, booleans as "1"/"0",
+ * numbers as decimal strings, and `undefined` left out.
+ */
+export function apiUrl<K extends ApiKey>(key: K, request: Omit<ApiRequest<K>, "body">): string {
+  const { repo, params = {}, query = {} } = request as AnyRequest;
+  const path = API[key].path.replace(/:(\w+)/g, (_, name: string) =>
+    encodeURIComponent(params[name]!),
+  );
+  const sp = new URLSearchParams(repo === undefined ? {} : { repo });
+  for (const [k, v] of Object.entries(query)) {
+    if (v !== undefined) sp.set(k, typeof v === "boolean" ? (v ? "1" : "0") : String(v));
+  }
+  const search = sp.toString();
+  return search ? `${path}?${search}` : path;
+}

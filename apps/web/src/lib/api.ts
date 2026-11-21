@@ -4,21 +4,19 @@
 // check ties both sides to the contract.
 import type {
   ApiKey,
+  ApiRequest,
   AppConfig,
-  BodyOf,
   Branch,
   Commit,
   CommitDetail,
   FileStatus,
-  ParamsOf,
-  QueryOf,
-  RepoApiKey,
+  RemoteAction,
   ResponseOf,
   Status,
   WorkingFile,
   WorkingFiles,
 } from "@gitui/shared";
-import { API, REPO_NOT_OPENED } from "@gitui/shared";
+import { API, apiUrl, REPO_NOT_OPENED } from "@gitui/shared";
 import { ApiError, apiTransport, getConnection, rejectConnection } from "./connection.ts";
 
 export type {
@@ -77,55 +75,16 @@ async function request<T>(
   return data as T;
 }
 
-/** An input an endpoint takes (then required), or doesn't (then absent). */
-type Input<Name extends string, T> = [T] extends [never]
-  ? { [P in Name]?: never }
-  : { [P in Name]: T };
-
-/** Where a request goes: its repository (under /api/repo), its path parameters and its query. */
-export type UrlOptions<K extends ApiKey> = (K extends RepoApiKey
-  ? { repo: string }
-  : { repo?: never }) &
-  Input<"params", ParamsOf<K>> &
-  Input<"query", QueryOf<K>>;
-
-/** Everything `call` sends to an endpoint: where it goes, its JSON body and its signal. */
-export type CallOptions<K extends ApiKey> = UrlOptions<K> & Input<"body", BodyOf<K>> & Cancel;
-
-/** Every endpoint's options, loosely, as `apiUrl` and `call` read them. */
-interface AnyOptions {
-  repo?: string;
-  params?: Record<string, string>;
-  query?: Record<string, string | number | boolean | undefined>;
-  body?: unknown;
-  signal?: AbortSignal;
-}
+/** Everything `call` sends to an endpoint: what the contract has it take, and its signal. */
+export type CallOptions<K extends ApiKey> = ApiRequest<K> & Cancel;
 
 /**
- * The path and query string of a request to `key`: its `:name` path parameters filled in
- * (escaped), then `repo` first and the query's own keys in their order, booleans as "1"/"0",
- * numbers as decimal strings, and `undefined` left out.
- */
-export function apiUrl<K extends ApiKey>(key: K, options: UrlOptions<K>): string {
-  const { repo, params = {}, query = {} } = options as AnyOptions;
-  const path = API[key].path.replace(/:(\w+)/g, (_, name: string) =>
-    encodeURIComponent(params[name]!),
-  );
-  const sp = new URLSearchParams(repo === undefined ? {} : { repo });
-  for (const [k, v] of Object.entries(query)) {
-    if (v !== undefined) sp.set(k, typeof v === "boolean" ? (v ? "1" : "0") : String(v));
-  }
-  const search = sp.toString();
-  return search ? `${path}?${search}` : path;
-}
-
-/**
- * A request to `key`, answered with the endpoint's response. Its body is sent as JSON when there
- * is one (an endpoint without a body in the contract gets none).
+ * A request to `key` (spelled by the contract's `apiUrl`), answered with the endpoint's response.
+ * Its body is sent as JSON when there is one (an endpoint without a body in the contract gets
+ * none).
  */
 export function call<K extends ApiKey>(key: K, options: CallOptions<K>): Promise<ResponseOf<K>> {
-  const { body, signal } = options as AnyOptions;
-  return request<ResponseOf<K>>(API[key].method, apiUrl(key, options), { body, signal });
+  return request<ResponseOf<K>>(API[key].method, apiUrl(key, options), options);
 }
 
 export const getConfig = (c?: Cancel) => call("config", { signal: c?.signal });
@@ -165,7 +124,7 @@ export function repoApi(repo: string) {
       call("createBranch", { repo, body: { name, from } }),
     deleteBranch: (name: string, force: boolean) =>
       call("deleteBranch", { repo, body: { name, force } }),
-    remote: (action: "fetch" | "pull" | "push") => call(action, { repo }),
+    remote: (action: RemoteAction) => call(action, { repo }),
   };
 }
 
