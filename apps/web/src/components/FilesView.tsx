@@ -102,7 +102,7 @@ function FileContents({ path }: { path: string }) {
     queryKey: [repo, "file", path],
     queryFn: (c) => api.file(path, c),
     refetchInterval: (q) =>
-      pollInterval(q.state.data?.kind === "text" ? q.state.data.content.length : 0),
+      pollInterval(q.state.data?.kind === "text" ? q.state.data.content.length : undefined),
   });
 
   if (error) return <div className="p-6 text-sm text-destructive">{error.message}</div>;

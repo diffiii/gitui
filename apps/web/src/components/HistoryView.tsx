@@ -286,7 +286,10 @@ function CommitDetail({
   const { data, error } = useQuery({
     queryKey: [repo, "commit", hash],
     queryFn: (c) => api.showCommit(hash, c),
-    staleTime: Infinity,
+    // A commit's hash fixes its details, all but the refs. With the refs from the log, a
+    // mutation's (or a fetch's) refresh of the repo's queries leaves loaded details alone; a
+    // commit outside the loaded log (or `?commit=HEAD`) has none, so it is refreshed as before.
+    staleTime: refs !== undefined ? "static" : Infinity,
   });
   const patch = useParsedPatch(data?.patch ?? "");
   const { files } = patch;

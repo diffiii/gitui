@@ -5,18 +5,8 @@ export const LARGE_PAYLOAD = 256 * 1024;
 export const SLOW_POLL_MS = 15_000;
 
 /**
- * The refetch interval for a payload of `chars` characters (undefined before the first load). A
- * big diff or file costs a git process, a transfer (a WebRTC round trip over nearby) and a parse
- * on every refetch, and it rarely changes every 3 s.
+ * The refetch interval for a payload of `chars` characters (none before the first load). A big
+ * diff or file costs a git process, a transfer (a WebRTC round trip over nearby) and a parse on
+ * every refetch, and it rarely changes every 3 s.
  */
-export const pollInterval = (chars: number | undefined) =>
-  (chars ?? 0) > LARGE_PAYLOAD ? SLOW_POLL_MS : POLL_MS;
-
-/**
- * Whether a mutation's refresh of the repo's queries refetches this one. Not a commit's details
- * (`[repo, "commit", hash]`) that have loaded: a commit's hash fixes them, all but its refs, which
- * the History view takes from the log, which is refreshed. One that failed (e.g. a commit
- * fetched since) is retried.
- */
-export const refreshedByMutations = (queryKey: readonly unknown[], hasData: boolean) =>
-  queryKey[1] !== "commit" || !hasData;
+export const pollInterval = (chars = 0) => (chars > LARGE_PAYLOAD ? SLOW_POLL_MS : POLL_MS);
