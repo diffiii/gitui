@@ -96,7 +96,13 @@ function decoder<S extends Schema.Decoder<unknown>>(
   // The first failure is all a decoder reports.
   const decode = SchemaParser.decodeUnknownResult(schema, { errors: "first" });
   return (input) => {
-    const result = decode(input);
+    let result: Result.Result<S["Type"], SchemaIssue.Issue>;
+    try {
+      result = decode(input);
+    } catch {
+      // A getter that throws: only values that aren't parsed JSON have one.
+      return fail("unreadable message");
+    }
     if (Result.isSuccess(result)) return result.success;
     // No member of the union has the input's tag.
     if (result.failure._tag === "AnyOf" && result.failure.issues.length === 0) {

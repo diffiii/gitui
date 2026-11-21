@@ -14,6 +14,7 @@ import {
   ClientMessageSchema,
   decodeChannelMessage,
   decodeClientMessage,
+  decodeSignal,
   GuestMessageSchema,
   HostInfoSchema,
   HostMessageSchema,
@@ -182,6 +183,18 @@ test("decoders say what is wrong", () => {
   expect(() =>
     decodeClientMessage('{"type":"signal","to":"p1","data":{"kind":"answer","sdp":""}}'),
   ).toThrow(new NearbyCodecError("missing data.offerId"));
+});
+
+test("a getter that throws is an invalid message, not a crash", () => {
+  const value = { kind: "answer", offerId: "o".repeat(16) };
+  Object.defineProperty(value, "sdp", {
+    enumerable: true,
+    get: () => {
+      throw new Error("boom");
+    },
+  });
+  expect(() => decodeSignal(value)).toThrow(NearbyCodecError);
+  expect(parseSignal(value)).toBeNull();
 });
 
 test("parseServerMessage rebuilds every message a peer handles", () => {
