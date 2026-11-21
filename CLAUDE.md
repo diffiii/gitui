@@ -83,8 +83,11 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   `scripts/e2e.ts` checks it
   all against `wrangler dev`. Worker code is type-checked with `@cloudflare/workers-types`, tests
   and scripts with bun's.
-- `packages/shared/` (`@gitui/shared`): API types and the connection contract (default port,
-  client header, hosted origin, loopback hosts, pairing links), used by both sides, and the
+- `packages/shared/` (`@gitui/shared`): API types, the HTTP API itself (`api.ts`: each
+  endpoint's method and path in `API`, and its query, body and response in `ApiTypes`, plain
+  types that the server's routes and the web client are both checked against), and the
+  connection contract (default port, client header, hosted origin, loopback hosts, pairing
+  links), used by both sides, and the
   hosted app's `_headers` file (`headers.ts`, which the web build emits), imported as `@gitui/shared`. The nearby
   protocol: `nearby.ts` (the contract and its docs, and the plain helpers: `hostName`,
   `toHostName`, `printable`, `rendezvousUrl`, `sdpFingerprint`), `nearby-codec.ts` (every check
@@ -131,7 +134,15 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   schemas, and `route`/`repoRoute` decode them (after the repo gate) before the answer runs,
   which gets them decoded: routes don't read the request themselves. A body is read only for a
   route with a `body` schema, wants `content-type: application/json` (415) and at most
-  `MAX_BODY_BYTES` (413); a repeated query parameter counts by its first value.
+  `MAX_BODY_BYTES` (413); a repeated query parameter counts by its first value. A new route is
+  declared first in `@gitui/shared`'s `api.ts` (its method and path in `API`, its query, body
+  and response in `ApiTypes`), then served in `app.ts`'s `ROUTES` under the same key (`route`,
+  `repoRoute` and `mutation` take the key, and its answer must be the contract's response),
+  with schemas that the `RoutesMatchContract` assertions at the end of `app.ts` tie to the
+  contract (one per schema), and called from the web through `api.ts`'s `call`. An endpoint
+  missing from `ROUTES` (or one it has that the contract doesn't), an answer, schema or call
+  that doesn't match the contract, fails the type check; `api.test.ts` pins every request the
+  web sends.
 - `/api/*` access policy lives in `apps/cli/server/access.ts`, keyed by the `Listener`: the
   `x-gitui` header always. `loopback`: localhost `Host`; cross-origin callers only from
   `allowedOrigins`, with CORS headers and the pairing token (`loadToken` in `server/config.ts`)
