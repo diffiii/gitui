@@ -16,8 +16,7 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { getConfig, openRepo } from "@/lib/api";
 import { isApiError, useConnection } from "@/lib/connection";
-
-const basename = (p: string) => p.split("/").filter(Boolean).pop() ?? p;
+import { repoName } from "@/lib/format";
 
 /**
  * Opens a repository. A phone or another computer may only open those opened on the computer
@@ -71,7 +70,7 @@ export function ConfirmOpenRepo({
   return (
     <CenteredScreen
       icon={FolderGit2}
-      title={`Open ${basename(repo)}?`}
+      title={`Open ${repoName(repo)}?`}
       description={
         <>
           A link asked gitui to open{" "}
@@ -116,7 +115,7 @@ export function RepoWelcome({
       icon={FolderGit2}
       title={
         notOpenedRepo
-          ? `Open ${basename(notOpenedRepo)} on your computer first`
+          ? `Open ${repoName(notOpenedRepo)} on your computer first`
           : "Open a repository"
       }
       description={
@@ -172,7 +171,7 @@ export function RepoWelcome({
                 >
                   <FolderOpen className="size-4 shrink-0 text-muted-foreground" />
                   <span className="min-w-0">
-                    <span className="block truncate text-sm font-medium">{basename(r)}</span>
+                    <span className="block truncate text-sm font-medium">{repoName(r)}</span>
                     <span className="block truncate font-mono text-xs text-muted-foreground">
                       {tildify(r, config.home)}
                     </span>
@@ -207,7 +206,7 @@ export function RepoSwitcher({ repo, onOpen }: { repo: string; onOpen: (root: st
           className="touch-target gap-2 px-2 font-semibold max-md:min-w-0 max-md:shrink"
         >
           <FolderGit2 className="text-muted-foreground" />
-          <span className="truncate">{basename(repo)}</span>
+          <span className="truncate">{repoName(repo)}</span>
           <ChevronsUpDown className="text-muted-foreground" />
         </Button>
       </PopoverTrigger>
@@ -240,7 +239,7 @@ export function RepoSwitcher({ repo, onOpen }: { repo: string; onOpen: (root: st
                 <CommandItem key={r} value={r} onSelect={() => open.mutate(r)}>
                   <FolderGit2 />
                   <span className="min-w-0">
-                    <span className="block truncate">{basename(r)}</span>
+                    <span className="block truncate">{repoName(r)}</span>
                     <span className="block truncate font-mono text-xs text-muted-foreground">
                       {tildify(r, config.home)}
                     </span>

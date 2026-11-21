@@ -6,6 +6,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { type AppConfig, getConfig } from "@/lib/api";
 import { asksBeforeOpening } from "@/lib/asksBeforeOpening";
 import { useConnection } from "@/lib/connection";
+import { repoName } from "@/lib/format";
 import { notOpened } from "@/lib/notOpened";
 import { RepoProvider } from "@/lib/repo";
 import { useStatus } from "@/lib/status";
@@ -46,7 +47,7 @@ export default function App() {
 
   return (
     <TooltipProvider delayDuration={400}>
-      <title>{repo ? `${repo.split("/").pop()} · gitui` : "gitui"}</title>
+      <title>{repo ? `${repoName(repo)} · gitui` : "gitui"}</title>
       {isLoading ? null : repo === null ? (
         <RepoWelcome onOpen={openRepo} />
       ) : (

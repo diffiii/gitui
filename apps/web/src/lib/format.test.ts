@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { formatBytes, shortAge } from "./format.ts";
+import { formatBytes, repoName, shortAge } from "./format.ts";
 
 test("shortAge names the largest whole unit", () => {
   const now = 1_000_000_000;
@@ -14,6 +14,13 @@ test("shortAge names the largest whole unit", () => {
 
 test("shortAge treats future dates (clock skew) as now", () => {
   expect(shortAge(2000, 1000)).toBe("now");
+});
+
+test("repoName is a repository path's last folder, on any system", () => {
+  expect(repoName("/home/me/code/gitui")).toBe("gitui");
+  expect(repoName("/home/me/code/gitui/")).toBe("gitui");
+  expect(repoName("C:\\Users\\me\\code\\gitui")).toBe("gitui");
+  expect(repoName("/")).toBe("/");
 });
 
 test("formatBytes names the largest unit the size fills", () => {

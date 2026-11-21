@@ -1,16 +1,25 @@
 import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
-import { execFileSync } from "node:child_process";
 import { parsePatchFiles } from "@pierre/diffs";
 import { untrackedDiff } from "./files.ts";
 import { git, GitError, gitTimeoutMs, showCommit } from "./git.ts";
-import { git as sh, initRepo, removeTempDirs, revParse, write, run } from "./test-repo.ts";
+import {
+  alive,
+  git as sh,
+  initRepo,
+  removeTempDirs,
+  revParse,
+  run,
+  sleeper,
+  until,
+  write,
+} from "./test-repo.ts";
 
 afterAll(removeTempDirs);
 
 let repo: string;
 let head: string;
-/** Unique per run, so concurrent runs of this suite can't see each other's sleeper. */
-const SLEEPER = `sleep 37.${process.pid}`;
+/** What `git hang` starts. */
+const hung = sleeper();
 
 const lines = (prefix: string, n: number) =>
   Array.from({ length: n }, (_, i) => `${prefix} line ${i}`).join("\n") + "\n";
@@ -21,7 +30,7 @@ const parseStrict = (patch: string) =>
 
 beforeAll(() => {
   repo = initRepo();
-  sh(repo, "config", "alias.hang", `!exec ${SLEEPER}`);
+  sh(repo, "config", "alias.hang", `!exec ${hung.command}`);
   for (let i = 0; i < 6; i++) write(repo, `f${i}.txt`, lines(`f${i}`, 100));
   sh(repo, "add", ".");
   sh(repo, "commit", "-q", "-m", "six files");
@@ -80,13 +89,13 @@ test("GITUI_GIT_TIMEOUT is in seconds, 0 for none, and 10 minutes otherwise", ()
 
 test("git: timeoutMs kills the child and rejects", async () => {
   const started = Date.now();
-  const err = await run(git(repo, ["hang"], { timeoutMs: 200 })).catch((e) => e);
+  // 2 s, not less: git, its shell and then the runtime must start and write the pid before the
+  // kill, and git's shell (MSYS) is slow to start on Windows. A kill that comes too early fails
+  // the test at `started()`, rather than leaving it to hang.
+  const err = await run(git(repo, ["hang"], { timeoutMs: 2000 })).catch((e) => e);
   expect(err).toBeInstanceOf(GitError);
-  expect(err.message).toBe("git hang timed out after 0.2 s (GITUI_GIT_TIMEOUT)");
+  expect(err.message).toBe("git hang timed out after 2 s (GITUI_GIT_TIMEOUT)");
   expect(Date.now() - started).toBeLessThan(5000);
-  // git forwards SIGTERM to the alias's child; `exec` makes sleep that child on every /bin/sh.
-  const sleeperAlive = () =>
-    execFileSync("ps", ["-Ao", "command"], { encoding: "utf8" }).includes(SLEEPER);
-  for (let i = 0; i < 30 && sleeperAlive(); i++) await Bun.sleep(100);
-  expect(sleeperAlive()).toBe(false);
-});
+  const pid = await hung.started();
+  expect(await until(() => !alive(pid))).toBe(true);
+}, 15_000);

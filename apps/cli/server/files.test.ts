@@ -313,15 +313,18 @@ test("lists a skip-worktree file while it's on disk", async () => {
   );
 });
 
-test("refuses a tracked file swapped for a FIFO without blocking", async () => {
-  if (process.platform === "win32") return;
-  const repo = initRepo();
-  commitFile(repo, "pipe", "was a file\n");
-  fs.rmSync(path.join(repo, "pipe"));
-  execFileSync("mkfifo", [path.join(repo, "pipe")]);
+// Windows has no FIFOs in the file system (no mkfifo).
+test.skipIf(process.platform === "win32")(
+  "refuses a tracked file swapped for a FIFO without blocking",
+  async () => {
+    const repo = initRepo();
+    commitFile(repo, "pipe", "was a file\n");
+    fs.rmSync(path.join(repo, "pipe"));
+    execFileSync("mkfifo", [path.join(repo, "pipe")]);
 
-  expect(await readFile(repo, "pipe")).toEqual(refused("Not a regular file: pipe"));
-});
+    expect(await readFile(repo, "pipe")).toEqual(refused("Not a regular file: pipe"));
+  },
+);
 
 test("leaves out the paths a sparse checkout doesn't check out", async () => {
   const repo = initRepo();

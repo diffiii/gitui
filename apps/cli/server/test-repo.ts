@@ -5,6 +5,7 @@
 // Each test file must call `afterAll(removeTempDirs)`. Bun evaluates this module once per run,
 // so a hook registered here would only fire for the first file that imports it.
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -13,7 +14,10 @@ import { Effect, Exit, type Layer, Scope } from "effect";
 import type { HttpRouter } from "effect/http";
 import { createApp, toFetch } from "./app.ts";
 
-process.env.GIT_CONFIG_GLOBAL = os.devNull;
+// A file that doesn't exist, which git reads as an empty config (a missing one is skipped), rather
+// than os.devNull, which git for Windows can't open (`\\.\nul`). Never created, and unguessable,
+// so nothing else can put a config there.
+process.env.GIT_CONFIG_GLOBAL = path.join(os.tmpdir(), `gitui-no-gitconfig-${randomUUID()}`);
 process.env.GIT_CONFIG_NOSYSTEM = "1";
 
 /** Every test client's scope, closed by `removeTempDirs`. */
@@ -58,11 +62,56 @@ export async function removeTempDirs() {
 
 /** A fresh empty directory, deleted by `removeTempDirs()`. */
 export function tmpDir() {
-  // realpath: on macOS os.tmpdir() is behind a symlink, and git reports resolved paths.
-  const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "gitui-")));
+  // In the form gitui keeps repository paths in (realPath in git.ts): on macOS os.tmpdir() is
+  // behind a symlink, and on Windows it can hold a short name (RUNNER~1).
+  const d = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "gitui-")));
   dirs.push(d);
   return d;
 }
+
+/**
+ * A shell command for git to run (an alias, a remote's upload-pack) that starts a process which
+ * writes its pid and then waits a minute without a word, and `started()`, which waits for that
+ * pid and throws if it never comes. The process is this runtime running a script, not `sleep`:
+ * on Windows the shell git runs (MSYS) has pids of its own, and this one's is the system's. The
+ * paths are quoted, with forward slashes, so that shell reads them as written.
+ */
+export function sleeper() {
+  const dir = tmpDir();
+  const script = path.join(dir, "sleeper.mjs");
+  const pidFile = path.join(dir, "pid");
+  fs.writeFileSync(
+    script,
+    'import fs from "node:fs";\n' +
+      "fs.writeFileSync(process.argv[2], String(process.pid));\n" +
+      "setTimeout(() => {}, 60_000);\n",
+  );
+  const quote = (p: string) => `'${p.replaceAll("\\", "/")}'`;
+  return {
+    command: [process.execPath, script, pidFile].map(quote).join(" "),
+    started: async () => {
+      const pid = () => (fs.existsSync(pidFile) ? fs.readFileSync(pidFile, "utf8") : "");
+      if (!(await until(() => pid() !== ""))) throw new Error("The sleeper never started");
+      return Number(pid());
+    },
+  };
+}
+
+/** Waits until `done` holds, checking every 50 ms, for at most `ms`; returns whether it did. */
+export async function until(done: () => boolean, ms = 5000) {
+  for (const end = Date.now() + ms; Date.now() < end; await Bun.sleep(50)) if (done()) return true;
+  return done();
+}
+
+/** Whether a process with this pid still runs. */
+export const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 /** Runs git synchronously for test setup and returns stdout; throws on a non-zero exit. */
 export function git(cwd: string, ...args: string[]) {
