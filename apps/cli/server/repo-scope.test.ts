@@ -117,15 +117,17 @@ for (const { listener, host, headers } of clients) {
         }
       });
 
-      test("the route list has every route, and paths no route has are gated too", async () => {
+      test("the route list has every route, and paths no route has are a plain 404", async () => {
         const names = API_ROUTES.map((r) => `${r.method} ${r.path}`);
         expect(names).toContain("GET /api/repo/status");
-        // The catch-all under /api/repo is a repo route like the others: it answers 404 only
-        // past the gate.
-        expect(names).toContain("GET /api/repo/*");
-        await refused(await send(`/api/repo/nope?repo=${encodeURIComponent(other)}`));
-        const res = await send(`/api/repo/nope?repo=${encodeURIComponent(initial)}`);
-        expect(res.status).toBe(404);
+        // Under /api/repo, the /api/* catch-all answers before any repository is looked at, so
+        // it says nothing about the one named.
+        expect(names).not.toContain("GET /api/repo/*");
+        for (const repo of [other, initial, tmpDir()]) {
+          const res = await send(`/api/repo/nope?repo=${encodeURIComponent(repo)}`);
+          expect(res.status).toBe(404);
+          expect(await res.json()).toEqual({ error: "Not found" });
+        }
       });
 
       test("another repository is refused, for reads and writes", async () => {

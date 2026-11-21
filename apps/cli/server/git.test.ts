@@ -423,6 +423,23 @@ describe("commit", () => {
     expect((await run(g.lastCommitMessage(repo))).trimEnd()).toBe("keep me\n\nwith body");
     expect(await run(g.log(repo, { limit: 10, all: false }))).toHaveLength(1);
   });
+
+  test("a hook flooding stderr fails with only the start of it", async () => {
+    const repo = initRepo();
+    commitFile(repo, "a.txt", "a\n");
+    fs.writeFileSync(
+      path.join(repo, ".git", "hooks", "pre-commit"),
+      "#!/bin/sh\nhead -c 4000000 /dev/zero | tr '\\0' x >&2\nexit 1\n",
+      { mode: 0o755 },
+    );
+    write(repo, "b.txt", "b\n");
+    git(repo, "add", "b.txt");
+
+    const err = (await rejection(run(g.commit(repo, "nope", false)))) as g.GitError;
+    expect(err).toBeInstanceOf(g.GitError);
+    expect(err.message).toMatch(/^x+$/);
+    expect(err.message.length).toBe(64 * 1024);
+  });
 });
 
 describe("lastCommitMessage", () => {

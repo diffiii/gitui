@@ -114,7 +114,8 @@ function rules(listener: Listener): Rules {
 /**
  * Whether `url`'s path is spelled the one way the router matches without rewriting it: the
  * router decodes percent escapes and stops a path at `;`, so `/%61pi/config` or `/api/config;x`
- * would reach a route under another name.
+ * would reach a route under another name. `#`, `\` and `//` are refused too, as URL parsers
+ * (a Request's, a proxy's) read them otherwise, and so is a path not starting with `/`.
  */
 const canonicalPath = (url: string) => {
   const path = url.split("?", 1)[0]!;

@@ -1,13 +1,24 @@
-// The API, on Effect's HttpRouter: each route is an Effect that answers JSON. Request bodies and
-// parameters are decoded with the schemas below, whose messages are the 400s' errors; a
-// GitError is a 400, a RepoNotOpenedError a 403 with REPO_NOT_OPENED, and anything else a 500.
+// The API, on Effect's HttpRouter: each route is an Effect that answers JSON. Each route
+// declares schemas for its query and body, decoded before it runs, whose messages are the 400s'
+// errors; a GitError is a 400, a RepoNotOpenedError a 403 with REPO_NOT_OPENED, and anything
+// else a 500 that says only that.
 // createApp gives the routes as a layer, which main.ts serves on a Node server and `toFetch`
 // turns into the web handler that the nearby bridge (and tests) call.
 import os from "node:os";
 import path from "node:path";
 import { NodeServices } from "@effect/platform-node";
 import { REPO_NOT_OPENED } from "@gitui/shared";
-import { ByteSize, Cause, Data, Effect, Fiber, Layer, Schema, type Scope } from "effect";
+import {
+  ByteSize,
+  Cause,
+  Data,
+  Effect,
+  Fiber,
+  Layer,
+  Schema,
+  SchemaTransformation,
+  type Scope,
+} from "effect";
 import {
   type FindMyWay,
   type HttpMethod,
@@ -20,7 +31,7 @@ import { type AccessOptions, access } from "./access.ts";
 import { CONFIG_DIR, readRecent } from "./config.ts";
 import { untrackedDiff, workingFile, workingFiles } from "./files.ts";
 import * as g from "./git.ts";
-import { withRepoLock } from "./lock.ts";
+import { withWriteLock } from "./lock.ts";
 import { type RepoGate, type RepoNotOpenedError, repoGate } from "./repo-scope.ts";
 import { issueMessage, withMessage } from "./schema-messages.ts";
 
@@ -118,6 +129,45 @@ const decode = <S extends Schema.Decoder<unknown>>(schema: S, input: unknown) =>
     Effect.mapError((e) => g.gitError(issueMessage(e.issue) ?? "Invalid request")),
   );
 
+/** A query flag: "1" is true, anything else (or nothing) false. */
+const QueryFlag = Schema.String.pipe(
+  Schema.decodeTo(
+    Schema.Boolean,
+    SchemaTransformation.transform({ decode: (v) => v === "1", encode: (b) => (b ? "1" : "0") }),
+  ),
+  Schema.withDecodingDefaultKey(Effect.succeed("0")),
+);
+
+/** The most commits /log lists, and how many when the query doesn't say. */
+const MAX_LOG = 5000;
+const DEFAULT_LOG = 300;
+
+/** A positive count of commits, at most MAX_LOG (more is cut to it). */
+const LogLimit = checkedString("limit", (v) => /^[1-9][0-9]{0,8}$/.test(v)).pipe(
+  Schema.decodeTo(
+    Schema.Number,
+    SchemaTransformation.transform({
+      decode: (v) => Math.min(Number(v), MAX_LOG),
+      encode: String,
+    }),
+  ),
+  Schema.withDecodingDefaultKey(Effect.succeed(String(DEFAULT_LOG))),
+);
+
+/** An optional field where an empty string means absent, as the web app may send one. */
+const orEmpty = <S extends Schema.Decoder<unknown>>(schema: S) =>
+  Schema.optionalKey(Schema.Union([Schema.Literal(""), schema]));
+
+const DiffQuery = Schema.Struct({
+  // Checked in the route: an untracked file's path must be a WorkingPath.
+  path: withMessage(Schema.String, "Invalid path"),
+  origPath: orEmpty(FilePath("origPath")),
+  staged: QueryFlag,
+  untracked: QueryFlag,
+});
+const LogQuery = Schema.Struct({ limit: LogLimit, all: QueryFlag, ref: orEmpty(Ref()) });
+const FileQuery = Schema.Struct({ path: WorkingPath });
+
 /** The largest request body read; every body the API takes is a small JSON object. */
 export const MAX_BODY_BYTES = 1024 * 1024;
 
@@ -130,7 +180,7 @@ const isJson = (req: HttpServerRequest.HttpServerRequest) =>
  * cross-origin without a preflight) and be at most MAX_BODY_BYTES; malformed JSON is a client
  * error too.
  */
-const body = <S extends Schema.Decoder<unknown>>(schema: S) =>
+const readBody = <S extends Schema.Decoder<unknown>>(schema: S) =>
   Effect.gen(function* () {
     const req = yield* HttpServerRequest.HttpServerRequest;
     if (!isJson(req)) {
@@ -149,18 +199,25 @@ const body = <S extends Schema.Decoder<unknown>>(schema: S) =>
     return yield* decode(schema, json);
   });
 
-/** The request's query parameter `name` (the first, if it repeats), as the router parsed it. */
-const searchParam = (name: string) =>
-  Effect.map(HttpServerRequest.ParsedSearchParams, (params): string | undefined => {
-    const value = params[name];
-    return typeof value === "string" ? value : value?.[0];
-  });
+/** The request's query parameters, each the first of its name if it repeats. */
+const queryParams = Effect.map(HttpServerRequest.ParsedSearchParams, (params) =>
+  Object.fromEntries(
+    Object.entries(params).map(([name, value]) => [
+      name,
+      typeof value === "string" ? value : value[0],
+    ]),
+  ),
+);
 
 // ---------------------------------------------------------------- responses
 
 const json = (value: unknown, status = 200) => HttpServerResponse.jsonUnsafe(value, { status });
 
-/** `route`'s response, with its failures as the JSON errors the web app reads. */
+/**
+ * `route`'s response, with its failures as the JSON errors the web app reads. An unexpected
+ * failure is logged, and its client gets only a fixed message: what went wrong inside isn't
+ * theirs to read.
+ */
 const respond = <R>(
   route: Effect.Effect<HttpServerResponse.HttpServerResponse, AppError, R>,
 ): Effect.Effect<HttpServerResponse.HttpServerResponse, never, R> =>
@@ -175,7 +232,10 @@ const respond = <R>(
     Effect.catchCause((cause) =>
       Cause.hasInterruptsOnly(cause)
         ? Effect.failCause(cause)
-        : Effect.succeed(json({ error: String(Cause.squash(cause)) }, 500)),
+        : Effect.as(
+            Effect.logError("Unexpected error in an API route", cause),
+            json({ error: "Internal server error" }, 500),
+          ),
     ),
   );
 
@@ -193,7 +253,7 @@ interface AppContext {
   opts: AppOptions;
   configDir: string;
   repos: RepoGate;
-  /** The server's scope: a mutation runs in it, so only shutting the server down stops one. */
+  /** The server's scope: a locked write runs in it, so only shutting the server down stops one. */
   scope: Scope.Scope;
 }
 
@@ -208,7 +268,39 @@ export interface ApiRoute {
   ) => Effect.Effect<HttpServerResponse.HttpServerResponse, never, RouteServices>;
 }
 
-const route = (
+/** What a route reads from its request besides the path: a query and a JSON body. */
+interface Inputs<Q extends Schema.Decoder<unknown>, B extends Schema.Decoder<unknown>> {
+  /** The query parameters' schema; without one, the route reads none. */
+  query?: Q;
+  /** The body's schema; without one, the route reads no body (and takes any). */
+  body?: B;
+}
+
+const NoQuery = Schema.Struct({});
+
+/** A route's inputs, decoded. */
+interface Decoded<Q extends Schema.Decoder<unknown>, B extends Schema.Decoder<unknown>> {
+  query: Q["Type"];
+  body: B["Type"];
+}
+
+/**
+ * The request's inputs, decoded: the whole body is read here, in the request's fiber, so a
+ * slow client holds up nothing but its own request.
+ */
+const decodeInputs = <Q extends Schema.Decoder<unknown>, B extends Schema.Decoder<unknown>>({
+  query,
+  body,
+}: Inputs<Q, B>) =>
+  Effect.gen(function* () {
+    const decoded: Decoded<Q, B> = {
+      query: query ? yield* decode(query, yield* queryParams) : {},
+      body: body ? yield* readBody(body) : undefined,
+    };
+    return decoded;
+  });
+
+const apiRoute = (
   method: ApiRoute["method"],
   path: HttpRouter.PathInput,
   answer: (app: AppContext) => Answer,
@@ -218,43 +310,63 @@ const route = (
   handle: (app) => respond(Effect.map(answer(app), (v) => json(v))),
 });
 
+/** A route outside /api/repo, given its decoded inputs. */
+const route = <
+  Q extends Schema.Decoder<unknown> = typeof NoQuery,
+  B extends Schema.Decoder<unknown> = Schema.Undefined,
+>(
+  method: ApiRoute["method"],
+  path: HttpRouter.PathInput,
+  inputs: Inputs<Q, B>,
+  answer: (input: Decoded<Q, B>, app: AppContext) => Answer,
+): ApiRoute =>
+  apiRoute(method, path, (app) => Effect.flatMap(decodeInputs(inputs), (i) => answer(i, app)));
+
 /**
- * A route under /api/repo, on the repository in `?repo=`, through the gate. A repository path
- * that comes any other way (a body field) must go through `repos.resolve` as well.
+ * A route under /api/repo, on the repository in `?repo=`, through the gate, then given its
+ * decoded inputs. A repository path that comes any other way (a body field) must go through
+ * `repos.resolve` as well.
  *
- * A POST runs to the end even if the client goes away, as git may be halfway through a write:
- * in a fiber of the server's scope, which shutting the server down (or git's own timeout)
- * still stops. With `lock`, it also runs one at a time per repo, so concurrent git commands
- * don't collide on .git/index.lock.
+ * With `lock`, the route writes: it runs one at a time per repo (withWriteLock), so concurrent
+ * git commands don't collide on .git/index.lock, and to the end even if the client goes away,
+ * as git may be halfway through a write: in a fiber of the server's scope, which shutting the
+ * server down (or git's own timeout) still stops. Its inputs are read before that, so the lock
+ * covers only git. Any other route stops when its client goes away, git included.
  */
-const repoRoute = (
+const repoRoute = <
+  Q extends Schema.Decoder<unknown> = typeof NoQuery,
+  B extends Schema.Decoder<unknown> = Schema.Undefined,
+>(
   method: ApiRoute["method"],
   path: `/${string}`,
-  answer: (repo: string) => Answer,
-  { lock = false }: { lock?: boolean } = {},
+  { lock = false, ...inputs }: Inputs<Q, B> & { lock?: boolean },
+  answer: (repo: string, input: Decoded<Q, B>) => Answer,
 ): ApiRoute =>
-  route(method, `/api/repo${path}`, ({ repos, scope }) =>
+  apiRoute(method, `/api/repo${path}`, ({ repos, scope }) =>
     Effect.gen(function* () {
-      const input = yield* searchParam("repo");
+      const input = (yield* queryParams).repo;
       if (!input) return yield* new HttpError({ status: 400, error: "Missing repo" });
       const repo = yield* repos.resolve(input);
-      const work = lock ? withRepoLock(repo, answer(repo)) : answer(repo);
-      if (method !== "POST") return yield* work;
-      return yield* Fiber.join(yield* Effect.forkIn(work, scope));
+      const work = answer(repo, yield* decodeInputs(inputs));
+      if (!lock) return yield* work;
+      return yield* Fiber.join(yield* Effect.forkIn(withWriteLock(repo, work), scope));
     }),
   );
 
-/** A POST under /api/repo that writes, under the repo's lock. */
-const mutation = (path: `/${string}`, answer: (repo: string) => Answer) =>
-  repoRoute("POST", path, answer, { lock: true });
+/** A POST under /api/repo that writes, under the repo's lock, given its decoded body. */
+const mutation = <B extends Schema.Decoder<unknown>>(
+  path: `/${string}`,
+  body: B,
+  answer: (repo: string, body: B["Type"]) => Answer,
+) => repoRoute("POST", path, { body, lock: true }, (repo, input) => answer(repo, input.body));
 
-/** A remote operation. Fetch and push leave the index alone, and may take long: no lock. */
+/**
+ * A remote operation. Fetch and push leave the index alone, and may take long: no lock, so
+ * they stop when their client goes away.
+ */
 const remote = (action: "fetch" | "pull" | "push") =>
-  repoRoute(
-    "POST",
-    `/remote/${action}`,
-    (repo) => Effect.map(g.remoteAction(repo, action), (output) => ({ ok: true, output })),
-    { lock: action === "pull" },
+  repoRoute("POST", `/remote/${action}`, { lock: action === "pull" }, (repo) =>
+    Effect.map(g.remoteAction(repo, action), (output) => ({ ok: true, output })),
   );
 
 /**
@@ -269,7 +381,7 @@ const ok = { ok: true };
 
 /** Every API route. Tests list them from here; `createApp` serves them. */
 export const API_ROUTES: readonly ApiRoute[] = [
-  route("GET", "/api/config", ({ opts, configDir }) =>
+  route("GET", "/api/config", {}, (_, { opts, configDir }) =>
     Effect.gen(function* () {
       return {
         initialRepo: opts.initialRepo ?? null,
@@ -278,116 +390,74 @@ export const API_ROUTES: readonly ApiRoute[] = [
       };
     }),
   ),
-  route("POST", "/api/open", ({ repos }) =>
-    Effect.gen(function* () {
-      const root = yield* repos.open((yield* body(OpenBody)).path);
-      return { root, name: path.basename(root) };
-    }),
+  route("POST", "/api/open", { body: OpenBody }, ({ body }, { repos }) =>
+    Effect.map(repos.open(body.path), (root) => ({ root, name: path.basename(root) })),
   ),
 
-  repoRoute("GET", "/status", g.status),
-  repoRoute("GET", "/diff", (repo) =>
-    Effect.gen(function* () {
-      const file = yield* searchParam("path");
-      if ((yield* searchParam("untracked")) === "1") {
-        return yield* untrackedDiff(repo, yield* decode(WorkingPath, file));
-      }
-      return yield* g.fileDiff(repo, {
-        path: yield* decode(FilePath(), file),
-        origPath: (yield* searchParam("origPath")) || undefined,
-        staged: (yield* searchParam("staged")) === "1",
-      });
-    }),
+  repoRoute("GET", "/status", {}, g.status),
+  repoRoute("GET", "/diff", { query: DiffQuery }, (repo, { query }) =>
+    query.untracked
+      ? Effect.flatMap(decode(WorkingPath, query.path), (file) => untrackedDiff(repo, file))
+      : Effect.flatMap(decode(FilePath(), query.path), (file) =>
+          g.fileDiff(repo, {
+            path: file,
+            origPath: query.origPath || undefined,
+            staged: query.staged,
+          }),
+        ),
   ),
-  mutation("/stage", (repo) =>
-    Effect.as(
-      Effect.flatMap(body(PathsBody), (b) => g.stage(repo, b.paths)),
-      ok,
-    ),
+  mutation("/stage", PathsBody, (repo, { paths }) => Effect.as(g.stage(repo, paths), ok)),
+  mutation("/unstage", PathsBody, (repo, { paths }) => Effect.as(g.unstage(repo, paths), ok)),
+  mutation("/discard", DiscardBody, (repo, { file }) => Effect.as(g.discard(repo, file), ok)),
+  mutation("/commit", CommitBody, (repo, { message, amend }) =>
+    !message.trim() && !amend
+      ? Effect.fail(g.gitError("Commit message is empty"))
+      : Effect.map(g.commit(repo, message, amend), (output) => ({ ok: true, output })),
   ),
-  mutation("/unstage", (repo) =>
-    Effect.as(
-      Effect.flatMap(body(PathsBody), (b) => g.unstage(repo, b.paths)),
-      ok,
-    ),
-  ),
-  mutation("/discard", (repo) =>
-    Effect.as(
-      Effect.flatMap(body(DiscardBody), (b) => g.discard(repo, b.file)),
-      ok,
-    ),
-  ),
-  mutation("/commit", (repo) =>
-    Effect.gen(function* () {
-      const { message, amend } = yield* body(CommitBody);
-      if (!message.trim() && !amend) return yield* g.gitError("Commit message is empty");
-      return { ok: true, output: yield* g.commit(repo, message, amend) };
-    }),
-  ),
-  repoRoute("GET", "/last-message", (repo) =>
+  repoRoute("GET", "/last-message", {}, (repo) =>
     Effect.map(g.lastCommitMessage(repo), (message) => ({ message })),
   ),
-  repoRoute("GET", "/log", (repo) =>
-    Effect.gen(function* () {
-      const limit = Math.min(Number((yield* searchParam("limit")) ?? 300) || 300, 5000);
-      const r = yield* searchParam("ref");
-      const commits = yield* g.log(repo, {
-        limit,
-        all: (yield* searchParam("all")) === "1",
-        ref: r ? yield* decode(Ref(), r) : undefined,
-      });
-      return { commits };
-    }),
+  repoRoute("GET", "/log", { query: LogQuery }, (repo, { query }) =>
+    Effect.map(
+      g.log(repo, { limit: query.limit, all: query.all, ref: query.ref || undefined }),
+      (commits) => ({ commits }),
+    ),
   ),
-  repoRoute("GET", "/commit/:hash", (repo) =>
+  repoRoute("GET", "/commit/:hash", {}, (repo) =>
     Effect.gen(function* () {
       const { hash } = yield* HttpRouter.params;
       return yield* g.showCommit(repo, yield* decode(Ref("hash"), hash));
     }),
   ),
-  repoRoute("GET", "/files", (repo) => workingFiles(repo)),
-  repoRoute("GET", "/file", (repo) =>
-    Effect.flatMap(
-      Effect.flatMap(searchParam("path"), (p) => decode(WorkingPath, p)),
-      (file) => workingFile(repo, file),
-    ),
+  repoRoute("GET", "/files", {}, (repo) => workingFiles(repo)),
+  repoRoute("GET", "/file", { query: FileQuery }, (repo, { query }) =>
+    workingFile(repo, query.path),
   ),
-  repoRoute("GET", "/branches", (repo) =>
+  repoRoute("GET", "/branches", {}, (repo) =>
     Effect.map(g.branches(repo), (branches) => ({ branches })),
   ),
-  mutation("/checkout", (repo) =>
-    Effect.as(
-      Effect.flatMap(body(CheckoutBody), (b) => g.checkout(repo, b.name, b.remote)),
-      ok,
-    ),
+  mutation("/checkout", CheckoutBody, (repo, { name, remote }) =>
+    Effect.as(g.checkout(repo, name, remote), ok),
   ),
-  mutation("/branch", (repo) =>
-    Effect.as(
-      Effect.flatMap(body(BranchBody), (b) =>
-        g.createBranch(repo, b.name, b.from || undefined, b.checkout),
-      ),
-      ok,
-    ),
+  mutation("/branch", BranchBody, (repo, b) =>
+    Effect.as(g.createBranch(repo, b.name, b.from || undefined, b.checkout), ok),
   ),
-  mutation("/branch/delete", (repo) =>
-    Effect.as(
-      Effect.flatMap(body(DeleteBranchBody), (b) => g.deleteBranch(repo, b.name, b.force)),
-      ok,
-    ),
+  mutation("/branch/delete", DeleteBranchBody, (repo, { name, force }) =>
+    Effect.as(g.deleteBranch(repo, name, force), ok),
   ),
   remote("fetch"),
   remote("pull"),
   remote("push"),
-  // Unknown API routes (and /api itself) get a JSON 404; under /api/repo, only once past the
-  // gate.
-  ...ANY_BUT_HEAD.map((method) => repoRoute(method, "/*", notFound)),
-  ...ANY_BUT_HEAD.map((method) => route(method, "/api/*", notFound)),
+  // Unknown API routes (and /api itself) get a JSON 404: the router falls back to these for
+  // paths under /api/repo too, an OPTIONS preflight on a POST route included (app-guard.test.ts).
+  ...ANY_BUT_HEAD.map((method) => route(method, "/api/*", {}, notFound)),
 ];
 
 /**
  * How the router matches paths: exactly as written, as they did under Hono, so `/API/config`,
  * `//api/config` and `/api/config/` match no route. (The access middleware refuses what the
- * router would still rewrite: percent escapes and `;`.)
+ * router would still rewrite, percent escapes and `;`, and other spellings that aren't the one
+ * way: `#`, `\` and `//`.)
  */
 export const ROUTER_CONFIG = {
   caseSensitive: true,
