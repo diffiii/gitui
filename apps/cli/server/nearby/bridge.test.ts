@@ -285,6 +285,34 @@ test("a cancel while the app is still answering cancels the body it answers with
   expect(channel.sent).toEqual([]);
 });
 
+test("a channel that dies as the response head goes out cancels the body", async () => {
+  const channel = new FakeChannel();
+  const send = channel.send.bind(channel);
+  channel.send = (data) => {
+    if (typeof data === "string" && (JSON.parse(data) as ChannelMessage).t === "res") {
+      channel.closed = true;
+    }
+    send(data);
+  };
+  let cancelled = false;
+  const bridge = new Bridge(
+    channel,
+    () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull: (controller) => controller.enqueue(new Uint8Array(CHUNK_SIZE)),
+          cancel: () => {
+            cancelled = true;
+          },
+        }),
+      ),
+  );
+  request(bridge, 1, "/forever");
+  await settle();
+  expect(cancelled).toBe(true);
+  expect(channel.sent).toEqual([]);
+});
+
 test("an error of the bridge's own while it answers aborts the request and frees its id", async () => {
   const channel = new FakeChannel();
   channel.drain = () => Promise.reject(new Error("drain broke"));
