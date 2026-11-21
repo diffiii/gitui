@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { CLIENT_HEADER, pairingFragment } from "@gitui/shared";
+import { CLIENT_HEADER, pairingFragment, REPO_NOT_OPENED } from "@gitui/shared";
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
-import { getConfig } from "./api.ts";
+import { getConfig, repoApi } from "./api.ts";
 import {
   afterRejection,
   ApiError,
@@ -421,6 +421,39 @@ describe("the connection store on the dev server", () => {
     stub("fetch", status401);
     expect(await failure(getConfig())).toMatchObject({ kind: "unauthorized" });
     expect(getConnection()).toEqual({ kind: "dev" });
+  });
+
+  test("a 403 with the not-opened code is a not-opened error", async () => {
+    stub("fetch", () =>
+      Promise.resolve(Response.json({ error: "nope", code: REPO_NOT_OPENED }, { status: 403 })),
+    );
+    expect(await failure(repoApi("/r").status())).toMatchObject({
+      kind: "not-opened",
+      message: "nope",
+    });
+  });
+
+  test("any other 403 is an http error", async () => {
+    stub("fetch", () => Promise.resolve(Response.json({ error: "no" }, { status: 403 })));
+    expect(await failure(repoApi("/r").status())).toMatchObject({ kind: "http", message: "no" });
+  });
+
+  test("a 500 with a body that isn't JSON is an http error with the status text", async () => {
+    stub("fetch", () =>
+      Promise.resolve(new Response("boom", { status: 500, statusText: "Internal Server Error" })),
+    );
+    expect(await failure(repoApi("/r").status())).toMatchObject({
+      kind: "http",
+      message: "Internal Server Error",
+    });
+  });
+
+  test("an aborted request rejects with the abort reason", async () => {
+    const controller = new AbortController();
+    const reason = new Error("gone");
+    controller.abort(reason);
+    stub("fetch", () => Promise.reject(new DOMException("aborted", "AbortError")));
+    expect(await failure(repoApi("/r").status({ signal: controller.signal }))).toBe(reason);
   });
 });
 
