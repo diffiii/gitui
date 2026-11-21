@@ -17,7 +17,7 @@ import {
   type GuestMessage,
   type HostMessage,
 } from "@gitui/shared";
-import { Cause, Effect, type Fiber } from "effect";
+import { Cause, Data, Effect, type Fiber } from "effect";
 import { NEARBY_HOST } from "../access.ts";
 
 /** What the bridge needs of a data channel. */
@@ -76,6 +76,9 @@ function toRequest(head: RequestHead, body: Uint8Array | undefined, signal: Abor
   init.set("host", NEARBY_HOST);
   return new Request(new URL(path, ORIGIN).href, { method, headers: init, body, signal });
 }
+
+/** The app's response, or a read of its body, failed; `cause` is what it threw. */
+class ResponseError extends Data.TaggedError("ResponseError")<{ cause: unknown }> {}
 
 /** Serves the requests of one authenticated channel with `fetch`. */
 export class Bridge {
@@ -154,7 +157,8 @@ export class Bridge {
         Effect.map(() => this.#forget(id, open)),
         Effect.catchCause((cause) => {
           if (Cause.hasInterruptsOnly(cause)) return Effect.void;
-          const error = Cause.squash(cause);
+          const squashed = Cause.squash(cause);
+          const error = squashed instanceof ResponseError ? squashed.cause : squashed;
           return Effect.sync(() =>
             this.#fail(id, error instanceof Error ? error.message : String(error)),
           );
@@ -171,7 +175,7 @@ export class Bridge {
     id: number,
     head: RequestHead,
     body: Uint8Array | undefined,
-  ): Effect.Effect<void, Error> {
+  ): Effect.Effect<void, ResponseError> {
     return Effect.gen({ self: this }, function* () {
       const response = yield* Effect.tryPromise({
         // The fiber's interruption aborts `signal`, and so the app's request.
@@ -184,7 +188,7 @@ export class Bridge {
           });
           return response;
         },
-        catch: (e) => e as Error,
+        catch: (cause) => new ResponseError({ cause }),
       });
       const res: HostMessage = {
         t: "res",
@@ -199,7 +203,7 @@ export class Bridge {
   }
 
   /** Sends `body` as frames of request `id`; interrupting it cancels the body. */
-  #stream(id: number, body: ReadableStream<Uint8Array>): Effect.Effect<void, Error> {
+  #stream(id: number, body: ReadableStream<Uint8Array>): Effect.Effect<void, ResponseError> {
     return Effect.acquireUseRelease(
       Effect.sync(() => body.getReader()),
       (reader) =>
@@ -207,7 +211,7 @@ export class Bridge {
           for (;;) {
             const { done, value } = yield* Effect.tryPromise({
               try: () => reader.read(),
-              catch: (e) => e as Error,
+              catch: (cause) => new ResponseError({ cause }),
             });
             if (done) return;
             for (const piece of chunks(value)) {

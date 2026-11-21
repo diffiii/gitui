@@ -1,7 +1,7 @@
 import { afterAll, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { Effect, Fiber } from "effect";
+import { Data, Effect, Fiber } from "effect";
 import * as g from "./git.ts";
 import { withRepoLock } from "./lock.ts";
 import {
@@ -145,6 +145,7 @@ test("concurrent stage requests are serialized per repo", async () => {
 });
 
 test("withRepoLock runs callers one at a time and releases after a failure", async () => {
+  class JobError extends Data.TaggedError("JobError")<{ name: string }> {}
   const events: string[] = [];
   const job = (name: string, fail = false) =>
     withRepoLock(
@@ -153,7 +154,7 @@ test("withRepoLock runs callers one at a time and releases after a failure", asy
         events.push(`start ${name}`);
         yield* Effect.sleep(5);
         events.push(`end ${name}`);
-        if (fail) return yield* Effect.fail(new Error(name));
+        if (fail) return yield* Effect.fail(new JobError({ name }));
         return name;
       }),
     );

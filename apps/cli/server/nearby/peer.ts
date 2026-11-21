@@ -18,7 +18,7 @@ import {
   type SentSignal,
 } from "@gitui/shared";
 import { hostFinish, hostRespond, resumeAnswer } from "@gitui/shared/nearby-pake";
-import { Cause, Deferred, Effect, Exit, type Fiber, Scope } from "effect";
+import { Cause, Data, Deferred, Effect, Exit, type Fiber, Scope } from "effect";
 import {
   fingerprints,
   Gatekeeper,
@@ -83,6 +83,9 @@ export interface GuestOptions {
 type Run = NonNullable<ReturnType<typeof hostRespond>>;
 
 type State = "answering" | "authenticating" | "open" | "closed";
+
+/** Answering an offer failed; `cause` is what the peer connection threw. */
+class AnswerError extends Data.TaggedError("AnswerError")<{ cause: unknown }> {}
 
 /** What the guest's proofs are checked against, once the answer is made. */
 interface Expected {
@@ -213,7 +216,7 @@ export class GuestSession {
     const { offerSdp, offerId, signal } = this.#options;
     return Effect.tryPromise({
       try: () => this.#peer.answer(offerSdp),
-      catch: (e) => e as Error,
+      catch: (cause) => new AnswerError({ cause }),
     }).pipe(
       Effect.map((answerSdp) => {
         const prints = fingerprints(offerSdp, answerSdp);
@@ -227,7 +230,9 @@ export class GuestSession {
         signal({ kind: "answer", offerId, sdp: answerSdp });
       }),
       Effect.catch((e) =>
-        Effect.sync(() => this.#refuseOffer(`Nearby: couldn't answer a device: ${e.message}`)),
+        Effect.sync(() =>
+          this.#refuseOffer(`Nearby: couldn't answer a device: ${(e.cause as Error).message}`),
+        ),
       ),
       Effect.ensuring(Effect.sync(() => void Deferred.doneUnsafe(this.#answered, Exit.void))),
     );
