@@ -68,6 +68,43 @@ export function tmpDir() {
   return d;
 }
 
+/**
+ * A shell command for git to run (an alias, a remote's upload-pack) that starts a process which
+ * writes its pid and then waits a minute without a word, and `pid()`, that pid once written.
+ * The process is this runtime running a script, not `sleep`: on Windows the shell git runs
+ * (MSYS) has pids of its own, and this one's is the system's. The paths are quoted, with
+ * forward slashes, so that shell reads them as written.
+ */
+export function sleeper() {
+  const dir = tmpDir();
+  const script = path.join(dir, "sleeper.mjs");
+  const pidFile = path.join(dir, "pid");
+  fs.writeFileSync(
+    script,
+    'import fs from "node:fs";\n' +
+      "fs.writeFileSync(process.argv[2], String(process.pid));\n" +
+      "setTimeout(() => {}, 60_000);\n",
+  );
+  const quote = (p: string) => `'${p.replaceAll("\\", "/")}'`;
+  return {
+    command: [process.execPath, script, pidFile].map(quote).join(" "),
+    pid: () => {
+      const text = fs.existsSync(pidFile) ? fs.readFileSync(pidFile, "utf8") : "";
+      return text ? Number(text) : null;
+    },
+  };
+}
+
+/** Whether a process with this pid still runs. */
+export const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 /** Runs git synchronously for test setup and returns stdout; throws on a non-zero exit. */
 export function git(cwd: string, ...args: string[]) {
   return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });

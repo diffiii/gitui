@@ -7,6 +7,7 @@ import { Effect, Exit, Scope } from "effect";
 import type { LoopbackListener } from "./access.ts";
 import { serverApp, start } from "./main.ts";
 import {
+  alive,
   client,
   commitFile,
   git,
@@ -14,6 +15,7 @@ import {
   removeTempDirs,
   repoWithOrigin,
   revParse,
+  sleeper,
   tmpDir,
   write,
 } from "./test-repo.ts";
@@ -72,16 +74,6 @@ async function until(done: () => boolean, ms = 5000) {
   for (const end = Date.now() + ms; Date.now() < end; await Bun.sleep(50)) if (done()) return true;
   return done();
 }
-
-/** Whether a process with this pid still runs. */
-const alive = (pid: number) => {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-};
 
 describe("on a real socket", () => {
   let port: number;
@@ -174,17 +166,12 @@ describe("on a real socket", () => {
 
   test("a fetch whose client goes away is stopped, git and all", async () => {
     const { repo } = repoWithOrigin();
-    const pidFile = path.join(tmpDir(), "pid");
-    const uploadPack = path.join(tmpDir(), "upload-pack");
-    fs.writeFileSync(uploadPack, `#!/bin/sh\necho $$ > '${pidFile}'\nexec sleep 30\n`, {
-      mode: 0o755,
-    });
-    git(repo, "config", "remote.origin.uploadpack", uploadPack);
+    // An upload-pack that never answers, so the fetch hangs.
+    const uploadPack = sleeper();
+    git(repo, "config", "remote.origin.uploadpack", uploadPack.command);
     const client = connect(postHead(repo, "/remote/fetch", 0));
-    expect(
-      await until(() => fs.existsSync(pidFile) && fs.readFileSync(pidFile, "utf8") !== ""),
-    ).toBe(true);
-    const pid = Number(fs.readFileSync(pidFile, "utf8"));
+    expect(await until(() => uploadPack.pid() !== null)).toBe(true);
+    const pid = uploadPack.pid()!;
     expect(alive(pid)).toBe(true);
     client.destroy();
     expect(await until(() => !alive(pid))).toBe(true);
