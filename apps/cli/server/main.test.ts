@@ -206,4 +206,48 @@ describe("on a real socket", () => {
     expect(await until(() => revParse(repo) !== head)).toBe(true);
     expect(git(repo, "log", "-1", "--format=%s").trim()).toBe("landed");
   });
+
+  test("a write still queued when its client goes away never runs", async () => {
+    const repo = initRepo();
+    commitFile(repo, "a.txt", "a\n");
+    const dir = tmpDir();
+    const marker = path.join(dir, "hook-ran");
+    const release = path.join(dir, "release");
+    fs.writeFileSync(
+      path.join(repo, ".git", "hooks", "pre-commit"),
+      `#!/bin/sh\ntouch '${marker}'\nwhile [ ! -e '${release}' ]; do sleep 0.05; done\n`,
+      { mode: 0o755 },
+    );
+    write(repo, "b.txt", "b\n");
+    git(repo, "add", "b.txt");
+    const commit = JSON.stringify({ message: "first" });
+    const holder = connect(postHead(repo, "/commit", Buffer.byteLength(commit)) + commit);
+    try {
+      // The hook runs, so the commit holds the repo's lock until the release file exists.
+      expect(await until(() => fs.existsSync(marker))).toBe(true);
+      const branch = JSON.stringify({ name: "dropped", checkout: false });
+      const queued = connect(postHead(repo, "/branch", Buffer.byteLength(branch)) + branch);
+      await Bun.sleep(500);
+      queued.destroy();
+      // Time for the server to see the client go, before the commit lets go of the lock.
+      await Bun.sleep(200);
+      fs.writeFileSync(release, "");
+      // The lock is first come, first served: had the dropped write run, it would run first.
+      const res = await fetch(
+        `http://127.0.0.1:${port}/api/repo/branch?repo=${encodeURIComponent(repo)}`,
+        {
+          method: "POST",
+          headers: { "x-gitui": "1", "content-type": "application/json" },
+          body: JSON.stringify({ name: "after", checkout: false }),
+          signal: AbortSignal.timeout(5000),
+        },
+      );
+      expect(res.status).toBe(200);
+      expect(git(repo, "branch", "--list", "dropped")).toBe("");
+      expect(git(repo, "log", "-1", "--format=%s").trim()).toBe("first");
+    } finally {
+      fs.writeFileSync(release, "");
+      holder.destroy();
+    }
+  });
 });

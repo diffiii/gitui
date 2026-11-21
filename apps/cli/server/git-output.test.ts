@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, spyOn, test } from "bun:test";
 import { execFileSync } from "node:child_process";
 import { parsePatchFiles } from "@pierre/diffs";
 import { untrackedDiff } from "./files.ts";
-import { git, GitError, showCommit } from "./git.ts";
+import { git, GitError, gitTimeoutMs, showCommit } from "./git.ts";
 import { git as sh, initRepo, removeTempDirs, revParse, write, run } from "./test-repo.ts";
 
 afterAll(removeTempDirs);
@@ -70,11 +70,19 @@ test("untrackedDiff: a single oversized hunk is cut to complete lines, and still
   expect(file.hunks[0].additionLines).toBe(kept);
 });
 
+test("GITUI_GIT_TIMEOUT is in seconds, 0 for none, and 10 minutes otherwise", () => {
+  expect(gitTimeoutMs("90")).toBe(90_000);
+  expect(gitTimeoutMs("0")).toBeUndefined();
+  for (const unset of [undefined, "", " ", "soon", "-1", "Infinity"]) {
+    expect(gitTimeoutMs(unset)).toBe(600_000);
+  }
+});
+
 test("git: timeoutMs kills the child and rejects", async () => {
   const started = Date.now();
   const err = await run(git(repo, ["hang"], { timeoutMs: 200 })).catch((e) => e);
   expect(err).toBeInstanceOf(GitError);
-  expect(err.message).toBe("git hang timed out after 0.2 s");
+  expect(err.message).toBe("git hang timed out after 0.2 s (GITUI_GIT_TIMEOUT)");
   expect(Date.now() - started).toBeLessThan(5000);
   // git forwards SIGTERM to the alias's child; `exec` makes sleep that child on every /bin/sh.
   const sleeperAlive = () =>
