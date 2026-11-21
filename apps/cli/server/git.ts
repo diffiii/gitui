@@ -1,6 +1,7 @@
 // Git, run through Effect's ChildProcessSpawner (NodeServices provides it): every function
 // here is an Effect that fails with a GitError when git does, or when the request makes no
 // sense. Failures to run git at all (no `git` on PATH) are defects.
+import { realpath } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { HeadInfo, FileStatus, Status, Commit, CommitDetail, Branch } from "@gitui/shared";
@@ -202,7 +203,17 @@ const exists = (p: string) =>
     Effect.orElseSucceed(() => false),
   );
 
-/** Resolves any path inside a repository to the repository's top-level directory. */
+/**
+ * `p` with symlinks resolved, or null if it doesn't exist. Every repository path gitui keeps or
+ * compares is in this form: fs.promises.realpath is the system's (fs.realpath.native), which on
+ * Windows also means long names (not `RUNNER~1`) and backslashes.
+ */
+export const realPath = (p: string) => Effect.promise(() => realpath(p).catch(() => null));
+
+/**
+ * Resolves any path inside a repository to the repository's top-level directory, in realPath's
+ * form.
+ */
 export const resolveRepo = Effect.fnUntraced(function* (input: string) {
   const fs = yield* FileSystem.FileSystem;
   const dir = path.resolve(expandHome(input));
@@ -210,10 +221,12 @@ export const resolveRepo = Effect.fnUntraced(function* (input: string) {
   if (info._tag === "None" || info.value.type !== "Directory") {
     return yield* gitError(`Not a directory: ${dir}`);
   }
-  const top = yield* git(dir, ["rev-parse", "--show-toplevel"]).pipe(
+  const top = (yield* git(dir, ["rev-parse", "--show-toplevel"]).pipe(
     Effect.mapError(() => gitError(`Not a git repository: ${dir}`)),
-  );
-  return top.trim();
+  )).trim();
+  // Git resolves the top level itself, but git for Windows prints it with forward slashes.
+  if (process.platform !== "win32") return top;
+  return (yield* realPath(top)) ?? path.normalize(top);
 });
 
 // ---------------------------------------------------------------- status

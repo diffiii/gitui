@@ -61,8 +61,9 @@ export async function removeTempDirs() {
 
 /** A fresh empty directory, deleted by `removeTempDirs()`. */
 export function tmpDir() {
-  // realpath: on macOS os.tmpdir() is behind a symlink, and git reports resolved paths.
-  const d = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "gitui-")));
+  // In the form gitui keeps repository paths in (realPath in git.ts): on macOS os.tmpdir() is
+  // behind a symlink, and on Windows it can hold a short name (RUNNER~1).
+  const d = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "gitui-")));
   dirs.push(d);
   return d;
 }

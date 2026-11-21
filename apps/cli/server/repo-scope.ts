@@ -8,11 +8,10 @@
 // repo-scope test checks that every route under /api/repo goes through it. A route that takes a
 // repository path anywhere else (a field of its body, say) must send it through
 // `repos.resolve` too, and test it with that field set: `repoRoute` only gates `?repo=`.
-import { realpath } from "node:fs/promises";
 import path from "node:path";
 import { Effect, Schema } from "effect";
 import { CONFIG_DIR, pushRecent, readRecent } from "./config.ts";
-import { expandHome, type GitError, type GitServices, resolveRepo } from "./git.ts";
+import { expandHome, type GitError, type GitServices, realPath, resolveRepo } from "./git.ts";
 
 /**
  * Which repositories a listener's clients may use: `any` path they name, or only those `opened`
@@ -47,9 +46,6 @@ export interface RepoGateOptions {
   configDir?: string;
 }
 
-/** `p` with symlinks resolved, or null if it doesn't exist. */
-const real = (p: string) => Effect.promise(() => realpath(p).catch(() => null));
-
 /** The gate for a listener's `scope`. */
 export function repoGate(scope: RepoScope, options: RepoGateOptions = {}): RepoGate {
   return scope === "any" ? anyRepo(options) : openedRepos(options);
@@ -73,17 +69,18 @@ function anyRepo({ configDir = CONFIG_DIR }: RepoGateOptions): RepoGate {
 function openedRepos({ initialRepo, configDir = CONFIG_DIR }: RepoGateOptions): RepoGate {
   const allowed = Effect.gen(function* () {
     const roots = [...(initialRepo ? [initialRepo] : []), ...(yield* readRecent(configDir))];
-    const resolved = yield* Effect.forEach(roots, real, { concurrency: "unbounded" });
+    const resolved = yield* Effect.forEach(roots, realPath, { concurrency: "unbounded" });
     return new Set(resolved.filter((r) => r !== null));
   });
   const resolve = Effect.fnUntraced(function* (input: string) {
-    const [roots, target] = yield* Effect.all([allowed, real(path.resolve(expandHome(input)))], {
-      concurrency: 2,
-    });
+    const [roots, target] = yield* Effect.all(
+      [allowed, realPath(path.resolve(expandHome(input)))],
+      { concurrency: 2 },
+    );
     const inside = (root: string) => target === root || target?.startsWith(root + path.sep);
     if (!target || ![...roots].some(inside)) return yield* new RepoNotOpenedError();
     const root = yield* resolveRepo(target);
-    if (!roots.has((yield* real(root)) ?? "")) return yield* new RepoNotOpenedError();
+    if (!roots.has((yield* realPath(root)) ?? "")) return yield* new RepoNotOpenedError();
     return root;
   });
   return { resolve, open: resolve };
