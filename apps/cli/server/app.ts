@@ -376,6 +376,8 @@ const remote = (action: "fetch" | "pull" | "push") =>
  */
 const ANY_BUT_HEAD = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"] as const;
 
+// The hosted page reads this JSON 404 as an outdated CLI (api.ts): answer 404 only for routes
+// that don't exist.
 const notFound = () => Effect.fail(new HttpError({ status: 404, error: "Not found" }));
 
 const ok = { ok: true };

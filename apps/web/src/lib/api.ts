@@ -43,7 +43,11 @@ async function request<T>(
     if (signal?.aborted) throw signal.reason;
     throw new ApiError("Can't reach gitui", "unreachable");
   });
-  const data = await res.json().catch(() => ({ error: res.statusText }));
+  let isJson = true;
+  const data = await res.json().catch(() => {
+    isJson = false;
+    return { error: res.statusText };
+  });
   if (res.status === 401) {
     rejectConnection(connection);
     throw new ApiError(data.error ?? res.statusText, "unauthorized");
@@ -51,12 +55,12 @@ async function request<T>(
   if (res.status === 403 && data.code === REPO_NOT_OPENED) {
     throw new ApiError(data.error, "not-opened");
   }
-  // Every route this page calls exists in the current CLI, and the CLI answers 404 only for
-  // routes it doesn't have: it is older than this page.
-  if (res.status === 404) {
+  // The API's catch-all answers unknown routes with a JSON 404 and nothing else does with JSON
+  // (the access checks' 404 for oddly spelled paths is plain text): the CLI is older than this page.
+  if (res.status === 404 && isJson) {
     throw new ApiError(
-      "This needs a newer gitui. Update it (npx @diffiii/gitui@latest) and restart it.",
-      "outdated",
+      "This needs a newer gitui: run the latest (npx @diffiii/gitui@latest) or update your install, then restart it.",
+      "http",
     );
   }
   if (!res.ok) throw new ApiError(data.error ?? res.statusText, "http");

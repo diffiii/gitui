@@ -82,7 +82,7 @@ export interface AppConfig {
   /** Recently opened repositories, newest first. */
   recent: string[];
   home: string;
-  /** The CLI's version (its package.json's); CLIs before 0.7.0 don't send it. */
+  /** The CLI's version (its package.json's); older CLIs don't send it. */
   version?: string;
 }
 

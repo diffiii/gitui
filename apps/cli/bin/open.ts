@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 
 /** The command that opens a URL in the default browser on this platform. */
-export const OPENER: readonly string[] =
+const OPENER: readonly [string, ...string[]] =
   process.platform === "darwin"
     ? ["open"]
     : process.platform === "win32"
@@ -17,10 +17,15 @@ export const OPENER: readonly string[] =
 export function openBrowser(
   url: string,
   onError: (error: Error) => void,
-  opener: readonly string[] = OPENER,
+  opener: readonly [string, ...string[]] = OPENER,
 ) {
-  const [cmd = "", ...args] = opener;
-  spawn(cmd, [...args, url], { stdio: "ignore", detached: true })
-    .on("error", onError)
-    .unref();
+  const [cmd, ...args] = opener;
+  try {
+    spawn(cmd, [...args, url], { stdio: "ignore", detached: true })
+      .on("error", onError)
+      .unref();
+  } catch (e) {
+    // Node throws some errnos (a bad argument, EAGAIN) synchronously instead.
+    onError(e instanceof Error ? e : new Error(String(e)));
+  }
 }

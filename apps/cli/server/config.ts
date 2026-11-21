@@ -2,8 +2,7 @@
 import { randomBytes } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import { Effect, FileSystem, Schema } from "effect";
-import { withRepoLock } from "./lock.ts";
+import { Effect, FileSystem, Schema, Semaphore } from "effect";
 
 export const CONFIG_DIR = path.join(
   process.env.XDG_CONFIG_HOME ?? path.join(os.homedir(), ".config"),
@@ -26,6 +25,9 @@ export const readRecent = (
     Effect.orElseSucceed((): string[] => []),
   );
 
+/** One recent-list update at a time in this process. */
+const recentLock = Semaphore.makeUnsafe(1);
+
 /**
  * Puts `repo` first in the recent list, which keeps the last 20. Updates in this process run
  * one at a time, and each replaces the file in one rename, so readers (the nearby repo gate
@@ -33,14 +35,13 @@ export const readRecent = (
  * other's update, the last one winning, but can't leave a broken file.
  */
 export const pushRecent = (repo: string, dir = CONFIG_DIR) =>
-  withRepoLock(
-    recentFile(dir),
+  recentLock.withPermits(1)(
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const file = recentFile(dir);
       const list = [repo, ...(yield* readRecent(dir)).filter((r) => r !== repo)].slice(0, 20);
       yield* fs.makeDirectory(dir, { recursive: true });
-      const tmp = `${file}.${randomBytes(6).toString("hex")}.tmp`;
+      const tmp = `${file}.${process.pid}.tmp`;
       yield* fs.writeFileString(tmp, JSON.stringify(list, null, 2)).pipe(
         Effect.andThen(fs.rename(tmp, file)),
         Effect.onError(() => Effect.ignore(fs.remove(tmp, { force: true }))),

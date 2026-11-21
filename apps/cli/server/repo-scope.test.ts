@@ -2,11 +2,12 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import fs from "node:fs";
 import path from "node:path";
-import { REPO_NOT_OPENED } from "@gitui/shared";
+import { type AppConfig, REPO_NOT_OPENED } from "@gitui/shared";
 import { type Listener, NEARBY_HOST } from "./access.ts";
 import { API_ROUTES, createApp } from "./app.ts";
 import { pushRecent, readRecent } from "./config.ts";
 import { client, commitFile, initRepo, removeTempDirs, run, tmpDir, write } from "./test-repo.ts";
+import { VERSION } from "./version.ts";
 
 afterAll(removeTempDirs);
 
@@ -78,9 +79,10 @@ for (const { listener, host, headers } of clients) {
     });
 
     test("config lists the recent repositories", async () => {
-      const config = (await (await send("/api/config")).json()) as Record<string, unknown>;
+      const config = (await (await send("/api/config")).json()) as AppConfig;
       expect(config.recent).toEqual([initial, recent]);
       expect(config.initialRepo).toBe(initial);
+      expect(config.version).toBe(VERSION);
     });
 
     test("a folder inside an opened repository, or a symlink to one, works", async () => {

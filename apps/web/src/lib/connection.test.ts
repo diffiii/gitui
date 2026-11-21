@@ -277,8 +277,16 @@ describe("the connection store in the hosted app", () => {
   test("a 404 says the CLI is too old for the page, and keeps the pairing", async () => {
     respond = () => Promise.resolve(Response.json({ error: "Not found" }, { status: 404 }));
     const error = await failure(getConfig());
-    expect(error).toMatchObject({ kind: "outdated" });
+    expect(error).toMatchObject({ kind: "http" });
     expect((error as Error).message).toContain("npx @diffiii/gitui@latest");
+    expect(getConnection()).toEqual(paired);
+  });
+
+  test("a plain-text 404 is an ordinary error, not an outdated CLI", async () => {
+    respond = () =>
+      Promise.resolve(new Response("Not found", { status: 404, statusText: "Not Found" }));
+    const error = await failure(getConfig());
+    expect(error).toMatchObject({ kind: "http", message: "Not Found" });
     expect(getConnection()).toEqual(paired);
   });
 

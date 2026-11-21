@@ -3,7 +3,6 @@ import { Effect, Fiber } from "effect";
 import { createApp, MAX_BODY_BYTES } from "./app.ts";
 import { withRepoLock } from "./lock.ts";
 import { client, commitFile, git, initRepo, removeTempDirs } from "./test-repo.ts";
-import { VERSION } from "./version.ts";
 
 afterAll(removeTempDirs);
 
@@ -29,11 +28,6 @@ test("GET without x-gitui header is rejected", async () => {
 test("GET with x-gitui header is allowed", async () => {
   const res = await req("/api/config", { host: "localhost", "x-gitui": "1" });
   expect(res.status).toBe(200);
-});
-
-test("config reports the CLI's version", async () => {
-  const res = await req("/api/config", { host: "localhost", "x-gitui": "1" });
-  expect(((await res.json()) as { version?: string }).version).toBe(VERSION);
 });
 
 test("GET with header but foreign host is rejected", async () => {
