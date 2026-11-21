@@ -1,41 +1,33 @@
 import { useQuery } from "@tanstack/react-query";
-import { LoaderCircle, RefreshCw } from "lucide-react";
-import { type ComponentType, lazy, Suspense, useState } from "react";
+import { LoaderCircle } from "lucide-react";
+import { Suspense, use, useState } from "react";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { getConfig } from "@/lib/api";
-import { PAGE_OUTDATED } from "@/lib/nearby/errors";
 import { notOpened } from "@/lib/notOpened";
 import { RepoProvider } from "@/lib/repo";
 import { useStatus } from "@/lib/status";
 import { openRepo, setView, useUrl } from "@/lib/url";
 import type { View } from "@/lib/views";
 import { AppHeader } from "./components/AppHeader";
-import { EmptyState } from "./components/EmptyState";
+import { PageOutdated } from "./components/PageOutdated";
 import { RepoWelcome } from "./components/RepoPicker";
-import { Button } from "./components/ui/button";
 import { ViewTabBar } from "./components/ViewTabs";
 
-// The views load on demand (RepoViews.tsx says why). A failed load means this page was
-// deployed over since it loaded, so the chunk is gone: only a reload helps.
-const RepoViews = lazy(() =>
-  import("./components/RepoViews").then(
-    (m): { default: ComponentType<{ view: View }> } => ({ default: m.RepoViews }),
-    (e: unknown) => {
-      console.error(e);
-      return { default: PageOutdated };
-    },
-  ),
-);
+type RepoViewsModule = typeof import("./components/RepoViews");
+let repoViews: Promise<RepoViewsModule | null> | undefined;
 
-function PageOutdated() {
-  return (
-    <EmptyState icon={RefreshCw} title={PAGE_OUTDATED}>
-      <Button size="sm" variant="outline" onClick={() => location.reload()}>
-        Reload
-      </Button>
-    </EmptyState>
-  );
+/**
+ * The repo's views (RepoViews.tsx says why they load on demand), loading them on the first call;
+ * the same promise on every call. Null if they can't load: this page was deployed over since it
+ * loaded, so the chunk is gone, and only a reload helps.
+ */
+function loadRepoViews(): Promise<RepoViewsModule | null> {
+  repoViews ??= import("./components/RepoViews").catch((e: unknown) => {
+    console.error(e);
+    return null;
+  });
+  return repoViews;
 }
 
 export default function App() {
@@ -43,6 +35,8 @@ export default function App() {
   const { data: config, isLoading } = useQuery({ queryKey: ["config"], queryFn: getConfig });
   // `gitui <path>` passes the repo to the server; use it while the URL has none.
   const repo = urlRepo ?? config?.initialRepo ?? null;
+  // The views' chunk loads alongside the repo's first status, not after it.
+  if (repo) void loadRepoViews();
 
   const onView = (v: View) => setView(repo, v);
 
@@ -55,11 +49,7 @@ export default function App() {
           <div className="flex h-svh flex-col bg-background pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)] md:pb-[env(safe-area-inset-bottom)]">
             <AppHeader view={view} onView={onView} onOpenRepo={openRepo} />
             <main className="min-h-0 flex-1">
-              <OpenedRepo repo={repo}>
-                <Suspense fallback={<Loading />}>
-                  <RepoViews view={view} />
-                </Suspense>
-              </OpenedRepo>
+              <OpenedRepo repo={repo} view={view} />
             </main>
             <ViewTabBar view={view} onView={onView} />
           </div>
@@ -82,11 +72,14 @@ export default function App() {
  * repo's first status, so such a repo doesn't flash their errors first; the status keeps polling,
  * so the views come up once the repo is opened on the computer.
  */
-function OpenedRepo({ repo, children }: { repo: string; children: React.ReactNode }) {
+function OpenedRepo({ repo, view }: { repo: string; view: View }) {
   const { data, error } = useStatus();
   // The verdict is kept until the next one (adjusting state while rendering, as React's docs
   // describe).
   const [kept, setKept] = useState(false);
+  // What the views wait on while the status loads: it never settles, and this renders them again
+  // once the status is in. Held here, so it goes with this repo's tree.
+  const [statusWait] = useState(() => new Promise<never>(() => {}));
   const verdict = notOpened(kept, { data, error });
   if (verdict !== kept) setKept(verdict);
   if (verdict) {
@@ -98,12 +91,29 @@ function OpenedRepo({ repo, children }: { repo: string; children: React.ReactNod
       />
     );
   }
-  if (data === undefined && !error) return <Loading />;
-  return children;
+  return (
+    <Suspense fallback={<Loading />}>
+      <Views view={view} statusWait={data === undefined && !error ? statusWait : null} />
+    </Suspense>
+  );
+}
+
+/**
+ * The views, once their chunk and the repo's first status are in. Both waits suspend, so one
+ * fallback shows throughout, whichever of them ends last.
+ */
+function Views({ view, statusWait }: { view: View; statusWait: Promise<never> | null }) {
+  const views = use(loadRepoViews());
+  if (statusWait) use(statusWait);
+  return views ? (
+    <views.RepoViews view={view} />
+  ) : (
+    <PageOutdated className="h-full justify-center p-8" />
+  );
 }
 
 function Loading() {
-  // It fades in late, so a quick first status (or views chunk) doesn't flash it.
+  // It fades in late, so a quick first status and chunk don't flash it.
   return (
     <div
       role="status"
