@@ -11,7 +11,10 @@ test("creates a private token once and reuses it", async () => {
   const dir = path.join(tmpDir(), "gitui");
   const token = await run(loadToken(dir));
   expect(token).toMatch(/^[\w-]{43}$/);
-  expect(statSync(path.join(dir, "token")).mode & 0o777).toBe(0o600);
+  // Windows has no POSIX file modes.
+  if (process.platform !== "win32") {
+    expect(statSync(path.join(dir, "token")).mode & 0o777).toBe(0o600);
+  }
   expect(await run(loadToken(dir))).toBe(token);
 });
 
