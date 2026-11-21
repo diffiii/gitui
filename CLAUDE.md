@@ -101,7 +101,7 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   and checks what it serves; CI and release run it), `vite.config.ts` (workspace
   fmt/lint/type check config, `defaultPackage` points `vp dev`/`vp build` at `apps/web`),
   `tsconfig.json` (project references to every package), `.github/workflows/ci.yml`
-  (a `check` job and a `test` job on Linux, macOS and Windows, the last not yet a gate; it also
+  (a `check` job and a `test` job on Linux, macOS and Windows; it also
   runs as `workflow_call`) and `.github/workflows/release.yml` (on `v*` tags: checks the tag
   against the version, runs ci.yml, whose Linux `test` leg packs the tested tarball, then a
   `publish` job with only that tarball publishes it to npm via trusted publishing).
