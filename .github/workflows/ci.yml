@@ -47,9 +47,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    # Windows is not yet a gate: it records how the tests, the build and the smoke test fare there
-    # (symlinks, file modes and process groups differ). Its failures show without failing the run.
-    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    # Windows is a gate like the others: the tests that are POSIX-only by nature (colons in file
+    # names, file modes, FIFOs) skip themselves there.
     steps:
       # Before checkout, so formatting- and patch-based tests see the same bytes on every OS.
       - run: git config --global core.autocrlf false
