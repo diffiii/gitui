@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { Suspense, use, useState, useSyncExternalStore } from "react";
 import { CenteredScreen } from "@/components/CenteredScreen";
+import { PageOutdated, ReloadButton } from "@/components/PageOutdated";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -28,7 +29,6 @@ import {
 } from "@/lib/connection";
 import { loadNearby, type Nearby } from "@/lib/nearby/lazy";
 import type { NearbySession } from "@/lib/nearby/session";
-import { PAGE_OUTDATED } from "@/lib/nearby/errors";
 import type { NearbyState } from "@/lib/nearby/state";
 
 /**
@@ -120,14 +120,6 @@ const Code = ({ children }: { children: React.ReactNode }) => (
   <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">{children}</code>
 );
 
-/** Reloads the page: all that helps once it is out of date. */
-const ReloadButton = (props: Pick<React.ComponentProps<typeof Button>, "size" | "variant">) => (
-  <Button {...props} onClick={() => location.reload()}>
-    <RotateCw />
-    Reload
-  </Button>
-);
-
 /** Forgets the nearby host, back to the list. */
 const ChooseAnotherButton = () => (
   <Button variant="ghost" size="lg" onClick={() => setNearbyHost(null)}>
@@ -169,14 +161,7 @@ function ConnectScreen({ notice }: { notice?: React.ReactNode }) {
 /** The computers nearby, once the nearby code has loaded (it suspends until then). */
 function NearbyHosts() {
   const nearby = use(loadNearby());
-  if (!nearby) {
-    return (
-      <div className="flex flex-col items-center gap-3 rounded-lg border p-4 text-center text-sm text-muted-foreground">
-        <p>{PAGE_OUTDATED}</p>
-        <ReloadButton variant="outline" />
-      </div>
-    );
-  }
+  if (!nearby) return <PageOutdated className="rounded-lg border p-4" />;
   return <NearbyHostList nearby={nearby} />;
 }
 

@@ -168,6 +168,7 @@ export function HistoryPane({
                   <CommitDetail
                     key={shown}
                     hash={shown}
+                    refs={commits.find((c) => c.hash === shown)?.refs}
                     onSelect={(hash) => select({ commit: hash })}
                   />
                 ),
@@ -271,12 +272,24 @@ const CHANGE_STATUS: Record<FileDiffMetadata["type"], GitStatusEntry["status"]> 
   "rename-changed": "renamed",
 };
 
-function CommitDetail({ hash, onSelect }: { hash: string; onSelect: (hash: string) => void }) {
+function CommitDetail({
+  hash,
+  refs,
+  onSelect,
+}: {
+  hash: string;
+  /** The commit's refs from the log, which is kept fresh, unlike the details. */
+  refs?: string[];
+  onSelect: (hash: string) => void;
+}) {
   const { repo, api } = useRepo();
   const { data, error } = useQuery({
     queryKey: [repo, "commit", hash],
     queryFn: (c) => api.showCommit(hash, c),
-    staleTime: Infinity,
+    // A commit's hash fixes its details, all but the refs. With the refs from the log, a
+    // mutation's (or a fetch's) refresh of the repo's queries leaves loaded details alone; a
+    // commit outside the loaded log (or `?commit=HEAD`) has none, so it is refreshed as before.
+    staleTime: refs !== undefined ? "static" : Infinity,
   });
   const patch = useParsedPatch(data?.patch ?? "");
   const { files } = patch;
@@ -307,7 +320,7 @@ function CommitDetail({ hash, onSelect }: { hash: string; onSelect: (hash: strin
       <div className="flex flex-col gap-4 p-4">
         <header className="flex flex-col gap-3">
           <div className="flex flex-wrap items-center gap-2">
-            <RefBadges refs={data.refs} className="shrink flex-wrap" />
+            <RefBadges refs={refs ?? data.refs} className="shrink flex-wrap" />
           </div>
           <h2 className="text-base leading-snug font-semibold [&_.truncate]:whitespace-normal">
             <CommitTitle title={data.subject} />

@@ -1,4 +1,3 @@
-import { useQuery } from "@tanstack/react-query";
 import {
   ArrowDown,
   ArrowUp,
@@ -29,7 +28,8 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import type { Branch } from "@/lib/api";
 import { relativeTime } from "@/lib/format";
-import { useGitMutation, useRepo } from "@/lib/repo";
+import { useBranches } from "@/lib/branches";
+import { useGitMutation } from "@/lib/repo";
 import { useUrl } from "@/lib/url";
 import { useListChoice } from "@/lib/listChoice";
 import { BELOW_LG } from "@/lib/media";
@@ -39,11 +39,6 @@ import { EmptyState } from "./EmptyState";
 import { FilterInput } from "./FilterInput";
 import { HistoryPane } from "./HistoryView";
 import { ListDetail } from "./ListDetail";
-
-export function useBranches() {
-  const { repo, api } = useRepo();
-  return useQuery({ queryKey: [repo, "branches"], queryFn: api.branches, refetchInterval: 10000 });
-}
 
 export function BranchesView() {
   const { data } = useBranches();

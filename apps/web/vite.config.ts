@@ -38,13 +38,20 @@ const devServerFlag = (): Plugin => ({
 });
 
 /**
- * Fails the build if the main chunk, or a chunk it imports statically, has Effect in it, or the
- * nearby codec that brings it: a page paired with gitui on this computer never uses them, so the
- * nearby code loads on demand (src/lib/nearby/lazy.ts), and a static import of it would quietly
- * undo that.
+ * Modules the main chunk (or a chunk it imports statically) must not have, since they load on
+ * demand: the nearby code and Effect, which its codec brings (src/lib/nearby/lazy.ts), and the
+ * repo views' diff, file-tree and resizable-panel libraries (src/components/RepoViews.tsx, which
+ * App.tsx loads). A page on the connect screen or the repository picker uses none of them, and a
+ * static import would quietly undo that.
  */
-const mainChunkWithoutEffect = (): Plugin => ({
-  name: "gitui-main-chunk-without-effect",
+const LAZY_ONLY = [
+  /[\\/]node_modules[\\/]effect[\\/]|[\\/]nearby-codec\.ts$/,
+  /[\\/]node_modules[\\/](?:@pierre[\\/](?:diffs|trees)|react-resizable-panels)[\\/]/,
+];
+
+/** Fails the build if the main chunk, or a chunk it imports statically, has a LAZY_ONLY module. */
+const mainChunkWithoutLazyCode = (): Plugin => ({
+  name: "gitui-main-chunk-without-lazy-code",
   apply: "build",
   generateBundle(_, bundle) {
     const entries = Object.values(bundle).filter((c) => c.type === "chunk" && c.isEntry);
@@ -52,10 +59,14 @@ const mainChunkWithoutEffect = (): Plugin => ({
     for (const fileName of seen) {
       const chunk = bundle[fileName];
       if (chunk?.type !== "chunk") continue;
-      const found = chunk.moduleIds.find((id) =>
-        /[\\/]node_modules[\\/]effect[\\/]|[\\/]nearby-codec\.ts$/.test(id),
-      );
-      if (found) this.error(`The main chunk must not include ${found}: import it lazily.`);
+      const found = chunk.moduleIds.find((id) => LAZY_ONLY.some((re) => re.test(id)));
+      if (found) {
+        this.error(
+          `The main chunk must not include ${found}: import it lazily. A shell module (App, ` +
+            `AppHeader, HeaderActions, BranchSwitcher, RepoPicker, ConnectionGate) likely imports ` +
+            `a view, DiffView or PathTree: put what they share in src/lib/ (as lib/branches.ts).`,
+        );
+      }
       for (const imported of chunk.imports) seen.add(imported);
     }
   },
@@ -74,6 +85,6 @@ export default defineConfig({
     tailwindcss(),
     hostedHeaders(),
     devServerFlag(),
-    mainChunkWithoutEffect(),
+    mainChunkWithoutLazyCode(),
   ]),
 });
