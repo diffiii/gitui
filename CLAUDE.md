@@ -24,11 +24,12 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
 
 - `apps/cli/` (`@diffiii/gitui`, published to npm): the `gitui` bin (`bin/gitui.ts`, an Effect
   program run with `NodeRuntime.runMain`) and the API in `server/`, on Effect. `app.ts` holds
-  the routes (Effect's `HttpRouter`; `createApp` returns its `layer`, and `fetch`, a web handler
-  for the nearby bridge and tests), `git.ts` runs the git CLI (Effect's `ChildProcessSpawner`,
+  the routes (Effect's `HttpRouter`, a table in `API_ROUTES`; `createApp` returns them as a
+  layer, and `toFetch` makes a layer a scoped web handler for the nearby bridge and tests),
+  `git.ts` runs the git CLI (Effect's `ChildProcessSpawner`,
   each git in a process group of its own) and parses its output, `main.ts` serves the app with
-  `NodeHttpServer` on 127.0.0.1, with only a plain-text pointer to the hosted app at `/`: the
-  CLI serves no UI. `bin/args.ts` parses the command line (pure), `dev.ts` is the dev API
+  `NodeHttpServer` on 127.0.0.1, with only a plain-text pointer to the hosted app at `/` (a
+  route of its own, outside the API's access checks): the CLI serves no UI. `bin/args.ts` parses the command line (pure), `dev.ts` is the dev API
   entry. `server/nearby/` is `--nearby`, the host
   side of `@gitui/shared`'s nearby protocol: `rendezvous.ts` (one `ws` socket, pinned to IPv4
   or IPv6, kept up by a fiber that pings and reconnects), `peer.ts` (one guest: answer,
@@ -100,18 +101,25 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   `nearby/auth.ts`) stays plain, and so do pure parsers.
 - Validate request bodies and parameters with the schemas in `apps/cli/server/app.ts`; ref-like
   inputs (branch names, hashes, refs) go through `Ref`, which rejects anything git could parse
-  as an option. Their `withMessage` messages (`@gitui/shared`) are the 400s' errors.
+  as an option. Their `withMessage` messages (`@gitui/shared`) are the 400s' errors. A body is
+  read only with `body()`, which wants `content-type: application/json` (415) and at most
+  `MAX_BODY_BYTES` (413).
 - `/api/*` access policy lives in `apps/cli/server/access.ts`, keyed by the `Listener`: the
   `x-gitui` header always. `loopback`: localhost `Host`; cross-origin callers only from
   `allowedOrigins`, with CORS headers and the pairing token (`loadToken` in `server/config.ts`)
   as a bearer token. `nearby`: requests from an authenticated data channel,
   through `nearby/bridge.ts`, which gives them the Host `NEARBY_HOST`. Don't add checks in
-  routes or `main.ts`.
+  routes or `main.ts`. The checks are router middleware on the API routes (not global, and not
+  a test on the URL), so the router's own match decides what they cover; `ROUTER_CONFIG` keeps
+  its matching exact, and the middleware refuses paths it would still rewrite (`%`, `;`).
+  Serve and `toFetch` with `ROUTER_CONFIG`; `app-guard.test.ts` probes odd spellings.
 - Each listener also has a `repoScope`: `loopback` is `any`; `nearby` (other devices) is
   `opened`, i.e. only the `initialRepo` and the recent list, compared as realpaths, read per
   request. Every repo path a request names goes through `repoGate` (`server/repo-scope.ts`): every
   route made with `repoRoute` in `app.ts` and `/open`, which only records repos in the recent
-  list for `any`. A refusal is a
+  list for `any`. A `repoRoute` POST runs in a fiber of the server's scope, so a client going
+  away doesn't stop git halfway (shutdown and git's timeouts still do); `lock: true` (every
+  `mutation`, and pull) runs it under the repo's lock. A refusal is a
   403 `{ error, code: REPO_NOT_OPENED }`. New routes that take a repo path must use the gate.
   Server tests pass `configDir` to `createApp` so they never touch the real recent list.
 - Frontend data goes through TanStack Query with keys that start with the repo:
@@ -129,7 +137,8 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
 - Tests: don't import `apps/web/src/lib/prefs.ts`, because it touches `window` at import time.
   Server tests build repos with the helpers in `apps/cli/server/test-repo.ts`, which isolate
   git from the global and system config, set the identity per repo and delete the temp dirs on
-  exit; its `promised(module)` runs a module's Effects as Promises with the Node services, and
+  exit; its `run(effect)` runs an Effect as a Promise with the Node services, `client(layer)`
+  (and `testApp()`) sends requests to an app until `removeTempDirs` disposes it, and
   `server/test-scope.ts`'s `startScoped` starts a scoped one (a rendezvous client, a nearby
   host) with a `stop`.
 
