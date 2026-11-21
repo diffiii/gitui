@@ -95,7 +95,8 @@ export const gitPatch = (
  * Like `git()`, but says whether stdout was cut at `maxBytes` rather than dropping it silently.
  * Git runs in a process group of its own, which is ended (SIGTERM, then SIGKILL after
  * FORCE_KILL_AFTER) when its output is cut, when it times out, or when the caller is
- * interrupted, so what git started for itself (ssh, remote helpers) ends with it.
+ * interrupted, so what git started for itself (ssh, remote helpers) ends with it. Windows has no
+ * process groups: there Effect ends git's process tree with `taskkill /T /F`.
  */
 export const run = (
   cwd: string,
