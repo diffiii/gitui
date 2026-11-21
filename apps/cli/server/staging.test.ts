@@ -246,7 +246,8 @@ test("clean treats the path literally", async () => {
   expect(await porcelain(dir)).toEqual(["?? src/a.txt", "?? src/b.txt"]);
 });
 
-test("a name starting with a colon is literal", async () => {
+// Windows file names can't hold a colon.
+test.skipIf(process.platform === "win32")("a name starting with a colon is literal", async () => {
   const dir = initRepo();
   commitFile(dir, "other", "1\n");
   write(dir, ":!keep", "1\n");
