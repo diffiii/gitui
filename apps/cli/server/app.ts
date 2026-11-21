@@ -6,7 +6,7 @@
 import os from "node:os";
 import path from "node:path";
 import { NodeServices } from "@effect/platform-node";
-import { issueMessage, REPO_NOT_OPENED, withMessage } from "@gitui/shared";
+import { REPO_NOT_OPENED } from "@gitui/shared";
 import { ByteSize, Cause, Data, Effect, Fiber, Layer, Schema, type Scope } from "effect";
 import {
   type FindMyWay,
@@ -22,6 +22,7 @@ import { untrackedDiff, workingFile, workingFiles } from "./files.ts";
 import * as g from "./git.ts";
 import { withRepoLock } from "./lock.ts";
 import { type RepoGate, type RepoNotOpenedError, repoGate } from "./repo-scope.ts";
+import { issueMessage, withMessage } from "./schema-messages.ts";
 
 export interface AppOptions extends AccessOptions {
   initialRepo?: string;

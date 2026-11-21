@@ -177,6 +177,11 @@ test("decoders say what is wrong", () => {
     decodeClientMessage('{"type":"hello","role":"host","name":"a\\nb","secret":"x"}'),
   ).toThrow(new NearbyCodecError("invalid name"));
   expect(() => decodeClientMessage("{")).toThrow(new NearbyCodecError("not JSON"));
+  expect(() => decodeClientMessage("{}")).toThrow(new NearbyCodecError("missing type"));
+  expect(() => decodeClientMessage('{"type":"bye"}')).toThrow(new NearbyCodecError("invalid type"));
+  expect(() =>
+    decodeClientMessage('{"type":"signal","to":"p1","data":{"kind":"answer","sdp":""}}'),
+  ).toThrow(new NearbyCodecError("missing data.offerId"));
 });
 
 test("parseServerMessage rebuilds every message a peer handles", () => {
@@ -326,7 +331,7 @@ test("decodeChannelMessage reads each side's messages only", () => {
   expect(guest({ t: "end", id: -1 })).toEqual({
     kind: "invalid",
     id: null,
-    reason: "no request id",
+    reason: "invalid id",
   });
   expect(host({ t: "auth-fail", attemptsLeft: AUTH_ATTEMPTS + 1 })).toMatchObject({
     kind: "invalid",
@@ -336,7 +341,7 @@ test("decodeChannelMessage reads each side's messages only", () => {
   const loose = `${"A".repeat(42)}B`;
   expect(guest({ t: "pake", y: loose })).toMatchObject({
     kind: "invalid",
-    reason: "invalid share",
+    reason: "invalid y",
   });
   expect(guest({ t: "pake-confirm", confirm: loose })).toMatchObject({ kind: "invalid" });
   expect(guest({ t: "resume", nonce: "n".repeat(22), proof: loose })).toMatchObject({
@@ -344,7 +349,7 @@ test("decodeChannelMessage reads each side's messages only", () => {
   });
   expect(host({ t: "pake", y: b43, confirm: loose })).toMatchObject({
     kind: "invalid",
-    reason: "invalid tag",
+    reason: "invalid confirm",
   });
   expect(host({ t: "pake", y: loose, confirm: b43 })).toMatchObject({ kind: "invalid" });
   expect(host({ t: "resume-ok", proof: loose })).toMatchObject({ kind: "invalid" });

@@ -1,7 +1,7 @@
-// Error messages for Effect Schemas that say exactly what is wrong, in our words: the nearby
-// codec and the CLI's API requests both decode with these. A schema built with `withMessage`
-// fails with its message for a wrong type, a failed check or a missing key; `issueMessage` reads
-// the message back from the issue. Effect's own formatter isn't used, so it stays out of bundles.
+// Error messages for Effect Schemas that say exactly what is wrong, in our words: the API's
+// request schemas (app.ts) decode with these, and their messages are the 400s' errors. A schema
+// built with `withMessage` fails with its message for a wrong type, a failed check or a missing
+// key; `issueMessage` reads the message back from the issue.
 import * as Schema from "effect/Schema";
 import type * as SchemaAST from "effect/SchemaAST";
 import type * as SchemaIssue from "effect/SchemaIssue";

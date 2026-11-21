@@ -363,11 +363,11 @@ test("garbage is dropped, or aborts the request it names", async () => {
     [head({ path: "api" }), "invalid path"],
     [head({ path: "//evil.example/api" }), "invalid path"],
     [head({ path: "http://evil.example/api" }), "invalid path"],
-    [head({ headers: [["a"]] }), "invalid headers"],
+    [head({ headers: [["a"]] }), "missing headers.0.1"],
     [head({ headers: { a: "b" } }), "invalid headers"],
-    [JSON.stringify({ t: "res", id: 9, status: 200, headers: [] }), 'unexpected message "res"'],
+    [JSON.stringify({ t: "res", id: 9, status: 200, headers: [] }), "invalid t"],
     // `abort` only goes from the host to the guest.
-    [JSON.stringify({ t: "abort", id: 9, message: "x" }), 'unexpected message "abort"'],
+    [JSON.stringify({ t: "abort", id: 9, message: "x" }), "invalid t"],
   ];
   for (const [data, reason] of refused) {
     channel.sent = [];

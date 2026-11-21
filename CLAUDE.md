@@ -81,9 +81,8 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   protocol: `nearby.ts` (the contract and its docs), `nearby-codec.ts` (every check on what
   crosses its wires, used by the Worker, the CLI and the web app alike: each message is an
   Effect Schema, decoding keeps only the contract's fields, so a new protocol field goes into
-  its schema there and its type in `nearby.ts`, which a type-level assertion keeps equal), `schema-messages.ts`
-  (`withMessage` and `issueMessage`: Schema errors in our own words, for the codec and the CLI's
-  request schemas) and `nearby-pake.ts` (CPace on
+  its schema there and its type in `nearby.ts`, which a type-level assertion keeps equal; its
+  errors only name the path and whether it was missing or invalid) and `nearby-pake.ts` (CPace on
   ristretto255 for the code and HMAC proofs both ways for resume tokens, pure and synchronous,
   with `@noble/curves` and `@noble/hashes`, which the CLI bundles). Its public functions are
   only in the `@gitui/shared/nearby-pake` entry (`pake.ts`), not in `@gitui/shared`, so the
@@ -106,8 +105,8 @@ Bun workspaces monorepo (`apps/*`, `packages/*`).
   `nearby/auth.ts`) stays plain, and so do pure parsers.
 - Validate request bodies and parameters with the schemas in `apps/cli/server/app.ts`; ref-like
   inputs (branch names, hashes, refs) go through `Ref`, which rejects anything git could parse
-  as an option. Their `withMessage` messages (`@gitui/shared`) are the 400s' errors. A body is
-  read only with `body()`, which wants `content-type: application/json` (415) and at most
+  as an option. Their `withMessage` messages (`server/schema-messages.ts`) are the 400s'
+  errors. A body is read only with `body()`, which wants `content-type: application/json` (415) and at most
   `MAX_BODY_BYTES` (413).
 - `/api/*` access policy lives in `apps/cli/server/access.ts`, keyed by the `Listener`: the
   `x-gitui` header always. `loopback`: localhost `Host`; cross-origin callers only from
