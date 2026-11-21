@@ -11,28 +11,56 @@ concurrency:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    name: check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v5
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.5
       - run: bun install --frozen-lockfile
       - name: Format, lint, type check
+        if: runner.os == 'Linux'
         run: bunx vp check
       - name: Type check (project references), with Effect's diagnostics
+        if: runner.os == 'Linux'
         run: bun run typecheck
       - name: Test
         run: bun test
       - name: Rendezvous end-to-end (wrangler dev)
+        if: runner.os == 'Linux'
         run: bun run --cwd apps/rendezvous e2e
       - name: Build the web app
+        if: runner.os == 'Linux'
         run: bun run --cwd apps/web build
       - name: Build the CLI
         run: bun run --cwd apps/cli build
+      - name: Smoke test the bundle under Bun
+        run: RUNTIME=bun scripts/smoke.sh
       # After the build: the tooling (vite-plus) needs a newer Node than the package's floor.
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           node-version: 22.15.0 # the engines floor of the published package (22.15 fixed strict Content-Length checks, which Effect's Node server turns on)
       - name: Smoke test the bundle under Node
         run: scripts/smoke.sh
+
+  windows:
+    # Not yet a gate: records how the tests and the CLI build fare on Windows (symlinks, file
+    # modes and process groups differ there). Its failures show on the run without failing it.
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.5
+      - run: bun install --frozen-lockfile
+      - name: Test
+        run: bun test
+      - name: Build the CLI
+        run: bun run --cwd apps/cli build
