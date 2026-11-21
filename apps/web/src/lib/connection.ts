@@ -1,8 +1,8 @@
 import { pairingFragment, parsePairing, type Pairing } from "@gitui/shared";
 import type { QueryClient } from "@tanstack/react-query";
 import { useSyncExternalStore } from "react";
-import { rendezvous } from "./nearby/rendezvous.ts";
-import { nearbySession, type NearbySession } from "./nearby/session.ts";
+import { loadedNearby, openNearbySession } from "./nearby/lazy.ts";
+import type { NearbySession } from "./nearby/session.ts";
 import { parseNearbyHost, type NearbyHost } from "./nearby/state.ts";
 import { withHeaders } from "./withHeaders.ts";
 
@@ -135,7 +135,7 @@ const NEARBY_KEY = "gitui-nearby-host";
 let connection: Connection = { kind: "unpaired" };
 const listeners = new Set<() => void>();
 /** Opens a session with a nearby host. */
-let openSession: (host: NearbyHost) => NearbySession = nearbySession;
+let openSession: (host: NearbyHost) => NearbySession = openNearbySession;
 
 function saved(key: string): string {
   try {
@@ -247,11 +247,14 @@ export function rejectConnection(used: Connection) {
  * drops everything fetched over a connection when it changes. Then the hosted app adopts pairing
  * links opened in this tab, and has a nearby session check its channel when the page is shown
  * again (iOS may have killed it meanwhile). `dev`: the page is on the dev server
- * (`__GITUI_DEV_SERVER__`, set by vite.config.ts). `open`: opens nearby sessions (tests pass another).
+ * (`__GITUI_DEV_SERVER__`, set by vite.config.ts). `open`: opens nearby sessions, loading the nearby code first (tests pass another).
  */
 export function initConnection(
   queryClient: QueryClient,
-  { dev = false, open = nearbySession }: { dev?: boolean; open?: typeof nearbySession } = {},
+  {
+    dev = false,
+    open = openNearbySession,
+  }: { dev?: boolean; open?: (host: NearbyHost) => NearbySession } = {},
 ) {
   openSession = open;
   update(initialConnection(dev, saved(KEY), saved(NEARBY_KEY)));
@@ -272,7 +275,8 @@ export function initConnection(
   const wake = () => {
     const current = getConnection();
     if (current.kind === "nearby") current.session.wake();
-    else rendezvous().wake();
+    // The connect screen's host list, if the nearby code has loaded.
+    else loadedNearby()?.rendezvous().wake();
   };
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible") wake();

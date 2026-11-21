@@ -5,16 +5,19 @@
 // others, gets a 413 instead. A guest's `cancel` stops a response. Requests interleave by id.
 // A response stops sending once the channel holds more than CHANNEL_HIGH_WATER queued bytes,
 // and resumes when it drains to CHANNEL_LOW_WATER, so a large diff never sits in memory twice.
-// Nothing here knows about WebRTC.
+// Each dispatched request is a fiber of the bridge's: a `cancel`, or the bridge closing, aborts
+// the app's request and interrupts the fiber, which cancels the response body; a failure in it
+// aborts the request too. Nothing here knows about WebRTC.
 import {
   CHANNEL_HIGH_WATER,
   CHANNEL_LOW_WATER,
   chunks,
-  decodeChannelMessage,
   frameChunk,
   type GuestMessage,
   type HostMessage,
 } from "@gitui/shared";
+import { decodeChannelMessage } from "@gitui/shared/nearby-codec";
+import { Cause, Effect, type Fiber } from "effect";
 import { NEARBY_HOST } from "../access.ts";
 
 /** What the bridge needs of a data channel. */
@@ -48,8 +51,10 @@ interface OpenRequest {
   /** The body received so far, until the request is dispatched; then null. */
   body: Uint8Array[] | null;
   size: number;
-  /** Aborted when the guest or the bridge gives up on the request. */
-  controller: AbortController;
+  /** Answers the request once it is dispatched; interrupted when the guest or bridge gives up. */
+  fiber: Fiber.Fiber<void> | null;
+  /** Aborts the app's request when the guest or bridge gives up. */
+  abort: AbortController;
 }
 
 function concat(parts: Uint8Array[], size: number) {
@@ -60,6 +65,18 @@ function concat(parts: Uint8Array[], size: number) {
     at += part.byteLength;
   }
   return body;
+}
+
+/** The app's request for `head` and `body`, which `signal` aborts; throws if they are no request. */
+function toRequest(head: RequestHead, body: Uint8Array | undefined, signal: AbortSignal) {
+  const { method, path, headers } = head;
+  if (body && (method === "GET" || method === "HEAD")) {
+    throw new Error(`a ${method} request can't have a body`);
+  }
+  const init = new Headers(headers);
+  // The access policy's proof that the request came through the bridge.
+  init.set("host", NEARBY_HOST);
+  return new Request(new URL(path, ORIGIN).href, { method, headers: init, body, signal });
 }
 
 /** Serves the requests of one authenticated channel with `fetch`. */
@@ -96,7 +113,13 @@ export class Bridge {
         const { id } = message;
         if (this.#open.has(id)) return this.#fail(id, "request id already in use");
         if (this.#open.size >= MAX_OPEN_REQUESTS) return this.#fail(id, "too many open requests");
-        this.#open.set(id, { head: message, body: [], size: 0, controller: new AbortController() });
+        this.#open.set(id, {
+          head: message,
+          body: [],
+          size: 0,
+          fiber: null,
+          abort: new AbortController(),
+        });
         return;
       }
       case "end": {
@@ -134,71 +157,73 @@ export class Bridge {
 
   #dispatch(id: number, open: OpenRequest, body: Uint8Array[]) {
     open.body = null;
-    const { method, path, headers } = open.head;
-    let request: Request;
-    try {
-      if (open.size && (method === "GET" || method === "HEAD")) {
-        throw new Error(`a ${method} request can't have a body`);
-      }
-      const init = new Headers(headers);
-      // The access policy's proof that the request came through the bridge.
-      init.set("host", NEARBY_HOST);
-      request = new Request(new URL(path, ORIGIN).href, {
-        method,
-        headers: init,
-        body: open.size ? concat(body, open.size) : undefined,
-        signal: open.controller.signal,
-      });
-    } catch (e) {
-      return this.#fail(id, (e as Error).message);
-    }
-    void this.#respond(id, open, request);
+    open.fiber = Effect.runFork(
+      this.#respond(id, open, open.size ? concat(body, open.size) : undefined).pipe(
+        Effect.map(() => this.#forget(id, open)),
+        Effect.catchCause((cause) => {
+          // Given up on (a cancel, or the bridge closing): the guest hears nothing more.
+          if (this.#open.get(id) !== open || Cause.hasInterruptsOnly(cause)) return Effect.void;
+          const error = Cause.squash(cause);
+          return Effect.sync(() =>
+            this.#fail(id, error instanceof Error ? error.message : String(error)),
+          );
+        }),
+      ),
+    );
   }
 
-  async #respond(id: number, open: OpenRequest, request: Request) {
-    const { signal } = open.controller;
-    try {
-      const response = await this.#fetch(request);
-      if (signal.aborted) {
-        await response.body?.cancel();
-        return;
-      }
-      const head: HostMessage = {
-        t: "res",
-        id,
-        status: response.status,
-        headers: [...response.headers],
-      };
-      this.#send(JSON.stringify(head));
-      if (response.body && !(await this.#stream(id, response.body, signal))) return;
-      this.#send(JSON.stringify({ t: "end", id } satisfies HostMessage));
-      this.#forget(id, open);
-    } catch (e) {
-      if (!signal.aborted) this.#fail(id, (e as Error).message);
-    }
+  /**
+   * Answers request `id` with the app's response to its head and `body`. Giving up on the
+   * request (`#cancel`) aborts the app's request; the response, once the app has made it,
+   * belongs to this, which cancels its body unless it was sent whole.
+   */
+  #respond(id: number, open: OpenRequest, body: Uint8Array | undefined): Effect.Effect<void> {
+    const { signal } = open.abort;
+    return Effect.acquireUseRelease(
+      // Not interruptible: a cancel aborts `signal` instead, and the app's answer to that, if
+      // it makes one, is still this one's to cancel.
+      Effect.promise(() =>
+        Promise.resolve(this.#fetch(toRequest(open.head, body, signal))).then((response) => ({
+          response,
+          reader: response.body?.getReader(),
+        })),
+      ),
+      ({ response, reader }) =>
+        Effect.gen({ self: this }, function* () {
+          const res: HostMessage = {
+            t: "res",
+            id,
+            status: response.status,
+            headers: [...response.headers],
+          };
+          this.#send(JSON.stringify(res));
+          if (reader) yield* this.#stream(id, reader);
+          this.#send(JSON.stringify({ t: "end", id } satisfies HostMessage));
+        }),
+      ({ reader }, exit) =>
+        exit._tag === "Success" || !reader
+          ? Effect.void
+          : Effect.promise(() => reader.cancel().catch(() => {})),
+    );
   }
 
-  /** Sends `body` as frames of request `id`; false if the request was aborted meanwhile. */
-  async #stream(id: number, body: ReadableStream<Uint8Array>, signal: AbortSignal) {
-    const reader = body.getReader();
-    const cancel = () => void reader.cancel().catch(() => {});
-    signal.addEventListener("abort", cancel);
-    try {
+  /** Sends what `reader` reads as frames of request `id`. */
+  #stream(
+    id: number,
+    reader: Pick<ReadableStreamDefaultReader<Uint8Array>, "read">,
+  ): Effect.Effect<void> {
+    return Effect.gen({ self: this }, function* () {
       for (;;) {
-        const { done, value } = await reader.read();
-        if (signal.aborted) return false;
-        if (done) return true;
+        const { done, value } = yield* Effect.promise(() => reader.read());
+        if (done) return;
         for (const piece of chunks(value)) {
           if (this.#channel.bufferedAmount > CHANNEL_HIGH_WATER) {
-            await this.#channel.drain(CHANNEL_LOW_WATER);
-            if (signal.aborted) return false;
+            yield* Effect.promise(() => this.#channel.drain(CHANNEL_LOW_WATER));
           }
           this.#send(frameChunk(id, piece));
         }
       }
-    } finally {
-      signal.removeEventListener("abort", cancel);
-    }
+    });
   }
 
   /** Sends on the channel; a channel that can't send any more ends every request. */
@@ -240,7 +265,8 @@ export class Bridge {
     const open = this.#open.get(id);
     if (!open) return;
     this.#forget(id, open);
-    open.controller.abort();
+    open.abort.abort();
+    open.fiber?.interruptUnsafe();
   }
 
   #forget(id: number, open: OpenRequest) {

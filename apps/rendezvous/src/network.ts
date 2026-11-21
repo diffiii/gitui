@@ -5,11 +5,11 @@ import {
   hostKey,
   type HostInfo,
   MAX_MESSAGE_LENGTH,
-  parseClientMessage,
   RATE_WINDOW,
   type SentServerMessage,
   type WireErrorCode,
 } from "@gitui/shared";
+import { parseClientMessage } from "@gitui/shared/nearby-codec";
 
 /** Most sockets one network may hold open. */
 export const MAX_SOCKETS = 50;

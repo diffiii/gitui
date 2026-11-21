@@ -2,6 +2,8 @@
 {
   "name": "gitui-rendezvous",
   "main": "src/index.ts",
+  // Smaller to load each time the object wakes; the Effect runtime the codec carries is most of it.
+  "minify": true,
   "compatibility_date": "2026-11-01",
   "routes": [{ "pattern": "rendezvous.gitui.diffiii.dev", "custom_domain": true }],
   "workers_dev": false,

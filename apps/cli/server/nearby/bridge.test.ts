@@ -9,6 +9,7 @@ import {
   parseChunk,
 } from "@gitui/shared";
 import { createApp } from "../app.ts";
+import { client } from "../test-repo.ts";
 import {
   Bridge,
   type BridgeChannel,
@@ -255,6 +256,81 @@ test("the guest's cancel stops a response and frees its id", async () => {
   bridge.close();
 });
 
+test("a cancel while the app is still answering cancels the body it answers with", async () => {
+  const channel = new FakeChannel();
+  let answer: (response: Response) => void = () => {};
+  let aborted = false;
+  let cancelled = false;
+  const bridge = new Bridge(channel, (req) => {
+    req.signal.addEventListener("abort", () => (aborted = true));
+    return new Promise<Response>((resolve) => (answer = resolve));
+  });
+  request(bridge, 1, "/slow");
+  await settle();
+  bridge.receive(JSON.stringify({ t: "cancel", id: 1 }));
+  expect(aborted).toBe(true);
+  // An app that answers anyway: nothing reads the body, so it is cancelled.
+  answer(
+    new Response(
+      new ReadableStream<Uint8Array>({
+        pull: (controller) => controller.enqueue(new Uint8Array(CHUNK_SIZE)),
+        cancel: () => {
+          cancelled = true;
+        },
+      }),
+    ),
+  );
+  await settle();
+  expect(cancelled).toBe(true);
+  expect(channel.sent).toEqual([]);
+});
+
+test("a channel that dies as the response head goes out cancels the body", async () => {
+  const channel = new FakeChannel();
+  const send = channel.send.bind(channel);
+  channel.send = (data) => {
+    if (typeof data === "string" && (JSON.parse(data) as ChannelMessage).t === "res") {
+      channel.closed = true;
+    }
+    send(data);
+  };
+  let cancelled = false;
+  const bridge = new Bridge(
+    channel,
+    () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          pull: (controller) => controller.enqueue(new Uint8Array(CHUNK_SIZE)),
+          cancel: () => {
+            cancelled = true;
+          },
+        }),
+      ),
+  );
+  request(bridge, 1, "/forever");
+  await settle();
+  expect(cancelled).toBe(true);
+  expect(channel.sent).toEqual([]);
+});
+
+test("an error of the bridge's own while it answers aborts the request and frees its id", async () => {
+  const channel = new FakeChannel();
+  channel.drain = () => Promise.reject(new Error("drain broke"));
+  const bridge = new Bridge(channel, echo);
+  request(bridge, 1, `/big/${2 * CHANNEL_HIGH_WATER}`);
+  await settle();
+  expect(replies(channel).get(1)!.aborted).toBe("drain broke");
+
+  // The id is free again.
+  channel.sent = [];
+  channel.flush();
+  request(bridge, 1, "/again");
+  await settle();
+  const again = replies(channel).get(1)!;
+  expect(again.head?.status).toBe(200);
+  expect(again.ended).toBe(true);
+});
+
 test("a cancel before the end drops the request unanswered", async () => {
   const channel = new FakeChannel();
   let calls = 0;
@@ -315,11 +391,11 @@ test("garbage is dropped, or aborts the request it names", async () => {
     [head({ path: "api" }), "invalid path"],
     [head({ path: "//evil.example/api" }), "invalid path"],
     [head({ path: "http://evil.example/api" }), "invalid path"],
-    [head({ headers: [["a"]] }), "invalid headers"],
+    [head({ headers: [["a"]] }), "missing headers.0.1"],
     [head({ headers: { a: "b" } }), "invalid headers"],
-    [JSON.stringify({ t: "res", id: 9, status: 200, headers: [] }), 'unexpected message "res"'],
+    [JSON.stringify({ t: "res", id: 9, status: 200, headers: [] }), "invalid t"],
     // `abort` only goes from the host to the guest.
-    [JSON.stringify({ t: "abort", id: 9, message: "x" }), 'unexpected message "abort"'],
+    [JSON.stringify({ t: "abort", id: 9, message: "x" }), "invalid t"],
   ];
   for (const [data, reason] of refused) {
     channel.sent = [];
@@ -420,7 +496,7 @@ test("authentication messages are dropped once the bridge has the channel", asyn
 });
 
 test("through the app, the nearby rules want x-gitui and no Origin; nothing else gets in", async () => {
-  const app = createApp({ listener: { kind: "nearby" } });
+  const app = client(createApp({ listener: { kind: "nearby" } }));
   const channel = new FakeChannel();
   const bridge = new Bridge(channel, app.fetch);
   request(bridge, 1, "/api/config", { headers: [["x-gitui", "1"]] });

@@ -6,10 +6,12 @@
   "sideEffects": false,
   "exports": {
     ".": "./src/index.ts",
+    "./nearby-codec": "./src/nearby-codec.ts",
     "./nearby-pake": "./src/pake.ts"
   },
   "dependencies": {
     "@noble/curves": "2.4.0",
-    "@noble/hashes": "2.4.0"
+    "@noble/hashes": "2.4.0",
+    "effect": "4.1.4"
   }
 }

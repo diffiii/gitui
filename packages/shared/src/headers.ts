@@ -1,5 +1,4 @@
-import { RENDEZVOUS_ORIGIN } from "./nearby.ts";
-import { rendezvousUrl } from "./nearby-codec.ts";
+import { RENDEZVOUS_ORIGIN, rendezvousUrl } from "./nearby.ts";
 
 /**
  * The hosted app's `_headers` file (Cloudflare's format: a path pattern, then its headers

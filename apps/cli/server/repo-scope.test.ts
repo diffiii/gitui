@@ -4,9 +4,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { REPO_NOT_OPENED } from "@gitui/shared";
 import { type Listener, NEARBY_HOST } from "./access.ts";
-import { createApp } from "./app.ts";
+import { API_ROUTES, createApp } from "./app.ts";
 import { pushRecent, readRecent } from "./config.ts";
-import { commitFile, initRepo, removeTempDirs, tmpDir, write } from "./test-repo.ts";
+import { client, commitFile, initRepo, removeTempDirs, run, tmpDir, write } from "./test-repo.ts";
 
 afterAll(removeTempDirs);
 
@@ -14,32 +14,18 @@ afterAll(removeTempDirs);
 const UNGATED = ["GET /api/config", "POST /api/open"];
 
 /** Values for route parameters, so each route's path matches it. */
-const PARAMS: Record<string, string> = { hash: "HEAD", action: "fetch" };
+const PARAMS: Record<string, string> = { hash: "HEAD" };
 
 /**
- * The app's middleware and its 404 fallback, which its router lists like routes: the access
- * policy and the fallback on /api/*, and the repo gate on /api/repo/*. Middleware added on any
- * other path shows up as an endpoint, and fails the gate test until it is listed here.
+ * Every API endpoint the app has, from its route table: "METHOD /path", with each parameter
+ * filled in. The 404 catch-alls (`/*`) answer no path of their own and are left out.
  */
-const MIDDLEWARE = ["ALL /api/*", "ALL /api/repo/*"];
-
-/**
- * Every API endpoint the app has, from its router: "METHOD /path". An `all()` route is sent a
- * POST, and a wildcard in a path matches "x".
- */
-const endpoints = (app: ReturnType<typeof createApp>) =>
-  app.routes
-    .filter((r) => !MIDDLEWARE.includes(`${r.method} ${r.path}`))
-    .map((r) => {
-      const method = r.method === "ALL" ? "POST" : r.method;
-      return {
-        name: `${r.method} ${r.path}`,
-        method,
-        path: r.path
-          .replace(/:(\w+)/g, (_, name: string) => PARAMS[name] ?? "x")
-          .replace(/\*$/, "x"),
-      };
-    });
+const endpoints = () =>
+  API_ROUTES.filter((r) => !r.path.endsWith("/*")).map((r) => ({
+    name: `${r.method} ${r.path}`,
+    method: r.method,
+    path: r.path.replace(/:(\w+)/g, (_, name: string) => PARAMS[name] ?? "x"),
+  }));
 
 /** A listener of each kind, and the headers its clients send. */
 const clients: { listener: Listener; host: string; headers: Record<string, string> }[] = [
@@ -63,13 +49,13 @@ beforeEach(async () => {
   configDir = tmpDir();
   [initial, recent, other] = [initRepo(), initRepo(), initRepo()];
   for (const repo of [initial, recent, other]) commitFile(repo, "a.txt", "a\n");
-  await pushRecent(recent, configDir);
-  await pushRecent(initial, configDir);
+  await run(pushRecent(recent, configDir));
+  await run(pushRecent(initial, configDir));
 });
 
 for (const { listener, host, headers } of clients) {
   const scoped = listener.kind !== "loopback";
-  const app = () => createApp({ listener, initialRepo: initial, configDir });
+  const app = () => client(createApp({ listener, initialRepo: initial, configDir }));
   const send = (url: string, init: { method?: string; body?: unknown } = {}) =>
     app().request(`http://${host}${url}`, {
       method: init.method ?? "GET",
@@ -110,7 +96,7 @@ for (const { listener, host, headers } of clients) {
 
     if (scoped) {
       test("every route that takes a repository goes through the gate", async () => {
-        const all = endpoints(app());
+        const all = endpoints();
         expect(all.length).toBeGreaterThan(UNGATED.length);
         for (const { name, method, path: route } of all) {
           if (!route.startsWith("/api/repo/")) {
@@ -131,17 +117,17 @@ for (const { listener, host, headers } of clients) {
         }
       });
 
-      test("the route list leaves out middleware only, so all() routes are checked too", () => {
-        const routes = app();
-        routes.all("/api/repo/extra", (c) => c.text("x"));
-        routes.all("/api/repo/more/*", (c) => c.text("x"));
-        const names = endpoints(routes).map((e) => e.name);
-        expect(names).toContain("ALL /api/repo/extra");
-        expect(names).toContain("ALL /api/repo/more/*");
-        expect(endpoints(app()).filter((e) => e.name.endsWith("*"))).toEqual([]);
-        expect(endpoints(routes).find((e) => e.name === "ALL /api/repo/more/*")?.path).toBe(
-          "/api/repo/more/x",
-        );
+      test("the route list has every route, and paths no route has are a plain 404", async () => {
+        const names = API_ROUTES.map((r) => `${r.method} ${r.path}`);
+        expect(names).toContain("GET /api/repo/status");
+        // Under /api/repo, the /api/* catch-all answers before any repository is looked at, so
+        // it says nothing about the one named.
+        expect(names).not.toContain("GET /api/repo/*");
+        for (const repo of [other, initial, tmpDir()]) {
+          const res = await send(`/api/repo/nope?repo=${encodeURIComponent(repo)}`);
+          expect(res.status).toBe(404);
+          expect(await res.json()).toEqual({ error: "Not found" });
+        }
       });
 
       test("another repository is refused, for reads and writes", async () => {
@@ -171,25 +157,25 @@ for (const { listener, host, headers } of clients) {
       });
 
       test("/open takes opened repositories only, and leaves the recent list alone", async () => {
-        const before = await readRecent(configDir);
+        const before = await run(readRecent(configDir));
         const res = await open(recent);
         expect(res.status).toBe(200);
         expect(await res.json()).toEqual({ root: recent, name: path.basename(recent) });
         await refused(await open(other));
         await refused(await open(tmpDir()));
-        expect(await readRecent(configDir)).toEqual(before);
+        expect(await run(readRecent(configDir))).toEqual(before);
       });
 
       test("a repository opened on the computer meanwhile works at once", async () => {
         await refused(await status(other));
-        await pushRecent(other, configDir);
+        await run(pushRecent(other, configDir));
         expect((await status(other)).status).toBe(200);
       });
     } else {
       test("any repository works, and /open adds it to the recent list", async () => {
         expect((await status(other)).status).toBe(200);
         expect((await open(other)).status).toBe(200);
-        expect(await readRecent(configDir)).toEqual([other, initial, recent]);
+        expect(await run(readRecent(configDir))).toEqual([other, initial, recent]);
       });
 
       test("a path that isn't a repository is a plain error", async () => {

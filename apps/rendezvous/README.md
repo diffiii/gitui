@@ -138,6 +138,12 @@ openssl rand -base64 32 | bunx wrangler secret put NETWORK_KEY_SECRET
 bun run deploy
 ```
 
+The Worker is about 37 KiB gzipped (`minify` is on in `wrangler.jsonc`; check with `bunx wrangler
+deploy --dry-run --outdir <dir>`). Most of it is the Effect
+runtime that the shared codec's `parseClientMessage` brings (`@gitui/shared/nearby-codec`), a
+cost accepted so the Worker checks messages with the same schemas as the CLI and the web app;
+without it the Worker was under 10 KiB. Either way it is far below the Workers size limit.
+
 Then, once, in the Cloudflare dashboard: a rate limiting rule that bounds reconnect floods from
 one address (each new socket starts a fresh budget of its own). The free plan has one rule;
 this is it.

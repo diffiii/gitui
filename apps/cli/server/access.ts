@@ -18,7 +18,8 @@
 // on this computer.
 import { timingSafeEqual } from "node:crypto";
 import { CLIENT_HEADER, isLoopbackHost } from "@gitui/shared";
-import type { Context, Env, Hono } from "hono";
+import { Effect } from "effect";
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { loadToken } from "./config.ts";
 import type { RepoScope } from "./repo-scope.ts";
 
@@ -43,11 +44,12 @@ export interface AccessOptions {
 }
 
 /** A loopback listener with the pairing token from the config dir. */
-export const loopbackListener = async (allowedOrigins: string[]): Promise<LoopbackListener> => ({
-  kind: "loopback",
-  allowedOrigins,
-  token: await loadToken(),
-});
+export const loopbackListener = (allowedOrigins: string[]) =>
+  Effect.map(loadToken(), (token): LoopbackListener => ({
+    kind: "loopback",
+    allowedOrigins,
+    token,
+  }));
 
 /** The Host of every request the nearby bridge makes; a reserved name, so no socket gets it. */
 export const NEARBY_HOST = "nearby.invalid";
@@ -64,11 +66,14 @@ export function safeEqual(actual: string, expected: string) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+/** A request's headers, by lowercase name. */
+type Headers = Readonly<Record<string, string | undefined>>;
+
 /** What a listener lets through; `authError` is why a request may not proceed, if it may not. */
 interface Rules {
   hostAllowed: (host: string) => boolean;
   allowedOrigins: string[];
-  authError: (c: Context, crossOrigin: boolean) => string | null;
+  authError: (headers: Headers, crossOrigin: boolean) => string | null;
   repoScope: RepoScope;
 }
 
@@ -80,8 +85,8 @@ function loopbackRules(listener: LoopbackListener): Rules {
   return {
     hostAllowed: (host) => isLoopbackHost(hostname(host)),
     allowedOrigins: listener.allowedOrigins,
-    authError: (c, crossOrigin) =>
-      !crossOrigin || safeEqual(c.req.header("authorization") ?? "", bearer)
+    authError: (headers, crossOrigin) =>
+      !crossOrigin || safeEqual(headers.authorization ?? "", bearer)
         ? null
         : "Missing or invalid pairing token",
     // This computer's own browsers, the hosted app paired over 127.0.0.1 included.
@@ -107,41 +112,65 @@ function rules(listener: Listener): Rules {
 }
 
 /**
- * Adds the access checks to `/api/*`. Returns the listener's repository scope, for its RepoGate
- * (repo-scope.ts).
+ * Whether `url`'s path is spelled the one way the router matches without rewriting it: the
+ * router decodes percent escapes and stops a path at `;`, so `/%61pi/config` or `/api/config;x`
+ * would reach a route under another name. `#`, `\` and `//` are refused too, as URL parsers
+ * (a Request's, a proxy's) read them otherwise, and so is a path not starting with `/`.
  */
-export function installAccess<E extends Env>(
-  app: Hono<E>,
-  { listener }: AccessOptions,
-): { repoScope: RepoScope } {
+const canonicalPath = (url: string) => {
+  const path = url.split("?", 1)[0]!;
+  return path.startsWith("/") && !/[%;#\\]|\/\//.test(path);
+};
+
+/**
+ * The access checks, as router middleware for the API routes, and the listener's repository
+ * scope, for its RepoGate (repo-scope.ts). The middleware runs on the routes it is provided to,
+ * whatever path the router matched them by; the server's other routes (main.ts) are left alone.
+ */
+export function access({ listener }: AccessOptions) {
   const { hostAllowed, allowedOrigins, authError, repoScope } = rules(listener);
 
-  app.use("/api/*", async (c, next) => {
-    const host = c.req.header("host") ?? "";
-    if (!hostAllowed(host)) return c.text("Forbidden host", 403);
+  const middleware = HttpRouter.middleware((route) =>
+    Effect.gen(function* () {
+      const req = yield* HttpServerRequest.HttpServerRequest;
+      if (!canonicalPath(req.url)) return HttpServerResponse.text("Not found", { status: 404 });
+      const headers: Headers = req.headers;
+      const host = headers.host ?? "";
+      if (!hostAllowed(host)) return HttpServerResponse.text("Forbidden host", { status: 403 });
 
-    const origin = c.req.header("origin");
-    const crossOrigin = origin !== undefined && origin !== `http://${host}`;
-    if (crossOrigin) {
-      if (!allowedOrigins.includes(origin)) return c.text("Forbidden origin", 403);
-      // Set before the handler runs, so every response carries them, errors from onError too.
-      c.header("Access-Control-Allow-Origin", origin);
-      c.header("Vary", "Origin");
-      if (c.req.method === "OPTIONS") {
-        c.header("Access-Control-Allow-Methods", "GET, POST");
-        c.header("Access-Control-Allow-Headers", `${CLIENT_HEADER}, content-type, authorization`);
-        // Older Chrome sends a private-network preflight before a public page calls localhost.
-        c.header("Access-Control-Allow-Private-Network", "true");
-        c.header("Access-Control-Max-Age", "600");
-        return c.body(null, 204);
+      const origin = headers.origin;
+      const crossOrigin = origin !== undefined && origin !== `http://${host}`;
+      // Every response to an allowed cross-origin page carries these, errors included.
+      let cors: Record<string, string> = {};
+      if (crossOrigin) {
+        if (!allowedOrigins.includes(origin)) {
+          return HttpServerResponse.text("Forbidden origin", { status: 403 });
+        }
+        cors = { "Access-Control-Allow-Origin": origin, Vary: "Origin" };
+        if (req.method === "OPTIONS") {
+          return HttpServerResponse.empty({
+            status: 204,
+            headers: {
+              ...cors,
+              "Access-Control-Allow-Methods": "GET, POST",
+              "Access-Control-Allow-Headers": `${CLIENT_HEADER}, content-type, authorization`,
+              // Older Chrome sends a private-network preflight before a public page calls
+              // localhost.
+              "Access-Control-Allow-Private-Network": "true",
+              "Access-Control-Max-Age": "600",
+            },
+          });
+        }
       }
-    }
+      const withCors = HttpServerResponse.setHeaders(cors);
 
-    if (c.req.header(CLIENT_HEADER) !== "1") return c.text("Forbidden", 403);
-    // A JSON 401 (with CORS headers) lets the page tell "not paired" from "CLI not running".
-    const error = authError(c, crossOrigin);
-    if (error) return c.json({ error }, 401);
-    await next();
-  });
-  return { repoScope };
+      if (headers[CLIENT_HEADER] !== "1")
+        return HttpServerResponse.text("Forbidden", { status: 403 });
+      // A JSON 401 (with CORS headers) lets the page tell "not paired" from "CLI not running".
+      const error = authError(headers, crossOrigin);
+      if (error) return withCors(HttpServerResponse.jsonUnsafe({ error }, { status: 401 }));
+      return withCors(yield* route);
+    }),
+  );
+  return { middleware, repoScope };
 }

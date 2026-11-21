@@ -20,8 +20,8 @@ jobs:
       - run: bun install --frozen-lockfile
       - name: Format, lint, type check
         run: bunx vp check
-      - name: Type check (project references)
-        run: bunx tsc -b
+      - name: Type check (project references), with Effect's diagnostics
+        run: bun run typecheck
       - name: Test
         run: bun test
       - name: Rendezvous end-to-end (wrangler dev)
@@ -33,6 +33,6 @@ jobs:
       # After the build: the tooling (vite-plus) needs a newer Node than the package's floor.
       - uses: actions/setup-node@v5
         with:
-          node-version: 22.1.0 # the engines floor of the published package
+          node-version: 22.15.0 # the engines floor of the published package (22.15 fixed strict Content-Length checks, which Effect's Node server turns on)
       - name: Smoke test the bundle under Node
         run: scripts/smoke.sh

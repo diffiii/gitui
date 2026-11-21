@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { parsePatchFiles } from "@pierre/diffs";
 import { untrackedDiff } from "./files.ts";
 import { git, GitError, showCommit } from "./git.ts";
-import { git as sh, initRepo, removeTempDirs, revParse, write } from "./test-repo.ts";
+import { git as sh, initRepo, removeTempDirs, revParse, write, run } from "./test-repo.ts";
 
 afterAll(removeTempDirs);
 
@@ -30,14 +30,14 @@ beforeAll(() => {
 });
 
 test("showCommit: small patch is not truncated", async () => {
-  const c = await showCommit(repo, head);
+  const c = await run(showCommit(repo, head));
   expect(c.truncated).toBe(false);
   expect(parseStrict(c.patch)).toHaveLength(6);
 });
 
 test("showCommit: over the cap, trims back to the last complete file", async () => {
-  const full = (await showCommit(repo, head)).patch;
-  const c = await showCommit(repo, head, { maxBytes: 5000 });
+  const full = (await run(showCommit(repo, head))).patch;
+  const c = await run(showCommit(repo, head, { maxBytes: 5000 }));
   expect(c.truncated).toBe(true);
   expect(c.patch.length).toBeGreaterThan(0);
   expect(c.patch.length).toBeLessThanOrEqual(5000);
@@ -50,13 +50,13 @@ test("showCommit: over the cap, trims back to the last complete file", async () 
 });
 
 test("untrackedDiff: small diff is not truncated", async () => {
-  const d = await untrackedDiff(repo, "big.txt");
+  const d = await run(untrackedDiff(repo, "big.txt"));
   expect(d.truncated).toBe(false);
   expect(parseStrict(d.diff)[0].hunks[0].additionLines).toBe(2000);
 });
 
 test("untrackedDiff: a single oversized hunk is cut to complete lines, and still renders", async () => {
-  const d = await untrackedDiff(repo, "big.txt", { maxBytes: 4000 });
+  const d = await run(untrackedDiff(repo, "big.txt", { maxBytes: 4000 }));
   expect(d.truncated).toBe(true);
   expect(d.diff).toMatch(/\+big line \d+\n$/);
   const kept = d.diff.split("\n").filter((l) => l.startsWith("+big line")).length;
@@ -72,7 +72,7 @@ test("untrackedDiff: a single oversized hunk is cut to complete lines, and still
 
 test("git: timeoutMs kills the child and rejects", async () => {
   const started = Date.now();
-  const err = await git(repo, ["hang"], { timeoutMs: 200 }).catch((e) => e);
+  const err = await run(git(repo, ["hang"], { timeoutMs: 200 })).catch((e) => e);
   expect(err).toBeInstanceOf(GitError);
   expect(err.message).toBe("git hang timed out after 0.2 s");
   expect(Date.now() - started).toBeLessThan(5000);

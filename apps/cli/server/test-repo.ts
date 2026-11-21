@@ -8,22 +8,51 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { createApp } from "./app.ts";
+import { NodeServices } from "@effect/platform-node";
+import { Effect, Exit, type Layer, Scope } from "effect";
+import type { HttpRouter } from "effect/http";
+import { createApp, toFetch } from "./app.ts";
 
 process.env.GIT_CONFIG_GLOBAL = os.devNull;
 process.env.GIT_CONFIG_NOSYSTEM = "1";
 
+/** Every test client's scope, closed by `removeTempDirs`. */
+const clientScopes: Scope.Closeable[] = [];
+
+/**
+ * `layer`'s routes as a web handler (`toFetch`), and `request` for a URL or a path (on
+ * http://localhost), as tests send requests. `removeTempDirs` disposes it.
+ */
+export function client<E>(layer: Layer.Layer<never, E, HttpRouter.HttpRouter>) {
+  const scope = Effect.runSync(Scope.make());
+  clientScopes.push(scope);
+  const fetch = Effect.runSync(Scope.provide(scope)(toFetch(layer)));
+  return {
+    fetch,
+    request: (input: string, init?: RequestInit) =>
+      fetch(new Request(new URL(input, "http://localhost").href, init)),
+  };
+}
+
 /** The app as served locally, with no cross-origin callers, and a recent list of its own. */
 export const testApp = () =>
-  createApp({
-    listener: { kind: "loopback", allowedOrigins: [], token: "unused" },
-    configDir: tmpDir(),
-  });
+  client(
+    createApp({
+      listener: { kind: "loopback", allowedOrigins: [], token: "unused" },
+      configDir: tmpDir(),
+    }),
+  );
+
+/** Runs a server Effect with the Node services the server runs with. */
+export const run = <A, E>(effect: Effect.Effect<A, E, NodeServices.NodeServices>): Promise<A> =>
+  Effect.runPromise(Effect.provide(effect, NodeServices.layer));
 
 const dirs: string[] = [];
 
-/** Deletes every directory `tmpDir()` has created so far. */
-export function removeTempDirs() {
+/** Disposes every test client, then deletes every directory `tmpDir()` has created so far. */
+export async function removeTempDirs() {
+  for (const scope of clientScopes.splice(0))
+    await Effect.runPromise(Scope.close(scope, Exit.void));
   for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
 }
 

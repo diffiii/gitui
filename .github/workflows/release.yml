@@ -26,13 +26,13 @@ jobs:
           bun-version: 1.4.5
       - run: bun install --frozen-lockfile
       - run: bunx vp check
-      - run: bunx tsc -b
+      - run: bun run typecheck
       - run: bun test
       - run: bun run --cwd apps/cli build
       # After the build: the tooling (vite-plus) needs a newer Node than the package's floor.
       - uses: actions/setup-node@v5
         with:
-          node-version: 22.1.0 # the engines floor of the published package
+          node-version: 22.15.0 # the engines floor of the published package (22.15 fixed strict Content-Length checks, which Effect's Node server turns on)
       - run: scripts/smoke.sh
       # npm refuses to run inside the repo (the root devEngines names bun), so pack with bun and
       # publish the tarball from outside it. Trusted publishing adds provenance on its own.

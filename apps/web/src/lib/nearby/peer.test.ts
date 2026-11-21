@@ -1,6 +1,7 @@
 import type { HostInfo, SignalData } from "@gitui/shared";
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { connectToHost, PageOutdatedError, RefusedError, refusalMessage } from "./peer.ts";
+import { PageOutdatedError } from "./errors.ts";
+import { connectToHost, RefusedError, refusalMessage } from "./peer.ts";
 import type { Rendezvous, SignalHandlers } from "./rendezvous.ts";
 
 // Loaded up front, so an offer waits on a resolved promise rather than a real import.

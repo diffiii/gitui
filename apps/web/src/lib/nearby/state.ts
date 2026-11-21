@@ -1,7 +1,8 @@
 import { HOST_KEY, hostName, type HostInfo } from "@gitui/shared";
+import { PAGE_OUTDATED } from "./errors.ts";
 
 // The pure parts of the nearby connection: the saved host, the session's states, and the list
-// of hosts.
+// of hosts. The app loads this up front, so it must not import the codec (lazy.ts).
 
 /** The host the app is connected to, as saved: its per-run key and display name. */
 export interface NearbyHost {
@@ -38,13 +39,21 @@ export type NearbyState =
   | { kind: "gone" }
   | { kind: "off" };
 
+/** Failed because the page is out of date (PageOutdatedError): only a reload helps. */
+export const OUTDATED: NearbyState = {
+  kind: "failed",
+  reason: PAGE_OUTDATED,
+  retryOnWake: false,
+  reload: true,
+};
+
 /** `value` as a saved NearbyHost, or null if it isn't one. */
 export function parseNearbyHost(value: unknown): NearbyHost | null {
   if (typeof value !== "object" || value === null) return null;
   const { key, name } = value as Record<string, unknown>;
   if (typeof key !== "string" || !HOST_KEY.test(key)) return null;
-  const valid = hostName(name);
-  return valid === null ? null : { key, name: valid };
+  const trimmed = hostName(name);
+  return trimmed === null ? null : { key, name: trimmed };
 }
 
 /**

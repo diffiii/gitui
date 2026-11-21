@@ -20,6 +20,7 @@ import { RTCPeerConnection } from "werift";
 import { type FakeSocket, fakeSockets } from "./fake-socket.ts";
 import { lockoutLine, PAIRING_WINDOW } from "./auth.ts";
 import { fakePeers, sdpWithPrint } from "./fake-peer.ts";
+import { startScoped } from "../test-scope.ts";
 import { familiesFor, type NearbyOptions, startNearby } from "./host.ts";
 
 const until = async (condition: () => boolean, ms = 5000) => {
@@ -37,16 +38,18 @@ const URL = "wss://rendezvous.example/v1/connect";
 function host(options: Partial<NearbyOptions> = {}) {
   const fake = fakeSockets();
   const log: string[] = [];
-  const nearby = startNearby({
-    url: URL,
-    name: "Desk",
-    fetch: () => new Response("hi"),
-    log: (line) => log.push(line),
-    open: fake.open,
-    backoff: { first: 10, max: 20 },
-    statusDelay: 1000,
-    ...options,
-  });
+  const nearby = startScoped(
+    startNearby({
+      url: URL,
+      name: "Desk",
+      fetch: () => new Response("hi"),
+      log: (line) => log.push(line),
+      open: fake.open,
+      backoff: { first: 10, max: 20 },
+      statusDelay: 1000,
+      ...options,
+    }),
+  );
   cleanup.push(() => nearby.stop());
   return { nearby, log, ...fake };
 }
@@ -374,7 +377,7 @@ test("the werift guard is on while nearby runs", async () => {
   const before = process.listenerCount("unhandledRejection");
   const { nearby } = host();
   expect(process.listenerCount("unhandledRejection")).toBe(before + 1);
-  nearby.stop();
+  await nearby.stop();
   expect(process.listenerCount("unhandledRejection")).toBe(before);
 });
 
@@ -430,7 +433,7 @@ test("stop closes every session and the guard, even if a teardown throws", async
   offerOn(v4, "a");
   offerOn(v4, "b");
   await until(() => signals(v4, "b").length > 0);
-  nearby.stop();
+  await nearby.stop();
   expect(fake.peers.map((peer) => peer.closed)).toEqual([true, true]);
   expect(log).toContain(TEARDOWN_LINE);
   expect(process.listenerCount("unhandledRejection")).toBe(before);

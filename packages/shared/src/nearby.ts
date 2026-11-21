@@ -69,6 +69,62 @@ export const RENDEZVOUS_PING = '{"type":"ping"}';
 export const RENDEZVOUS_PONG = '{"type":"pong"}';
 /** Longest host display name, in code points, after trimming (hostName). */
 export const MAX_NAME_LENGTH = 63;
+
+/**
+ * Control characters, line and paragraph separators, and the bidi controls that could make a
+ * name display as another, or a remote string drive or garble a terminal.
+ */
+export const UNSAFE_CHAR = /[\p{Cc}\p{Zl}\p{Zp}\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/u;
+export const UNSAFE_CHARS = new RegExp(UNSAFE_CHAR.source, "gu");
+
+/**
+ * A host's display name, trimmed, if it is 1 to MAX_NAME_LENGTH code points long and has no
+ * UNSAFE_CHAR; else null. The codec, the Worker, `--name` and saved hosts all check with this.
+ */
+export function hostName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const name = value.trim();
+  const length = Array.from(name).length; // code points
+  return length >= 1 && length <= MAX_NAME_LENGTH && !UNSAFE_CHAR.test(name) ? name : null;
+}
+
+/**
+ * `text` made into a valid hostName if it can be: the unsafe characters dropped and the rest cut
+ * to MAX_NAME_LENGTH code points. Null if nothing is left.
+ */
+export function toHostName(text: string): string | null {
+  const kept = Array.from(text.replace(UNSAFE_CHARS, "").trim()).slice(0, MAX_NAME_LENGTH);
+  return hostName(kept.join(""));
+}
+
+/** The longest text `printable` returns, in code points. */
+export const MAX_PRINTABLE_LENGTH = 500;
+
+/**
+ * `text` safe to print where it may quote others (a terminal, a log): without the characters
+ * that hostName refuses, and cut to `max` code points, ending in "…" if it was cut.
+ */
+export function printable(text: string, max = MAX_PRINTABLE_LENGTH): string {
+  const kept = Array.from(text.replace(UNSAFE_CHARS, ""));
+  return kept.length > max ? `${kept.slice(0, max - 1).join("")}…` : kept.join("");
+}
+
+/**
+ * The rendezvous WebSocket URL for `origin`, a ws: or wss: origin (no path, no trailing slash),
+ * or null if it isn't one. The CLI (GITUI_RENDEZVOUS_URL), the web app and its CSP
+ * (VITE_GITUI_RENDEZVOUS_URL) all check the origin with this.
+ */
+export function rendezvousUrl(origin: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(origin);
+  } catch {
+    return null;
+  }
+  const valid = (url.protocol === "ws:" || url.protocol === "wss:") && origin === url.origin;
+  return valid ? url.origin + RENDEZVOUS_PATH : null;
+}
+
 export const DATA_CHANNEL_LABEL = "gitui";
 export const STUN_URLS = ["stun:stun.cloudflare.com:3478"];
 /** Payload bytes per binary frame; safe for SCTP messages in every browser. */
@@ -176,7 +232,7 @@ export interface IceCandidate {
  */
 type Signal<Reason extends string> =
   /** `resume`: the guest will open with `resume`, so the host needn't print a code (step 3). */
-  | { kind: "offer"; offerId: string; sdp: string; resume?: boolean }
+  | { kind: "offer"; offerId: string; sdp: string; resume?: true }
   | { kind: "answer"; offerId: string; sdp: string }
   | { kind: "candidate"; offerId: string; candidate: IceCandidate }
   /** Host to guest: it won't answer this offer, and why. */
@@ -358,4 +414,22 @@ export function* chunks(body: Uint8Array): Generator<Uint8Array> {
   for (let at = 0; at < body.byteLength; at += CHUNK_SIZE) {
     yield body.subarray(at, at + CHUNK_SIZE);
   }
+}
+
+// ── SDP ────────────────────────────────────────────────────────────────────────────────────
+
+const FINGERPRINT = /^a=fingerprint:sha-256 ((?:[0-9a-f]{2}:){31}[0-9a-f]{2})$/i;
+
+/**
+ * The DTLS fingerprint of an SDP, as "sha-256 ab:cd:…" (lowercase), or null unless it has
+ * exactly one fingerprint line and that one is a well-formed SHA-256. WebRTC stacks accept a
+ * certificate that matches any listed fingerprint (werift does), so with two lines the one read
+ * here could be the one not used. Lines are split on every kind of line break, and any line
+ * that mentions "fingerprint" counts, so no SDP parser finds one that this misses.
+ */
+export function sdpFingerprint(sdp: string): Fingerprint | null {
+  const lines = sdp.split(/\r\n|\r|\n/).filter((line) => /fingerprint/i.test(line));
+  if (lines.length !== 1) return null;
+  const match = FINGERPRINT.exec(lines[0]!.trim());
+  return match ? (`sha-256 ${match[1]!.toLowerCase()}` as Fingerprint) : null;
 }

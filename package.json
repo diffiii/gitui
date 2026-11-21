@@ -12,10 +12,12 @@
     "build": "tsc -b && bun run --cwd apps/web build && bun run --cwd apps/cli build",
     "start": "bun apps/cli/bin/gitui.ts",
     "check": "vp check",
+    "typecheck": "effect-tsgo tsc -b",
     "lint": "vp lint",
     "test": "bun test"
   },
   "devDependencies": {
+    "@effect/tsgo": "0.73.2",
     "@types/bun": "^1.4.5",
     "typescript": "~7.0.2",
     "vite": "npm:@voidzero-dev/vite-plus-core@1.6.0",

@@ -18,17 +18,13 @@ import {
   type ChannelTransport,
   type FetchProgress,
 } from "./channelFetch.ts";
+import { NearbyError, PageOutdatedError } from "./errors.ts";
 import type { Rendezvous } from "./rendezvous.ts";
 
 // The guest's WebRTC connection to a host: it makes the offer, trickles ICE candidates through
 // the rendezvous, opens the data channel, runs CPace with the host's code (or proves a resume
 // token from an earlier connection, and checks the host's proof of it), and then carries HTTP
 // requests (channelFetch.ts).
-
-/** A failure worth showing as is. */
-export class NearbyError extends Error {
-  override name = "NearbyError";
-}
 
 /**
  * The host answered a resume without proving it holds the token: whatever answers under this
@@ -49,17 +45,6 @@ export class RefusedError extends NearbyError {
   constructor(host: string, reason: RefusalReason) {
     super(refusalMessage(host, reason));
     this.reason = reason;
-  }
-}
-
-/**
- * This page can't load its CPace code: it was deployed over since the page loaded, so its chunk
- * is gone. Only a reload helps.
- */
-export class PageOutdatedError extends NearbyError {
-  override name = "PageOutdatedError";
-  constructor() {
-    super("This page is out of date. Reload it.");
   }
 }
 

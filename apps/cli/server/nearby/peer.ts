@@ -3,9 +3,12 @@
 // resume token (@gitui/shared's nearby-pake.ts) as auth.ts's Gatekeeper decides, and then hands
 // the channel to the bridge. Nothing reaches the bridge before the guest proved itself. An error
 // in one of its callbacks closes the session, not the process.
+//
+// Its protocol runs in werift's and the channel's callbacks, as they come. What it waits for (the
+// answer, its candidates, the auth timeout, the last message out before refusing) runs as fibers
+// in the session's scope, which closing it closes. A fiber's defect closes the session too.
 import {
   AUTH_ATTEMPTS,
-  decodeChannelMessage,
   DATA_CHANNEL_LABEL,
   type Fingerprints,
   type HostMessage,
@@ -13,7 +16,9 @@ import {
   MAX_LOCAL_CANDIDATES,
   type SentSignal,
 } from "@gitui/shared";
+import { decodeChannelMessage } from "@gitui/shared/nearby-codec";
 import { hostFinish, hostRespond, resumeAnswer } from "@gitui/shared/nearby-pake";
+import { Cause, Deferred, Effect, Exit, type Fiber, Scope } from "effect";
 import {
   fingerprints,
   Gatekeeper,
@@ -88,8 +93,12 @@ interface Expected {
 export class GuestSession {
   readonly #options: GuestOptions;
   readonly #peer: AnsweringPeer;
-  readonly #answered: Promise<void>;
-  readonly #timer: ReturnType<typeof setTimeout>;
+  /** Done once the offer is answered, or couldn't be. */
+  readonly #answered = Deferred.makeUnsafe<void>();
+  /** Holds the session's fibers; closing the session closes it, which interrupts them. */
+  readonly #scope = Scope.makeUnsafe("parallel");
+  /** Ends the session if the guest hasn't proved itself in time. */
+  readonly #timer: Fiber.Fiber<void>;
   readonly #gate: Gatekeeper<Run>;
   /** The candidates the guest trickled for this offer. */
   #candidates = 0;
@@ -114,12 +123,32 @@ export class GuestSession {
       closed: () => this.close(),
       error: (error) => this.close(errorLine(error)),
     });
-    this.#timer = setTimeout(
-      () =>
-        this.close(this.#codeShown ? `Nearby: code ${this.#expected?.code} expired` : undefined),
-      options.authTimeout ?? AUTH_TIMEOUT,
+    this.#timer = this.#fork(
+      Effect.sleep(options.authTimeout ?? AUTH_TIMEOUT).pipe(
+        Effect.andThen(
+          Effect.sync(() =>
+            this.close(
+              this.#codeShown ? `Nearby: code ${this.#expected?.code} expired` : undefined,
+            ),
+          ),
+        ),
+      ),
     );
-    this.#answered = this.#answer();
+    this.#fork(this.#answer());
+  }
+
+  /**
+   * Runs `effect` as a fiber in the session's scope, until it ends or the session closes; a
+   * defect closes the session. It starts at once, so it runs up to its first wait before this
+   * returns.
+   */
+  #fork(effect: Effect.Effect<void>): Fiber.Fiber<void> {
+    const guarded = Effect.catchCause(effect, (cause) =>
+      Cause.hasInterruptsOnly(cause)
+        ? Effect.void
+        : Effect.sync(() => this.close(errorLine(Cause.squash(cause)))),
+    );
+    return Effect.runSync(Effect.forkIn(guarded, this.#scope, { startImmediately: true }));
   }
 
   /**
@@ -140,9 +169,11 @@ export class GuestSession {
     // A candidate of an earlier offer of this guest's belongs to a connection that is gone.
     if (offerId !== this.#options.offerId) return;
     if (++this.#candidates > MAX_REMOTE_CANDIDATES) return;
-    void this.#answered.then(() => {
-      if (this.#state !== "closed") return this.#peer.addCandidate(candidate);
-    });
+    this.#fork(
+      Deferred.await(this.#answered).pipe(
+        Effect.andThen(Effect.promise(() => this.#peer.addCandidate(candidate))),
+      ),
+    );
   }
 
   /**
@@ -153,10 +184,12 @@ export class GuestSession {
     if (this.#state === "closed") return;
     const wasOpen = this.#state === "open";
     this.#state = "closed";
-    clearTimeout(this.#timer);
     const { log, onEnd } = this.#options;
     try {
       const steps = [
+        // Interrupts every fiber at once (a parallel scope), but the one calling this, if any,
+        // which ends when it next yields.
+        () => Effect.runFork(Scope.close(this.#scope, Exit.void)),
         () => this.#bridge?.close(),
         () => this.#channel?.close(),
         () => this.#peer.close(),
@@ -175,25 +208,30 @@ export class GuestSession {
     }
   }
 
-  async #answer() {
+  /** Answers the offer; closing the session meanwhile interrupts it, and it stays quiet. */
+  #answer(): Effect.Effect<void> {
     const { offerSdp, offerId, signal } = this.#options;
-    try {
-      const answerSdp = await this.#peer.answer(offerSdp);
-      // A session closed meanwhile stays closed, and quiet.
-      if (this.#state === "closed") return;
-      const prints = fingerprints(offerSdp, answerSdp);
-      if (!prints) {
-        return this.#refuseOffer(
-          "Nearby: refused an offer without exactly one SHA-256 DTLS fingerprint",
-        );
-      }
-      this.#expected = { code: newCode(), prints };
-      this.#state = "authenticating";
-      signal({ kind: "answer", offerId, sdp: answerSdp });
-    } catch (e) {
-      if (this.#state === "closed") return;
-      this.#refuseOffer(`Nearby: couldn't answer a device: ${(e as Error).message}`);
-    }
+    return Effect.tryPromise({
+      try: () => this.#peer.answer(offerSdp),
+      // What the peer connection threw, as a line's end.
+      catch: (cause) => (cause instanceof Error ? cause.message : String(cause)),
+    }).pipe(
+      Effect.map((answerSdp) => {
+        const prints = fingerprints(offerSdp, answerSdp);
+        if (!prints) {
+          return this.#refuseOffer(
+            "Nearby: refused an offer without exactly one SHA-256 DTLS fingerprint",
+          );
+        }
+        this.#expected = { code: newCode(), prints };
+        this.#state = "authenticating";
+        signal({ kind: "answer", offerId, sdp: answerSdp });
+      }),
+      Effect.catch((message) =>
+        Effect.sync(() => this.#refuseOffer(`Nearby: couldn't answer a device: ${message}`)),
+      ),
+      Effect.ensuring(Effect.sync(() => void Deferred.doneUnsafe(this.#answered, Exit.void))),
+    );
   }
 
   /** Tells the guest its offer is of no use, so it needn't wait for an answer, and ends. */
@@ -299,7 +337,7 @@ export class GuestSession {
 
   /** The guest proved itself: requests go to the bridge from now on. */
   #open(channel: DataChannel, line: string | null) {
-    clearTimeout(this.#timer);
+    this.#timer.interruptUnsafe();
     this.#state = "open";
     this.#bridge = new Bridge(channel, this.#options.fetch);
     this.#options.log(line ?? "Nearby: device connected");
@@ -308,6 +346,10 @@ export class GuestSession {
   /** Out of attempts: the last `auth-fail` leaves, then the channel closes. */
   #refuse(channel: DataChannel, line?: string) {
     this.#expected = null;
-    void channel.drain(0).then(() => this.close(line));
+    this.#fork(
+      Effect.promise(() => channel.drain(0)).pipe(
+        Effect.andThen(Effect.sync(() => this.close(line))),
+      ),
+    );
   }
 }

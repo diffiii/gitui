@@ -4,25 +4,18 @@ import {
   ERROR_CODES,
   frameChunk,
   MAX_MESSAGE_LENGTH,
-  MAX_NAME_LENGTH,
   newOfferId,
   REFUSAL_REASONS,
-  RENDEZVOUS_PATH,
 } from "./nearby.ts";
 import {
   decodeChannelMessage,
   decodeClientMessage,
-  hostName,
-  isId,
+  decodeServerMessage,
+  decodeSignal,
   NearbyCodecError,
   parseClientMessage,
   parseServerMessage,
   parseSignal,
-  rendezvousUrl,
-  sdpFingerprint,
-  MAX_PRINTABLE_LENGTH,
-  printable,
-  toHostName,
 } from "./nearby-codec.ts";
 
 const parse = (value: unknown): unknown => parseClientMessage(JSON.stringify(value));
@@ -169,6 +162,36 @@ test("decoders say what is wrong", () => {
     decodeClientMessage('{"type":"hello","role":"host","name":"a\\nb","secret":"x"}'),
   ).toThrow(new NearbyCodecError("invalid name"));
   expect(() => decodeClientMessage("{")).toThrow(new NearbyCodecError("not JSON"));
+  expect(() => decodeClientMessage("{}")).toThrow(new NearbyCodecError("missing type"));
+  expect(() => decodeClientMessage('{"type":"bye"}')).toThrow(new NearbyCodecError("invalid type"));
+  expect(() =>
+    decodeClientMessage('{"type":"signal","to":"p1","data":{"kind":"answer","sdp":""}}'),
+  ).toThrow(new NearbyCodecError("missing data.offerId"));
+  // A tag inside a nested union, or inside a field, is named too.
+  const said = (message: object) => () => decodeClientMessage(JSON.stringify(message));
+  expect(said({ type: "hello", role: "admin" })).toThrow(new NearbyCodecError("invalid role"));
+  expect(said({ type: "hello" })).toThrow(new NearbyCodecError("missing role"));
+  expect(said({ type: "signal", to: "p1", data: { offerId } })).toThrow(
+    new NearbyCodecError("missing data.kind"),
+  );
+  expect(said({ type: "signal", to: "p1", data: { kind: "x", offerId } })).toThrow(
+    new NearbyCodecError("invalid data.kind"),
+  );
+  expect(said({ type: "signal", to: "p1", data: "x" })).toThrow(
+    new NearbyCodecError("invalid data"),
+  );
+});
+
+test("a getter that throws is an invalid message, not a crash", () => {
+  const value = { kind: "answer", offerId: "o".repeat(16) };
+  Object.defineProperty(value, "sdp", {
+    enumerable: true,
+    get: () => {
+      throw new Error("boom");
+    },
+  });
+  expect(() => decodeSignal(value)).toThrow(NearbyCodecError);
+  expect(parseSignal(value)).toBeNull();
 });
 
 test("parseServerMessage rebuilds every message a peer handles", () => {
@@ -226,59 +249,15 @@ test("newOfferId makes distinct valid ids", () => {
   expect(newOfferId()).not.toBe(a);
 });
 
-test("hostName trims and bounds names by code point and rejects control and bidi characters", () => {
-  expect(hostName(" box ")).toBe("box");
-  expect(hostName("a".repeat(MAX_NAME_LENGTH))).toBe("a".repeat(MAX_NAME_LENGTH));
-  // Lengths count code points: an emoji is one.
-  expect(hostName("💻".repeat(MAX_NAME_LENGTH))).not.toBeNull();
-  expect(hostName("💻".repeat(MAX_NAME_LENGTH + 1))).toBeNull();
-  expect(hostName("a".repeat(MAX_NAME_LENGTH + 1))).toBeNull();
-  expect(hostName("   ")).toBeNull();
-  expect(hostName("")).toBeNull();
-  expect(hostName(42)).toBeNull();
-  for (const bad of ["\n", "\u0000", "\u009b", "\u202E", "\u2066", "\u200F", "\u061C", "\u2028"]) {
-    expect(hostName(`a${bad}b`)).toBeNull();
-  }
-  // Emoji sequences keep their joiners.
-  expect(hostName("👩‍💻 box")).toBe("👩‍💻 box");
-});
-
-test("printable drops control and bidi characters and caps the length", () => {
-  expect(printable("a\u001b[2Jb\nc\u202Ed\u2028e\u2066f")).toBe("a[2Jbcdef");
-  expect(printable("💻".repeat(MAX_PRINTABLE_LENGTH))).toBe("💻".repeat(MAX_PRINTABLE_LENGTH));
-  expect(printable("💻".repeat(MAX_PRINTABLE_LENGTH + 1))).toBe(
-    `${"💻".repeat(MAX_PRINTABLE_LENGTH - 1)}…`,
-  );
-  expect(printable("abcdef", 4)).toBe("abc…");
-});
-
-test("toHostName drops what hostName refuses and cuts by code point", () => {
-  expect(toHostName(" my\u202E-box\n ")).toBe("my-box");
-  expect(toHostName("💻".repeat(MAX_NAME_LENGTH + 5))).toBe("💻".repeat(MAX_NAME_LENGTH));
-  expect(toHostName("\u0007\u202E")).toBeNull();
-});
-
-test("rendezvousUrl takes ws: and wss: origins only", () => {
-  expect(rendezvousUrl("wss://rendezvous.example")).toBe(
-    `wss://rendezvous.example${RENDEZVOUS_PATH}`,
-  );
-  expect(rendezvousUrl("ws://127.0.0.1:8787")).toBe(`ws://127.0.0.1:8787${RENDEZVOUS_PATH}`);
-  for (const bad of [
-    "https://x.example",
-    "wss://x.example/",
-    "wss://x.example/path",
-    "wss://x.example?q",
-    "WSS://x.example",
-    "",
-    "nope",
-  ]) {
-    expect(rendezvousUrl(bad)).toBeNull();
-  }
-});
-
-test("isId takes unsigned 32-bit integers", () => {
-  for (const ok of [0, 1, 0xffff_ffff]) expect(isId(ok)).toBe(true);
-  for (const bad of [-1, 0.5, 0x1_0000_0000, "1", null]) expect(isId(bad)).toBe(false);
+test("an invalid channel message names its request only by an unsigned 32-bit id", () => {
+  const id = (value: unknown) => {
+    const incoming = decodeChannelMessage(JSON.stringify({ t: "end", id: value, x: 1 }), "guest");
+    return incoming.kind === "invalid" ? incoming.id : "valid";
+  };
+  for (const ok of [0, 1, 0xffff_ffff]) expect(id(ok)).toBe("valid");
+  for (const bad of [-1, 0.5, 0x1_0000_0000, "1", null]) expect(id(bad)).toBeNull();
+  const req = { t: "req", id: 0xffff_ffff, method: "G T", path: "/", headers: [] };
+  expect(decodeChannelMessage(JSON.stringify(req), "guest")).toMatchObject({ id: 0xffff_ffff });
 });
 
 test("decodeChannelMessage reads each side's messages only", () => {
@@ -318,7 +297,7 @@ test("decodeChannelMessage reads each side's messages only", () => {
   expect(guest({ t: "end", id: -1 })).toEqual({
     kind: "invalid",
     id: null,
-    reason: "no request id",
+    reason: "invalid id",
   });
   expect(host({ t: "auth-fail", attemptsLeft: AUTH_ATTEMPTS + 1 })).toMatchObject({
     kind: "invalid",
@@ -328,7 +307,7 @@ test("decodeChannelMessage reads each side's messages only", () => {
   const loose = `${"A".repeat(42)}B`;
   expect(guest({ t: "pake", y: loose })).toMatchObject({
     kind: "invalid",
-    reason: "invalid share",
+    reason: "invalid y",
   });
   expect(guest({ t: "pake-confirm", confirm: loose })).toMatchObject({ kind: "invalid" });
   expect(guest({ t: "resume", nonce: "n".repeat(22), proof: loose })).toMatchObject({
@@ -336,7 +315,7 @@ test("decodeChannelMessage reads each side's messages only", () => {
   });
   expect(host({ t: "pake", y: b43, confirm: loose })).toMatchObject({
     kind: "invalid",
-    reason: "invalid tag",
+    reason: "invalid confirm",
   });
   expect(host({ t: "pake", y: loose, confirm: b43 })).toMatchObject({ kind: "invalid" });
   expect(host({ t: "resume-ok", proof: loose })).toMatchObject({ kind: "invalid" });
@@ -363,34 +342,100 @@ test("decodeChannelMessage reads binary frames", () => {
   expect(decodeChannelMessage(new Uint8Array(3), "guest")).toMatchObject({ kind: "invalid" });
 });
 
-const hex = (n: number) =>
-  Array.from({ length: 32 }, (_, i) => ((i * n) & 0xff).toString(16).padStart(2, "0")).join(":");
+const sdp = "v=0";
+const candidate = {
+  candidate: "candidate:1 1 udp 1 192.0.2.1 9 typ host",
+  sdpMid: "0",
+  sdpMLineIndex: 0,
+};
+const signals = [
+  { kind: "offer", offerId, sdp },
+  { kind: "offer", offerId, sdp, resume: true },
+  { kind: "answer", offerId, sdp },
+  { kind: "candidate", offerId, candidate },
+  { kind: "candidate", offerId, candidate: { candidate: "", sdpMid: null, sdpMLineIndex: null } },
+  { kind: "refused", offerId, reason: "busy" },
+];
+/** `decodeChannelMessage` for `from`'s messages, as a value that throws unless it is one. */
+const channel = (from: "guest" | "host") => (value: unknown) => {
+  const text = JSON.stringify(value);
+  const incoming =
+    from === "guest" ? decodeChannelMessage(text, "guest") : decodeChannelMessage(text, "host");
+  if (incoming.kind !== "message") throw new Error(JSON.stringify(incoming));
+  return incoming.message;
+};
+// Each decoder production reads with, and one valid message of every kind it reads. A
+// RelayedSignal is read inside a ClientMessage, and a HostInfo inside a ServerMessage.
+const valid: [string, (value: unknown) => unknown, object[]][] = [
+  ["SignalData", decodeSignal, signals],
+  [
+    "ClientMessage",
+    (value) => decodeClientMessage(JSON.stringify(value)),
+    [
+      { type: "hello", role: "guest" },
+      { type: "hello", role: "host", name: "box", secret },
+      ...signals.map((data) => ({ type: "signal", to: "p1", data })),
+    ],
+  ],
+  [
+    "ServerMessage",
+    (value) => decodeServerMessage(JSON.stringify(value)),
+    [
+      { type: "welcome", id: "p1" },
+      { type: "hosts", hosts: [{ id: "p1", name: "box", key }] },
+      ...signals.map((data) => ({ type: "signal", from: "p1", data })),
+      { type: "gone", id: "p1" },
+      { type: "error", code: "rate-limit", message: "slow down" },
+      { type: "pong" },
+    ],
+  ],
+  [
+    "GuestMessage",
+    channel("guest"),
+    [
+      { t: "pake", y: b43 },
+      { t: "pake-confirm", confirm: b43 },
+      { t: "pake-fail" },
+      { t: "resume", nonce: "n".repeat(22), proof: b43 },
+      { t: "req", id: 1, method: "GET", path: "/api/config", headers: [["a", "b"]] },
+      { t: "end", id: 1 },
+      { t: "cancel", id: 1 },
+    ],
+  ],
+  [
+    "HostMessage",
+    channel("host"),
+    [
+      { t: "pake", y: b43, confirm: b43 },
+      { t: "resume-ok", proof: b43 },
+      { t: "auth-ok" },
+      { t: "session", token: b43 },
+      { t: "auth-fail", attemptsLeft: 2 },
+      { t: "auth-fail", attemptsLeft: 0, locked: true },
+      { t: "res", id: 1, status: 200, headers: [] },
+      { t: "end", id: 1 },
+      { t: "abort", id: 1, message: "boom" },
+    ],
+  ],
+];
 
-test("sdpFingerprint reads a single SHA-256 fingerprint", () => {
-  const print = hex(7);
-  const sdp = `v=0\r\na=group:BUNDLE 0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 ${print.toUpperCase()}\r\na=setup:actpass\r\n`;
-  // Normalized to lowercase: sdpFingerprint is the one place that does it.
-  expect(sdpFingerprint(sdp) as string).toBe(`sha-256 ${print}`);
-  expect(sdpFingerprint(sdp.replaceAll("\r\n", "\n")) as string).toBe(`sha-256 ${print}`);
-  expect(sdpFingerprint("v=0\r\n")).toBeNull();
+test("every decoder gives valid messages back as they were sent", () => {
+  for (const [name, decode, messages] of valid) {
+    for (const message of messages) expect([name, decode(message)]).toEqual([name, message]);
+  }
 });
 
-test("sdpFingerprint refuses SDPs with more than one fingerprint, or another hash", () => {
-  const a = `a=fingerprint:sha-256 ${hex(3)}`;
-  const b = `a=fingerprint:sha-256 ${hex(5)}`;
-  // Session-level plus media-level.
-  expect(sdpFingerprint(`v=0\r\n${a}\r\nm=application 9 x\r\n${b}\r\n`)).toBeNull();
-  // The same one twice is still two lines.
-  expect(sdpFingerprint(`v=0\r\n${a}\r\n${a}\r\n`)).toBeNull();
-  // SHA-1 next to SHA-256, and SHA-1 alone.
-  const sha1 = "a=fingerprint:sha-1 " + hex(3).split(":").slice(0, 20).join(":");
-  expect(sdpFingerprint(`v=0\r\n${sha1}\r\n${a}\r\n`)).toBeNull();
-  expect(sdpFingerprint(`v=0\r\n${sha1}\r\n`)).toBeNull();
-  expect(sdpFingerprint(`v=0\r\na=fingerprint:sha-512 ${hex(3)}\r\n`)).toBeNull();
-  // A second line hidden behind a bare CR or LF, which some parsers don't split on.
-  expect(sdpFingerprint(`v=0\r\n${a}\n${b}\r\n`)).toBeNull();
-  expect(sdpFingerprint(`v=0\r\n${a}\r${b}\r\n`)).toBeNull();
-  // Malformed values.
-  expect(sdpFingerprint(`v=0\r\na=fingerprint:sha-256 ${hex(3).slice(3)}\r\n`)).toBeNull();
-  expect(sdpFingerprint(`v=0\r\na=fingerprint:sha-256 ${hex(3)} extra\r\n`)).toBeNull();
+test("every decoder strips fields the contract doesn't have, at every level", () => {
+  /** `value` with an `extra` field added to it and to every object inside it. */
+  const withExtras = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(withExtras);
+    if (typeof value !== "object" || value === null) return value;
+    const entries = Object.entries(value).map(([k, v]) => [k, withExtras(v)]);
+    return { ...Object.fromEntries(entries), extra: 1 };
+  };
+  for (const [name, decode, messages] of valid) {
+    for (const message of messages) {
+      expect([name, decode(withExtras(message))]).toEqual([name, message]);
+    }
+  }
 });

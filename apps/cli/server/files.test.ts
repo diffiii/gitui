@@ -3,8 +3,17 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import { open } from "node:fs/promises";
 import path from "node:path";
-import * as g from "./files.ts";
-import { commitFile, git, initRepo, removeTempDirs, testApp, tmpDir, write } from "./test-repo.ts";
+import * as files from "./files.ts";
+import {
+  commitFile,
+  git,
+  initRepo,
+  removeTempDirs,
+  testApp,
+  tmpDir,
+  write,
+  run,
+} from "./test-repo.ts";
 
 afterAll(removeTempDirs);
 
@@ -16,11 +25,11 @@ async function get<T>(repo: string, route: string, params: Record<string, string
   return { status: res.status, body: (await res.json()) as T };
 }
 
-const listFiles = (repo: string) => get<g.WorkingFiles>(repo, "/files");
+const listFiles = (repo: string) => get<files.WorkingFiles>(repo, "/files");
 
 /** Every field of a file's body, or of an error, so a test can read whichever came back. */
 type FileBody = Partial<{
-  kind: g.WorkingFile["kind"];
+  kind: files.WorkingFile["kind"];
   size: number;
   content: string;
   target: string;
@@ -61,19 +70,19 @@ test("leaves out tracked files deleted from disk and lists a conflicted file onc
   expect(() => git(repo, "merge", "-q", "other")).toThrow();
   fs.rmSync(path.join(repo, "gone.txt"));
 
-  const { paths } = await g.workingFiles(repo);
+  const { paths } = await run(files.workingFiles(repo));
   expect([...paths].sort()).toEqual(["c.txt"]);
 });
 
 test("caps the list and says so", async () => {
   const repo = initRepo();
   for (const f of ["a", "b", "c"]) write(repo, f, f);
-  expect(await g.workingFiles(repo, 2)).toEqual({
+  expect(await run(files.workingFiles(repo, 2))).toEqual({
     paths: expect.any(Array),
     truncated: true,
   });
-  expect((await g.workingFiles(repo, 2)).paths).toHaveLength(2);
-  expect((await g.workingFiles(repo, 3)).truncated).toBe(false);
+  expect((await run(files.workingFiles(repo, 2))).paths).toHaveLength(2);
+  expect((await run(files.workingFiles(repo, 3))).truncated).toBe(false);
 });
 
 test("reads a file as it is on disk, uncommitted edits included", async () => {
@@ -265,7 +274,7 @@ test("refuses a nested repo's folder, which git lists as `nested/`", async () =>
   }
   // The reader checks for itself, whoever calls it.
   for (const file of ["nested/", "nested//b.txt", "./a.txt", "/a.txt"]) {
-    const err = await g.workingFile(repo, file).catch((e: Error) => e);
+    const err = await run(files.workingFile(repo, file)).catch((e: Error) => e);
     expect({ file, error: (err as Error).message }).toEqual({
       file,
       error: `Not a file in the working copy: ${file}`,
@@ -331,19 +340,19 @@ test("reports binary and too-large files by size", async () => {
   const repo = initRepo();
   fs.writeFileSync(path.join(repo, "image.png"), Buffer.from("89504e470d0a1a0a0000000d", "hex"));
   write(repo, "late-nul.txt", `${"a".repeat(8000)}\0`);
-  write(repo, "big.txt", "x".repeat(g.MAX_FILE_BYTES + 1));
-  write(repo, "edge.txt", "x".repeat(g.MAX_FILE_BYTES));
+  write(repo, "big.txt", "x".repeat(files.MAX_FILE_BYTES + 1));
+  write(repo, "edge.txt", "x".repeat(files.MAX_FILE_BYTES));
 
   expect((await readFile(repo, "image.png")).body).toEqual({ kind: "binary", size: 12 });
   // Past the first 8000 bytes, as git looks, a NUL doesn't make a file binary.
   expect((await readFile(repo, "late-nul.txt")).body.content).toHaveLength(8001);
   expect((await readFile(repo, "big.txt")).body).toEqual({
     kind: "tooLarge",
-    size: g.MAX_FILE_BYTES + 1,
+    size: files.MAX_FILE_BYTES + 1,
   });
   expect((await readFile(repo, "edge.txt")).body).toMatchObject({
     kind: "text",
-    size: g.MAX_FILE_BYTES,
+    size: files.MAX_FILE_BYTES,
   });
 });
 
@@ -361,10 +370,16 @@ test("never reads more than one byte past the cap", async () => {
   const readWhole = spyOn(proto, "readFile");
   try {
     // Larger than the cap: the size alone says so, and nothing is read.
-    expect(await g.workingFile(repo, "big.txt", 500)).toEqual({ kind: "tooLarge", size: 1000 });
+    expect(await run(files.workingFile(repo, "big.txt", 500))).toEqual({
+      kind: "tooLarge",
+      size: 1000,
+    });
     expect(read).not.toHaveBeenCalled();
     // Under it: reads into a buffer one byte past the cap, never the whole file at once.
-    expect(await g.workingFile(repo, "small.txt", 500)).toMatchObject({ kind: "text", size: 100 });
+    expect(await run(files.workingFile(repo, "small.txt", 500))).toMatchObject({
+      kind: "text",
+      size: 100,
+    });
     for (const [buf, offset, length] of read.mock.calls as [Buffer, number, number][]) {
       expect(buf.length).toBe(501);
       expect(offset + length).toBeLessThanOrEqual(501);
