@@ -12,10 +12,10 @@ import {
 } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import type { Branch, Status } from "@/lib/api";
+import { useBranches } from "@/lib/branches";
 import { useGitMutation } from "@/lib/repo";
 import { cn } from "@/lib/utils";
 import { Age } from "./Age";
-import { useBranches } from "./BranchesView";
 
 /** Header control showing the current branch; opens a searchable list to switch or create. */
 export function BranchSwitcher({ status }: { status: Status }) {
